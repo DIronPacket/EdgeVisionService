@@ -38,7 +38,7 @@ public:
      * @param frame 输入原始YUV帧
      * @return true 送入成功；false失败
      */
-    virtual bool encode(const FrameBuffer& frame) = 0;
+    virtual bool encode(FrameBuffer* frame) = 0;
 
     /**
      * @brief 注册码流回调，编码完成后触发

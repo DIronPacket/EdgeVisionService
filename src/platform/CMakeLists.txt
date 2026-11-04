@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.16)
 add_library(platform_api INTERFACE)
 target_include_directories(platform_api
 INTERFACE
+    ${PROJECT_SOURCE_DIR}/src/common
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
@@ -27,4 +28,10 @@ endif()
 if(BUILD_ENCODER_MODULE)
     add_subdirectory(encoder)
     target_link_libraries(platform_api INTERFACE encoder)
+endif()
+
+# 推流模块
+if(BUILD_RTSP_MODULE)
+    add_subdirectory(rtsp)
+    target_link_libraries(platform_api INTERFACE rtsp)
 endif()

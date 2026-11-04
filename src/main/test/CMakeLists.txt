@@ -31,19 +31,19 @@ find_package(ZLMediaKit REQUIRED)
 #     ${FFMPEG_LIBRARIES}
 #     ${ZLM_LIBRARIES}
 # )
-add_executable(testpool 
-    main_testpool.cpp
+add_executable(testnode 
+    main_node.cpp
 )
-target_include_directories(testpool PRIVATE ${FFMPEG_INCLUDE_DIRS} ${ZLM_INCLUDE_DIRS})
-target_link_libraries(testpool
+target_include_directories(testnode PRIVATE ${FFMPEG_INCLUDE_DIRS} ${ZLM_INCLUDE_DIRS})
+target_link_libraries(testnode
 PRIVATE
     common_api
-    # pipeline
+    pipeline_api
     # algorithm
     # streamer
     # comm
     # test_testpool
-    # platform_api
-    # ${FFMPEG_LIBRARIES}
-    # ${ZLM_LIBRARIES}
+    platform_api
+    ${FFMPEG_LIBRARIES}
+    ${ZLM_LIBRARIES}
 )

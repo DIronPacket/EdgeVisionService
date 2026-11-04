@@ -1,17 +1,29 @@
-cmake_minimum_required(VERSION 3.16)
+set(TARGET_NAME pipeline_api)
+add_library(${TARGET_NAME} ${MODULE_LIB_TYPE})
 
-# pipeline对外INTERFACE接口库，上层链接 pipeline_api 即可
-add_library(pipeline_api INTERFACE)
-target_include_directories(pipeline_api
-INTERFACE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+target_sources(${TARGET_NAME} PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/pipeline_node.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_push/moudle_push.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vi/moudle_vi.cpp
 )
 
-# RTSP模块开关
-option(BUILD_RTSP_MODULE "Build pipeline RTSP推拉流模块" ON)
+# 如果是动态库，开启 PIC
+set_target_properties(${TARGET_NAME} PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-if(BUILD_RTSP_MODULE)
-    add_subdirectory(moudleRtsp)
-    # 把子模块的api挂到pipeline_api上
-    target_link_libraries(pipeline_api INTERFACE moudleRtsp)
-endif()
+target_include_directories(${TARGET_NAME}
+PUBLIC
+    ${PROJECT_SOURCE_DIR}/src/pipeline
+    ${PROJECT_SOURCE_DIR}/src/common
+    ${PROJECT_SOURCE_DIR}/src/common/MemManager
+    ${CMAKE_CURRENT_SOURCE_DIR}/
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_push
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vi
+)
+
+# ==========================================
+# 【核心修改】链接平台层总库
+# ==========================================
+target_link_libraries(${TARGET_NAME} 
+    PUBLIC 
+    platform_api  # <--- 直接链接你之前定义的平台总库
+)

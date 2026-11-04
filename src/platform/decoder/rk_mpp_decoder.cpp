@@ -102,7 +102,7 @@ bool MppDecoder::decode(const uint8_t* data, size_t len)
             // NV12 总大小 = Y平面(hor_stride*h) + UV平面(hor_stride * h/2)
             size_t total_size = hor_stride * h * 3 / 2;
             FrameBuffer fb{};
-            fb.allocate(total_size);
+            // fb.allocate(total_size);
             memcpy(fb.data, buf_ptr, total_size);
             fb.width = static_cast<int>(w);
             fb.height = static_cast<int>(h);

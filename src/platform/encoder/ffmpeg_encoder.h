@@ -14,7 +14,7 @@ public:
     ~FfmpegEncoder() override;
 
     bool open(int w, int h, PixelFormat fmt, int fps, int bitrate_kbps) override;
-    bool encode(const FrameBuffer& frame) override;
+    bool encode(FrameBuffer* frame) override;
     void set_encode_callback(EncodeCallback cb, void* user_arg) override;
     void close() override;
     bool is_opened() const override;

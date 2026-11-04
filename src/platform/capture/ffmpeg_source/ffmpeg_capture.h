@@ -18,14 +18,14 @@ public:
     ~FfmpegCapture() override;
 
     bool open(const std::string& src) override;
-    bool read_frame(FrameBuffer& frame) override;
+    bool read_frame(FrameBuffer* frame) override;
     void set_capture_callback(CaptureFrameCallback cb, void* user_arg) override{};
     void close() override;
     bool is_opened() const override;
 
 private:
     void release();
-    bool transfer_frame(AVFrame* av_frame, FrameBuffer& out_frame);
+    bool transfer_frame(AVFrame* av_frame, FrameBuffer* out_frame);
 
     AVFormatContext* m_fmt_ctx = nullptr;
     AVCodecContext* m_codec_ctx = nullptr;

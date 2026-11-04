@@ -9,7 +9,7 @@ target_sources(${TARGET_NAME} PRIVATE
 target_include_directories(${TARGET_NAME}
 PUBLIC
     ${PROJECT_SOURCE_DIR}/src/platform/include
-    ${PROJECT_SOURCE_DIR}/src/common/media
+    ${PROJECT_SOURCE_DIR}/src/common
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 

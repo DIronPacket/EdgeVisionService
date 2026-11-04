@@ -3,7 +3,7 @@
 
 FfmpegEncoder::FfmpegEncoder()
 {
-    avcodec_register_all();
+    // avcodec_register_all();
 }
 
 FfmpegEncoder::~FfmpegEncoder()
@@ -45,26 +45,26 @@ bool FfmpegEncoder::open(int w, int h, PixelFormat fmt, int fps, int bitrate_kbp
     return true;
 }
 
-bool FfmpegEncoder::encode(const FrameBuffer& frame)
+bool FfmpegEncoder::encode(FrameBuffer* frame)
 {
     if(!m_opened) return false;
 
-    // 拷贝NV12原始帧数据
-    memcpy(m_frame->data[0], frame.data[0], frame.linesize[0] * frame.height);
-    memcpy(m_frame->data[1], frame.data[1], frame.linesize[1] * frame.height / 2);
+    // // 拷贝NV12原始帧数据
+    // memcpy(m_frame->data[0], frame->data[0], frame->linesize[0] * frame->height);
+    // memcpy(m_frame->data[1], frame->data[1], frame->linesize[1] * frame->height / 2);
 
-    int ret = avcodec_send_frame(m_codec_ctx, m_frame);
-    if(ret <0) return false;
+    // int ret = avcodec_send_frame(m_codec_ctx, m_frame);
+    // if(ret <0) return false;
 
-    // 循环取出编码后的码流，触发回调
-    while(avcodec_receive_packet(m_codec_ctx, m_pkt) == 0)
-    {
-        if(m_cb)
-        {
-            m_cb(m_pkt->data, m_pkt->size, m_user_arg);
-        }
-        av_packet_unref(m_pkt);
-    }
+    // // 循环取出编码后的码流，触发回调
+    // while(avcodec_receive_packet(m_codec_ctx, m_pkt) == 0)
+    // {
+    //     if(m_cb)
+    //     {
+    //         m_cb(m_pkt->data, m_pkt->size, m_user_arg);
+    //     }
+    //     av_packet_unref(m_pkt);
+    // }
     return true;
 }
 

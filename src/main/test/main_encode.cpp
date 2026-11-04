@@ -4,22 +4,23 @@
 #include "frame_buffer.h"
 #include "rk_mpp_encoder.h" // 引入RK MPP编码器头文件
 
-#include <cstdio>  // fopen fwrite fclose
+#include <cstdio> // fopen fwrite fclose
 
-extern "C" {
+extern "C"
+{
 #include <libavformat/avformat.h>
 }
 // 读取视频文件媒体信息
-void printMediaInfo(const std::string& filePath)
+void printMediaInfo(const std::string &filePath)
 {
-    AVFormatContext* fmt_ctx = avformat_alloc_context();
-    if(!fmt_ctx)
+    AVFormatContext *fmt_ctx = avformat_alloc_context();
+    if (!fmt_ctx)
     {
         std::cerr << "avformat_alloc_context fail\n";
         return;
     }
     int ret = avformat_open_input(&fmt_ctx, filePath.c_str(), nullptr, nullptr);
-    if(ret < 0)
+    if (ret < 0)
     {
         std::cerr << "open input failed\n";
         avformat_free_context(fmt_ctx);
@@ -27,33 +28,33 @@ void printMediaInfo(const std::string& filePath)
     }
     avformat_find_stream_info(fmt_ctx, nullptr);
 
-    int video_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1,-1,nullptr,0);
-    if(video_idx >=0)
+    int video_idx = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (video_idx >= 0)
     {
-        AVStream* st = fmt_ctx->streams[video_idx];
+        AVStream *st = fmt_ctx->streams[video_idx];
         std::cout << "\n==== Media Info ====\n";
-        std::cout << "width: "<< st->codecpar->width <<"\n";
-        std::cout << "height: "<< st->codecpar->height <<"\n";
-        std::cout << "codec id: "<< avcodec_get_name(st->codecpar->codec_id) <<"\n";
+        std::cout << "width: " << st->codecpar->width << "\n";
+        std::cout << "height: " << st->codecpar->height << "\n";
+        std::cout << "codec id: " << avcodec_get_name(st->codecpar->codec_id) << "\n";
         // 帧率 r_frame_rate 分数
         double fps = av_q2d(st->r_frame_rate);
-        std::cout << "fps: "<< fps <<"\n";
-        std::cout << "duration(s): "<< (double)fmt_ctx->duration / AV_TIME_BASE <<"\n";
+        std::cout << "fps: " << fps << "\n";
+        std::cout << "duration(s): " << (double)fmt_ctx->duration / AV_TIME_BASE << "\n";
     }
 
     avformat_close_input(&fmt_ctx);
     avformat_free_context(fmt_ctx);
 }
-void sendFrame(const uint8_t* pkt_data, size_t pkt_len,CodingType type,uint64_t pts_us ,void* user_arg)
+void sendFrame(const uint8_t *pkt_data, size_t pkt_len, CodingType type, uint64_t pts_us, void *user_arg)
 {
-    FILE* fp = static_cast<FILE*>(user_arg);
+    FILE *fp = static_cast<FILE *>(user_arg);
     if (fp && pkt_len > 0)
     {
         fwrite(pkt_data, 1, pkt_len, fp);
-        printf("write pkt-size:%d\n",pkt_len);
+        printf("write pkt-size:%d\n", pkt_len);
     }
 }
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     auto cap = CreateCapture(CaptureType::CAPTURE_FFMPEG);
     if (!cap)
@@ -61,7 +62,7 @@ int main(int argc, char** argv)
         std::cerr << "create capture failed\n";
         return -1;
     }
-    std::string fileName="1.mp4";
+    std::string fileName = "1.mp4";
     printMediaInfo(fileName);
     if (!cap->open(fileName))
     {
@@ -71,13 +72,13 @@ int main(int argc, char** argv)
     std::cout << "open mp4 success\n";
 
     FrameBuffer fb;
-    int hw_stride = ((1080 + 127)/128)*128; // 1080 →1152
+    int hw_stride = ((1080 + 127) / 128) * 128; // 1080 →1152
     size_t buf_size = (size_t)hw_stride * 1920 * 3 / 2;
     if (!fb.allocate(buf_size))
         return -1;
 
     // ========= 打开h265输出文件 =========
-    FILE* h265_fp = fopen("out.h265", "wb");
+    FILE *h265_fp = fopen("out.h265", "wb");
     if (!h265_fp)
     {
         std::cerr << "cannot open out.h265\n";
@@ -93,25 +94,27 @@ int main(int argc, char** argv)
     MppEncoder enc;
     // 先用第一帧分辨率打开编码器，先读到一帧再初始化编码器
     bool encoder_ready = false;
-    enc.set_encode_callback(sendFrame,(void*)h265_fp);
+    enc.set_encode_callback(sendFrame, (void *)h265_fp);
 
     while (cap->read_frame(fb))
     {
         auto frame_start = std::chrono::high_resolution_clock::now();
         cnt++;
         std::cout << "frame " << cnt << " w:" << fb.width << " h:" << fb.height << "\n";
-        
+
 #if 1
         // 第一次拿到图像，初始化编码器
-        if(!encoder_ready)
+        if (!encoder_ready)
         {
             std::cout << " -> pre open encoder\n";
             // 25fps，你可以改成视频原生fps
-            if(enc.open(fb.width, fb.height,CodingType::VIDEO_CodingH264, 30,500))
+            if (enc.open(fb.width, fb.height, CodingType::VIDEO_CodingH264, 30, 500))
             {
                 encoder_ready = true;
                 std::cout << " -> encoder open success\n";
-            }else{
+            }
+            else
+            {
                 std::cerr << "encoder open fail!\n";
                 fb.release();
                 break;
@@ -120,7 +123,7 @@ int main(int argc, char** argv)
 
         // ========== 送入帧进行H265编码 ==========
         std::string h265_bitstream;
-        if(enc.encode(fb))
+        if (enc.encode(fb))
         {
             printf(" --successfully encode frame\n");
             // 把h265裸流写入文件

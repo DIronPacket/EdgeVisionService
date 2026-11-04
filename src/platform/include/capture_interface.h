@@ -30,7 +30,7 @@ public:
      * @param frame 输出帧
      * @return false表示流结束/断开
      */
-    virtual bool read_frame(FrameBuffer& frame) = 0;
+    virtual bool read_frame(FrameBuffer* frame) = 0;
     
     virtual void set_capture_callback(CaptureFrameCallback cb, void* user_arg) = 0;
     /**
