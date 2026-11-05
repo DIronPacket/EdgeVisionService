@@ -34,6 +34,13 @@ public:
     
     virtual void set_capture_callback(CaptureFrameCallback cb, void* user_arg) = 0;
     /**
+     * @brief 设置输出（缩放后）分辨率，必须在 open() 之前调用
+     * 默认空实现：不支持缩放的采集源保持自身原始尺寸，行为不变
+     * @param w 目标宽
+     * @param h 目标高
+     */
+    virtual void set_output_size(int w, int h) { (void)w; (void)h; }
+    /**
      * @brief 关闭，释放所有资源
      */
     virtual void close() = 0;

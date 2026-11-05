@@ -43,6 +43,12 @@ private:
   json cfg_;
   std::mutex cfg_mtx_;
 
+  // 推流输出分辨率与帧率（由 set_data 从 config/push.json 解析，
+  // 采集到的原始帧会缩放到该尺寸，从而保证与 PushNode 声明的分辨率一致）
+  int out_width_ = 1920;
+  int out_height_ = 1080;
+  int out_fps_ = 30;
+
   std::unique_ptr<CaptureInterface> m_capture;
 };
 

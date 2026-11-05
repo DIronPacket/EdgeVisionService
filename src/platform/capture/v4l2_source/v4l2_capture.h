@@ -22,6 +22,8 @@ public:
     bool open(const std::string &src) override;
     bool read_frame(FrameBuffer *frame) override; // 【核心】同步读帧
     void set_capture_callback(CaptureFrameCallback cb, void *user_arg) override { /* 拉取模式不需要回调 */ }
+    // 设置缩放输出分辨率（NV12 要求宽高为偶数），必须在 open() 之前调用
+    void set_output_size(int w, int h) override;
     void close() override;
     bool is_opened() const override;
 

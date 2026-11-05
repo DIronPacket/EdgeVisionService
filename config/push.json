@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "EdgeVisionService 推流配置。改完直接重跑 testnode 即可生效，无需重新编译。",
+    "",
+    "width / height      推流分辨率（须为偶数）。ViNode + V4L2 采集会把摄像头画面缩放到该尺寸；",
+    "                     ffmpeg 采集不做缩放，尺寸不一致时 PushNode 会告警并提示改配置。",
+    "codec               h264 | h265（也接受 avc / hevc 别名）。",
+    "protocol            rtsp | tcp | udp | rtmp",
+    "                      rtsp  = 本机启动 RTSP 服务，播放端拉 rtsp://<板端IP>:<port>/<app>/<stream>",
+    "                      tcp   = 等价于 rtsp + transport=tcp（推荐写法仍是 rtsp + transport）",
+    "                      udp   = 等价于 rtsp + transport=udp",
+    "                      rtmp  = 【当前后端未实现】会被明确报错并跳过推流，需要扩展 platform/rtsp",
+    "transport           tcp | udp。RTSP 服务端本身两种都支持，实际由播放端 SETUP 决定；",
+    "                    这里只做记录与日志，不改变服务端行为。",
+    "port                本机 RTSP 服务监听端口；启动失败时日志会打印 ZLM_ERR_* 错误码。",
+    "app / stream        流路径：rtsp://<ip>:<port>/<app>/<stream>，播放地址由此决定。",
+    "fps                 编码帧率。",
+    "bitrate_kbps        编码目标码率，单位 kbps（MPP 硬编实际输出，不是 ZLM 的声明值）。",
+    "gop                 【预留】关键帧间隔，当前 EncoderInterface 未暴露该参数，配置了也不会生效。",
+    "enable              false 时只跑采集与流水线，不启动推流（方便只调采集）。"
+  ],
+  "push": {
+    "enable": true,
+    "width": 1920,
+    "height": 1080,
+    "codec": "h265",
+    "protocol": "rtsp",
+    "transport": "tcp",
+    "port": 8550,
+    "app": "live",
+    "stream": "ch0",
+    "fps": 30,
+    "bitrate_kbps": 4096,
+    "gop": 30
+  }
+}

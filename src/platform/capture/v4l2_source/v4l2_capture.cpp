@@ -45,6 +45,19 @@ bool V4l2Capture::parse_src_param(const std::string &src, std::string &dev_path,
     return true;
 }
 
+void V4l2Capture::set_output_size(int w, int h)
+{
+    // NV12 要求宽高为偶数；sws 上下文在 open() 里按该尺寸创建，所以必须先调用本函数
+    if (w <= 0 || h <= 0 || (w % 2) != 0 || (h % 2) != 0)
+    {
+        std::cerr << "V4l2Capture: 非法输出分辨率 " << w << "x" << h
+                  << "（需为正偶数），保持 " << m_dst_width << "x" << m_dst_height << std::endl;
+        return;
+    }
+    m_dst_width = w;
+    m_dst_height = h;
+}
+
 bool V4l2Capture::open(const std::string &src)
 {
     if (m_opened)

@@ -54,12 +54,36 @@ void ViNode::set_data(const char *config_str)
     // 2. 解析 JSON
     json j = json::parse(config_str);
 
-    // 3. 使用 JSON
-    if (j.contains("width"))
+    // 兼容 {"push":{...}}、{"push":[{...}]} 与直接 {...} 三种写法
+    if (j.contains("push"))
     {
-      int w = j["width"];
-      std::cout << "Width: " << w << std::endl;
+      if (j["push"].is_object())
+        j = j["push"];
+      else if (j["push"].is_array() && !j["push"].empty())
+        j = j["push"][0];
     }
+
+    cfg_ = j;
+
+    // 3. 采集输出分辨率 / 帧率：与 PushNode 共用同一份配置，
+    //    保证「采集缩放后的尺寸」与「推流声明的尺寸」一致，否则播放端会花屏
+    out_width_ = j.value("width", out_width_);
+    out_height_ = j.value("height", out_height_);
+    out_fps_ = j.value("fps", out_fps_);
+
+    if (out_width_ <= 0 || out_height_ <= 0 ||
+        (out_width_ % 2) != 0 || (out_height_ % 2) != 0)
+    {
+      std::cerr << "[ViNode] 输出分辨率非法: " << out_width_ << "x" << out_height_
+                << "（需为正偶数），回退 1920x1080" << std::endl;
+      out_width_ = 1920;
+      out_height_ = 1080;
+    }
+    if (out_fps_ <= 0)
+      out_fps_ = 30;
+
+    std::cout << "[ViNode] 采集输出分辨率: " << out_width_ << "x" << out_height_
+              << " fps=" << out_fps_ << std::endl;
   }
   catch (const json::parse_error &e)
   {
@@ -78,8 +102,8 @@ void ViNode::run()
   bool is_open = false;
   m_capture = CreateCapture(CaptureType::CAPTURE_V4L2);
 
-  // 【新增】设定目标帧率和帧间隔
-  const int TARGET_FPS = 30;
+  // 【新增】设定目标帧率和帧间隔（帧率来自 config/push.json 的 fps）
+  const int TARGET_FPS = (out_fps_ > 0) ? out_fps_ : 30;
   const auto frame_duration = std::chrono::microseconds(1000000 / TARGET_FPS); // 33333 微秒
   while (running_.load())
   {
@@ -94,12 +118,15 @@ void ViNode::run()
       // printf("############# vi :%p,vi-data:%p\n", (void *)fb, (void *)fb->data);
       if (!is_open)
       {
+        // 先把配置的分辨率设为采集层的缩放目标（sws 上下文在 open() 里按此创建）
+        m_capture->set_output_size(out_width_, out_height_);
         if (!m_capture->open(fileName))
         {
           std::cerr << "open file failed:" << fileName << "\n";
           break;
         }
-        printf("successfully open stream:%s\n", fileName.c_str());
+        printf("successfully open stream:%s, output=%dx%d\n", fileName.c_str(),
+               out_width_, out_height_);
         is_open = true;
       }
       // 记录当前帧的开始时间
