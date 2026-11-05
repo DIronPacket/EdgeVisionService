@@ -29,6 +29,9 @@ EdgeVisionService/
 │   │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3] + stride[3]）
 │   │   ├── type_registry.h     # 旧版注册辅助（RegisterAll）
 │   │   ├── json.hpp            # nlohmann/json 单头库
+│   │   ├── profiler/           # 耗时统计（header-only）
+│   │   │   ├── node_profiler.h # NodeProfiler：节点名 + 开始/结束时间戳、报表
+│   │   │   └── block_profiler.h# get_profiler(block) 取用 + NodeCostScope（RAII）
 │   │   └── MemManager/         # 内存池实现（正在使用）
 │   │       ├── MemMeta.h       # MemMeta + MemSlot<T>
 │   │       ├── MemPool.h/.cpp  # MemBlock / MemQueue / MemPool 单例
@@ -42,7 +45,8 @@ EdgeVisionService/
 │   ├── pipeline/
 │   │   ├── pipeline_node.h/.cpp# PipelineNode（裸指针、MemQueue）
 │   │   ├── moudle_vi/          # 采集源节点 ViNode
-│   │   └── moudle_push/        # 编码推流节点 PushNode
+│   │   ├── moudle_push/        # 编码推流节点 PushNode
+│   │   └── moudle_print/       # 耗时打印节点 PrintNode（流水线终点）
 │   └── main/
 │       ├── main.cpp            # 目前仅为打印入口
 │       └── test/               # testnode / testpool / 旧测试（部分未编译）
@@ -61,7 +65,7 @@ EdgeVisionService/
                 │
 ┌───────────────▼──────────────────────────────┐
 │ pipeline_api（业务节点）                       │
-│   PipelineNode / ViNode / PushNode            │
+│   PipelineNode / ViNode / PushNode / PrintNode │
 └───────────────┬──────────────────────────────┘
                 │ PUBLIC platform_api
 ┌───────────────▼──────────────────────────────┐
@@ -90,19 +94,26 @@ V4L2 /dev/video0 ─┐
 mp4 / RTSP 文件 ──┘
         │
         ▼
-┌──────────────────────────────┐       ┌──────────────────────────────┐
-│ ViNode（独立线程）             │       │ PushNode（独立线程）           │
-│ 1. m_queue.getBlock(100ms)   │       │ 1. m_queue.getBlock(100ms)   │
-│ 2. 从 MemMeta 取 FrameBuffer  │       │ 2. 从 MemMeta 取 FrameBuffer  │
-│ 3. 采集并做 30fps 节流        │       │ 3. MppEncoder::encode()      │
-│ 4. push_input_pipe(block)    │──────▶│ 4. 编码回调 → ZLM 推流        │
-│ 5. m_queue.release(block)    │ 队列   │ 5. push_input_pipe / release │
-└──────────────────────────────┘       └───────────────┬──────────────┘
-                                                       │ H.264/H.265 裸流
-                                                       ▼
-                                         ZLMediaKit RTSP Server
-                                         rtsp://<ip>:8550/live/ch0
+ViNode（独立线程）       getBlock → 取 FrameBuffer → 采集 + 30fps 节流（节流不计入耗时）
+        │               profiler: begin("vi0") / end("vi0") 包住 read_frame
+        ▼  push_input_pipe(block)（队列深 20，满则丢最老帧）
+PushNode（独立线程）     getBlock → 取 FrameBuffer → MppEncoder::encode()
+        │               profiler: begin("rtsp0") / end("rtsp0") 包住 encode
+        │               编码回调 → zlm_rtsp_input_encodeData() → ZLMediaKit RTSP Server
+        ▼  push_input_pipe(block)
+PrintNode（独立线程）    getBlock → 取 profiler → 按 print.interval 打印各节点耗时与合计
+        │
+        ▼  m_queue.release(block) 归还池子（MemBlock::reset() 顺带清空 profiler）
 ```
+
+报表形如（`print.interval=30`，即每 30 帧一行）：
+
+```text
+[print0] frame#60 耗时(ms): vi0=8.160 rtsp0=6.468 | 节点合计=14.628 首尾跨度=39.999
+```
+
+- **节点合计** = 各节点 `end - begin` 之和（纯处理耗时）。
+- **首尾跨度** = 第一个节点开始到最后一个节点结束的墙钟时间，包含节点间排队与 `ViNode` 的帧率节流，因此会明显大于节点合计。
 
 ### 2.3 内存/流水线模型
 
@@ -115,13 +126,14 @@ mp4 / RTSP 文件 ──┘
 | 队列 | `MemQueue`（`OWNER` / `USER`） |
 | 生命周期 | 队列名 + `user_cnt` 增减 |
 | 节点接口 | `create(int, name)`、`set_data(const char*)`、裸指针 `link_to` |
+| 节点耗时 | 每块一个 `profile::NodeProfiler`（`MemMeta` slot `"profiler"`），节点 `begin/end` 写入；块回收时清空 |
 | 构建接入 | ✅ 被 `src/common/CMakeLists.txt` 和 `pipeline` 使用 |
 
 已知短板：块没有独立的引用计数，多下游分支时会出现“一个分支归还后块被复用，另一个分支仍在读”的问题，详见 [STATUS.md](STATUS.md) 的 4.1 / 5.2。
 
 ### 2.4 线程、队列与背压
 
-- **每个节点一个线程**：`ViNode::run()`、`PushNode::run()` 各自 loop，`std::atomic<bool> running_` 控制退出。
+- **每个节点一个线程**：`ViNode::run()`、`PushNode::run()`、`PrintNode::run()` 各自 loop，`std::atomic<bool> running_` 控制退出（**必须在构造函数里显式初始化为 `false`**，C++14 的 `std::atomic` 默认构造不写值）。
 - **队列容量**：`MemQueue::InitQueue(name, 20)`，队列满时 `push()` 丢弃最老的一帧并归还池子（drop-oldest）。
 - **取帧超时**：`getBlock(100)` 毫秒，拿不到就回到循环检查 `running_`，停止延迟最多约 100ms。
 - **引用计数**：`acquire()` 时 `addUser(owner)`；每个消费者队列 `pushBlock()` 再 `addUser(queue_name)`；消费者 `release()` 时 `subUser()`，计数归零才 `reset()` 并放回 `free_list_`。当前链路是单消费者，模型可用；多下游分支时会出现“一个分支归还后块被复用，另一个分支仍在读”的问题（见 [STATUS.md](STATUS.md)）。

@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`283bab5`。
+> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`9678e42`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -17,12 +17,12 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路可跑通，未产品化（推流参数已可配，仍无日志 / 单测 / CI） |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `283bab5`（后续纯 `docs:` 提交不算基线漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `9678e42`（后续纯 `docs:` 提交不算基线漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
-| 最大问题 | P0 共 11 项（其中 P0-4 已修复，剩 10 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 最大问题 | P0 共 12 项（其中 P0-4、P0-12 已修复，剩 10 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
@@ -68,8 +68,8 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `283bab5 pipeline: 用 config/push.json 驱动采集尺寸与推流编码/协议`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
-| 前几个提交 | `af6b307`、`aa5846d`、`15e4438`、`e30ccb3`（均为 `docs:`）、`787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库共 6 个提交） |
+| HEAD | `9678e42 pipeline: 新增节点耗时统计与打印节点`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
+| 前几个提交 | `283bab5`（`config/push.json` 配置化）、`fa082f7`（`docs:`），再往前 `af6b307`、`aa5846d`、`15e4438`、`e30ccb3`（均为 `docs:`）、`787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库共 8 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
@@ -97,7 +97,7 @@ EdgeVisionService/
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
-├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口
+├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口 / print 打印间隔
 ├── scripts/                    # 空（部署脚本未落地）
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
@@ -109,11 +109,13 @@ EdgeVisionService/
     │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size）
     │   ├── type_registry.h     # 旧版注册辅助，当前无人使用
     │   ├── json.hpp            # nlohmann/json 单头库
+    │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
     │   └── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
     ├── pipeline/               #                      → libpipeline_api.so
     │   ├── pipeline_node.{h,cpp}   # 节点基类：link_to / push_input_pipe / push_data / m_queue
     │   ├── moudle_vi/              # ViNode：采集源节点
     │   ├── moudle_push/            # PushNode：编码 + 推流节点
+    │   ├── moudle_print/           # PrintNode：终点节点，打印各节点耗时与合计
     │   └── moudle_vpss/            # 空目录（git 不跟踪）
     ├── platform/               #                      → platform_api（INTERFACE 聚合层）
     │   ├── include/            # capture / decoder / encoder / processor 四个抽象接口
@@ -128,7 +130,7 @@ EdgeVisionService/
 
 必须知道的四条：
 
-1. **`moudle_vi` / `moudle_push` 是历史拼写错误**（正确为 `module`）。重命名会牵动 CMake 与 `#include`，属于独立任务，**不要顺手改**。
+1. **`moudle_vi` / `moudle_push` / `moudle_print` 是历史拼写错误**（正确为 `module`）。重命名会牵动 CMake 与 `#include`，属于独立任务，**不要顺手改**（`moudle_print` 是后加的，为与既有目录保持一致沿用了同样的拼写）。
 2. `src/pipeline/moudle_vpss/`、`src/platform/capture/desktop_source/` 是**空目录**，git 不跟踪，重 clone 不存在。
 3. `BUILD_RTSP_MODULE` 在 `src/platform/CMakeLists.txt:34` 被使用，但**源码里从未 `option()` 定义**（P1-2）。因此：
    - **干净配置（新 build 目录）不会编译 `rtsp`**，`zlm_push_server.cpp` 不参与构建（已实测：`/tmp` 下全新配置的目标只有 `common_api`/`capture`/`encoder`/`decoder`/`pipeline_api`/`EdgeVisionService`/`testnode`）；
@@ -164,17 +166,21 @@ exec "${SCRIPT_DIR}/bin/$@"
 ## 1.6 运行时主链路（代码级）
 
 ```text
-MemManager::getInstance().MemInit(50)        // 预建 50 块 1920x1080 NV12，挂到 MemPool 全局 free_list_
+MemManager::getInstance().MemInit(50)        // 预建 50 块 1920x1080 NV12，每块再挂一个 NodeProfiler
         │
         ▼
 ViNode::create(0, "vi")   → start()          // 独立线程 run()：按通道取 CaptureInterface，30fps 节流
    采集：FfmpegCapture / V4l2Capture → 写 FrameBuffer(NV12, stride 128 对齐) → MemMeta::set_ptr
+   耗时：profiler->begin("vi0") / end("vi0") 包住 read_frame（不含末尾的节流 sleep）
         │
         ▼  push_input_pipe(block)  → 下游 m_queue.pushFrame(block)（深度 20，满则丢最老帧）
 PushNode::create(0, "rtsp") → start()        // 独立线程 run()：MppEncoder，codec/fps/码率来自 config/push.json
-        │  编码回调 EncodedPacket → zlm_rtsp_input_encodeData()
+        │  编码回调 EncodedPacket → zlm_rtsp_input_encodeData() → ZLMediaKit RTSP Server
+        │  耗时：profiler->begin("rtsp0") / end("rtsp0") 包住 encode
         ▼
-ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<stream>（端口/app/stream 来自 config/push.json）
+PrintNode::create(0, "print") → start()      // 终点：按 print.interval 打印各节点耗时与合计（默认每 30 帧）
+        │
+        ▼  m_queue.release(block) 归还池子（MemBlock::reset() 顺带清空 profiler，下一帧从零开始）
 ```
 
 节点连接关系存在 `PipelineNode::next_nodes_` / `parent_nodes_`（**公有裸指针 `std::list`**），`link_to()` 双向登记。`PipelineNode` 继承 `std::enable_shared_from_this`，但链路本身用裸指针。
@@ -195,9 +201,9 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<strea
 | --- | --- | --- |
 | `MemPool`（单例） | `getInstance()` · `addBuffer(MemMeta*)` · `acquire(name)` · `release(block,name)` · `pushBlock(block,name)` · `registerQueue(queue,name)` · `delGetBlock()` | 全局 `free_list_` 单锁 `free_mtx_`；**`Size()` 读 size 未加锁（P1-9）** |
 | `MemQueue` | `InitQueue(name, size=20, type)` · `getBlock(timeout=100)` · `pushFrame(block)` · `release(block)` · `release(block,name)` · `Size()` | `QueueType::OWNER`（源头取空块）/ `USER`（下游收块）；满则 drop-oldest |
-| `MemBlock` | `data()`→`MemMeta*` · `userCnt()` · `setOwner/addUser/subUser` · `reset()` | 引用计数是"名字列表"实现，**多下游扇出时不可靠（P0-5）** |
+| `MemBlock` | `data()`→`MemMeta*` · `userCnt()` · `setOwner/addUser/subUser` · `reset()` | 引用计数是"名字列表"实现，**多下游扇出时不可靠（P0-5）**；`reset()` 同时清空块上的 `NodeProfiler` |
 | `MemMeta` | `set_ptr<T>(name,ptr)` · `data<T>(name)` · `has(name)` | 内部 `void*` + `MemSlot<T>`，**类型写错即 UB（P1-10）**；无析构，覆盖同名即泄漏（P0-11） |
-| `MemManager`（单例） | `MemInit(size=50)` · `FreeMem()` · `addImgConfig(ImgConfig)` | 只负责"建块 + 挂 FrameBuffer"，**`MemInit` 里 `new MemBlock` 后未使用、`FreeMem` 不删 FrameBuffer（P0-9）** |
+| `MemManager`（单例） | `MemInit(size=50)` · `FreeMem()` · `addImgConfig(ImgConfig)` | 建块时挂 `FrameBuffer` + `profile::NodeProfiler`（slot 名 `"profiler"`）；**`MemInit` 里 `new MemBlock` 后未使用、`FreeMem` 不删 `FrameBuffer`（P0-9）** |
 | `FrameBuffer` | `Allocate(w,h,fmt,align)` · `BindMemory(base,w,h,fmt,align)` · 字段 `data[3]/stride[3]/fmt/width/height/capacity/data_size/timestamp_ms` | 只是**视图**，注释明确"不拥有内存"；但 `Allocate()` 会 `new[]`（语义矛盾，P0-10） |
 
 编码器 / 推流的常用入口：
@@ -206,18 +212,26 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<strea
 - `CaptureInterface`：`open(uri)` · `read_frame(FrameBuffer*)` · `set_capture_callback` · `close()`；工厂 `CreateCapture(CaptureType)`（`CAPTURE_FFMPEG` / `CAPTURE_V4L2`）。
 - ZLM 封装（`zlm_push_server.h`）：`zlm_rtsp_onekey_start(...)` · `zlm_rtsp_input_encodeData(...)` · `zlm_rtsp_stop(...)`；**`stop` 的流 key 与注册时不一致（P0-6）、入参校验顺序错（P0-7）**。
 
+节点耗时统计（`src/common/profiler/`，两个 header-only 头文件，不产生 `.so` 符号）：
+
+- `profile::get_profiler(block)`（`block_profiler.h`）：从 block 的 `MemMeta` 取 `NodeProfiler*`；块/槽位缺失返回 `nullptr`，**调用方必须判空**。
+- `NodeProfiler::begin(节点名)` / `end(节点名)`（`node_profiler.h`）：节点拿到块后写开始时间戳、处理完传下游前写结束时间戳，内部用 `steady_clock` 微秒。
+- `report(frame_no)`：单行报表「各节点耗时 + 节点合计 + 首尾跨度」；`NodeCostScope` 是 RAII 版，**代码块里含等待下一帧的 sleep 时不要用**（会把空闲时间算进去）。
+- 挂在块上的 slot 名是 `profile::kProfilerSlot`（`"profiler"`），由 `MemManager::MemInit()` 注册、`MemBlock::reset()` 清空。
+
 ## 1.8 当前能力与缺口（摘要，明细看 STATUS.md）
 
 | 能力 | 现状 |
 | --- | --- |
 | 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；采集源参数（设备/源分辨率）仍硬编码，**输出分辨率已可配** |
 | 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
-| 流水线 | `ViNode → PushNode` 单链路；分辨率/帧率/codec/码率/端口已由 `config/push.json` 驱动，错误路径丢块仍未全修 |
+| 流水线 | `ViNode → PushNode → PrintNode` 单链路；分辨率/帧率/codec/码率/端口已由 `config/push.json` 驱动，错误路径丢块仍未全修 |
+| 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧） |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
 | 推流 | 单路 RTSP 可演示，参数来自 `config/push.json`；stop/空指针问题待修；`rtmp`/裸 RTP 未实现 |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
-**P0 共 11 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-4 已修复，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3（块泄漏），这两个改动小、收益大。**
+**P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-4、P0-12 已修复，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3（块泄漏），这两个改动小、收益大。**
 
 ## 1.9 任务 → 文件 索引表
 
@@ -229,6 +243,7 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<strea
 | 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
 | 改内存池/引用计数 | `common/MemManager/MemPool.{h,cpp}`、`MemMeta.h`、`MemManager.cpp` | `common/frame_buffer.h` |
 | 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt` |
+| 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
 | 装配服务入口 | `main/main.cpp`（当前空壳）、`main/test/main_node.cpp`（参考实现） | `main/CMakeLists.txt` |
 | 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
 | 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
@@ -366,7 +381,8 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<strea
 4. 在 `src/pipeline/CMakeLists.txt` 的 `target_sources` 里加 `.cpp`，必要时在 `target_include_directories` 加目录。
 5. 装配：先在 `src/main/test/main_node.cpp` 里连线验证（`MemInit` → `create` → `link_to` → `start`），稳定后再考虑接进 `main.cpp`。
 6. 若引入新的数据类型，用 `MemMeta::set_ptr<T>()` 挂 slot，并在初始化处声明。
-7. 多下游扇出前必须完成引用计数改造（见 §2.4 第 4 条）。
+7. 节点自身耗时统计：`profile::NodeProfiler *p = profile::get_profiler(block); p->begin(m_name); ... p->end(m_name);`（判空；`end` 要放在等待下一帧的 sleep 之前）。
+8. 多下游扇出前必须完成引用计数改造（见 §2.4 第 4 条）。
 
 ## R3 新增平台后端（例如 RGA 预处理）
 
@@ -449,5 +465,6 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-05 | 清理 remote 遗留的 `src/common/media/`、`src/pipeline/moudleRtsp/`，强推 `rk3588`；文档去除 media 试验框架描述 | `e30ccb3` |
 | 2026-11-05 | 新增 AI 自动接手入口 `.clinerules/00-handoff.md`、`AGENTS.md`；HANDOFF 增加 §0 事实卡、§0.1 按需跳读表；§1.2 坐标前移 | `15e4438` |
 | 2026-11-05 | 新增 `config/push.json` 推流配置（分辨率/编码/协议/端口/fps/码率）并打通到采集与推流节点；HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.8/§1.9，校准点前移 | `283bab5` |
+| 2026-11-05 | 新增节点耗时统计（`common/profiler`，每块一个 `NodeProfiler`）与终点节点 `PrintNode`，链路变为 vi→rtsp→print；顺手修掉 `ViNode`/`PushNode` 的 `std::atomic<bool> running_` 未初始化（P0-12）。HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.7/§1.8/§1.9/R2，校准点前移 | `9678e42` |
 
 [返回 README](../README.md)

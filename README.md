@@ -17,10 +17,11 @@
 ## 1. 现在能做什么
 
 - **采集**：`FfmpegCapture` 支持本地文件、摄像头、RTSP/RTMP/HTTP 输入；`V4l2Capture` 面向 RK 的 `/dev/video*`。两者统一输出 NV12 到内存池。
-- **内存池与流水线**：`MemManager::MemInit(50)` 预建 50 个 1920×1080 NV12 块；`ViNode → PushNode` 通过深度 20 的 `MemQueue` 连接，队列满时丢弃最老帧。
+- **内存池与流水线**：`MemManager::MemInit(50)` 预建 50 个 1920×1080 NV12 块；`ViNode → PushNode → PrintNode` 通过深度 20 的 `MemQueue` 连接，队列满时丢弃最老帧。
 - **硬件编码**：`MppEncoder` 支持 H.264/H.265，NV12 输入、128 字节 stride 对齐、固定 QP 33、GOP 150，回调输出裸流。
 - **RTSP 推流**：通过 ZLMediaKit C API 启动 RTSP 服务、创建流并送 H.264/H.265，默认地址 `rtsp://<ip>:8550/live/ch0`。
-- **节点编排**：`PipelineNode` 提供 `link_to` / `push_input_pipe` / `push_data`，`ViNode` 与 `PushNode` 的线程启停可运行。
+- **节点编排**：`PipelineNode` 提供 `link_to` / `push_input_pipe` / `push_data`，`ViNode` / `PushNode` / `PrintNode` 的线程启停可运行。
+- **耗时统计**：每个块挂一个 `profile::NodeProfiler`，各节点记录自己的开始/结束时间戳，终点 `PrintNode` 按配置周期打印「各节点耗时 + 节点合计 + 首尾跨度」。
 
 当前限制：
 
@@ -40,10 +41,13 @@ ViNode（独立线程：采集 + 30fps 节流）
         │ MemQueue（深度 20，drop-oldest）
         ▼
 PushNode（独立线程：MPP H.264/H.265 编码）
-        │ 编码裸流
+        │ 编码裸流 ──────────────▶ ZLMediaKit RTSP Server
+        │ MemQueue                rtsp://<ip>:8550/live/ch0
         ▼
-ZLMediaKit RTSP Server
-rtsp://<ip>:8550/live/ch0
+PrintNode（独立线程：打印各节点耗时，配置项 `print`）
+        │ 归还 MemBlock
+        ▼
+     内存池
 ```
 
 当前是**单消费者链路**；RGA/OSD/录像/AI 并行后需要块级引用计数支持一源多下游。分层、内存模型、线程/背压和平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

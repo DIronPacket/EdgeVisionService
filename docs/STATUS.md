@@ -20,7 +20,7 @@
 | MPP 解码 | `decoder/rk_mpp_decoder.*` | 🔴 35% | 流程草稿；回调前未分配 `FrameBuffer` 内存即 `memcpy`，会崩溃；未接入流水线 |
 | FFmpeg 解码 | `decoder/ffmpeg_decoder.*` | 🔴 15% | 使用已删除的 `avcodec_register_all()`；引用不存在的 `FrameBuffer::linesize/pixel_fmt`；未编译 |
 | RTSP 推流封装 | `platform/rtsp/zlm_push_server.*` | 🟡 65% | 一键起服务/建流、送 H.264/H.265、停止释放；存在停止 key 不匹配、空指针解引用等问题 |
-| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push` | 🟡 65% | Vi→Push 单链路可演示；推流分辨率/编码/协议/fps/码率已由 `config/push.json` 驱动；采集源路径与编码 QP 仍硬编码、错误路径丢块、无多分支引用计数 |
+| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print` | 🟡 70% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由 `config/push.json` 驱动；各节点耗时已可采集并周期打印；采集源路径与编码 QP 仍硬编码、错误路径丢块、无多分支引用计数 |
 | 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp` |
 | 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 25% | 有编码/推流/节点/内存池手工测试；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
@@ -41,7 +41,11 @@
    - `zlm_rtsp_input_encodeData()` 按 H.264/H.265 调用 `mk_media_input_h264/265`。
    - `zlm_rtsp_stop()` 按引用计数停止流与服务。
 5. **节点编排**
-   - `PipelineNode` 提供 `link_to` / `push_input_pipe` / `push_data`，`ViNode` → `PushNode` 的连线与线程启停已可运行。
+   - `PipelineNode` 提供 `link_to` / `push_input_pipe` / `push_data`，`ViNode` → `PushNode` → `PrintNode` 的连线与线程启停已可运行。
+6. **耗时统计**
+   - `MemManager::MemInit()` 给每块挂一个 `profile::NodeProfiler`（`MemMeta` slot `"profiler"`），块回收时由 `MemBlock::reset()` 清空。
+   - `ViNode` / `PushNode` 在拿到块后 `begin(节点名)`、处理完传下游前 `end(节点名)`（`steady_clock` 微秒；采集侧的节流 sleep 不计入）。
+   - 终点 `PrintNode` 按 `config/push.json` 的 `print.interval`（默认 30 帧）打印单行报表：各节点耗时 + 节点合计 + 首尾跨度；打印后归还块。
 
 ## 3. 占位与未完成
 
@@ -69,6 +73,7 @@
 | 9 | `MemManager::MemInit()` 中 `new MemBlock` 后未使用；`FreeMem()` 只删 `MemMeta`，不删 `FrameBuffer` | `common/MemManager/MemManager.cpp:22-34`、`40-54` | 每次初始化/退出均泄漏内存与对象 |
 | 10 | `FrameBuffer` 无析构、可拷贝、`Allocate()` 后再 `BindMemory()` 会覆盖指针 | `common/frame_buffer.h:16-125` | 裸指针生命周期不可控，易双重释放/泄漏 |
 | 11 | `MemMeta` 无析构，`set_ptr()` 覆盖同名指针时旧 `MemSlot` 泄漏 | `common/MemManager/MemMeta.h:46-79` | 长时间运行内存持续增长 |
+| 12 | ✅ 已修复（`9678e42`）：`ViNode` / `PushNode` 的 `std::atomic<bool> running_` 未初始化（C++14 默认构造不写值） | `moudle_vi.cpp::ViNode`、`moudle_push.cpp::PushNode` | 内存脏值时 `start()` 里 `running_.exchange(true)` 直接返回，节点线程根本不起，整条链路静默堵死 |
 
 ### 4.2 P1：功能正确性 / 稳定性 / 性能
 
