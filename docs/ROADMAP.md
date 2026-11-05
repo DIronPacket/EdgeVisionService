@@ -31,7 +31,7 @@
 
 | 能力 | 当前事实 | 需要补的内容 |
 | --- | --- | --- |
-| H.264 | `MppEncoder` 已支持 `MPP_VIDEO_CodingAVC`；但 `PushNode` 与 `zlm_rtsp_onekey_start()` 把编码类型、码率写死为 H.265/2Mbps | 配置化 + H.264 SPS/PPS 实机验证，约 1–2 天可先跑通 |
+| H.264 | `MppEncoder` 已支持 `MPP_VIDEO_CodingAVC`；`config/push.json` 的 `codec` 已可切到 h264（编码器与 ZLM 声明同步，提交 `283bab5`），但未做实机 SPS/PPS 与播放器兼容性验证 | h264 板端出流验证，约 1–2 天 |
 | RGA | `install/rk3588` 已有 `librga.so` 与 `rockchip/im2d*.h`；`FindRGA.cmake` 存在但从未被引用 | 新建 `processor` 模块，扩展 `ProcessorInterface` |
 | OSD | 无 OSD 代码；`install` 中没有 FreeType/OpenCV | 引入 `stb_truetype` 渲染字体，RGA 叠加，先做板端 PoC |
 | 录像 | FFmpeg `libavformat` 已就绪；ZLM 头文件含 `mk_recorder.h`；项目内无录像节点 | 增加 `EncodedPacket` 分发与 MP4 封装节点 |

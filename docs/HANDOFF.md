@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`15e4438`。
+> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`283bab5`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -16,13 +16,13 @@
 | 项 | 值 |
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
-| 主线状态 | 单链路可跑通，未产品化（无配置化 / 日志 / 单测 / CI） |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `15e4438`（后续纯 `docs:` 提交不算基线漂移） |
+| 主线状态 | 单链路可跑通，未产品化（推流参数已可配，仍无日志 / 单测 / CI） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `283bab5`（后续纯 `docs:` 提交不算基线漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
-| 最大问题 | P0 共 11 项（构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 最大问题 | P0 共 11 项（其中 P0-4 已修复，剩 10 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
@@ -61,15 +61,15 @@
 边缘视觉服务原型：**V4L2/FFmpeg 采集 → 统一内存池 `MemBlock` → `PipelineNode` 节点流水线 → MPP 硬编码 → ZLMediaKit RTSP 推流**。
 主目标平台 RK3588S（本机即板端，原生 aarch64 编译）；x86_64 是规划中的开发调试目标，**当前不可用**。
 
-当前阶段：**原型链路已跑通，未产品化**。没有配置化、没有日志/指标、没有单测/CI。
+当前阶段：**原型链路已跑通，未产品化**。推流参数已由 `config/push.json` 配置化（采集源路径、编码 QP 仍未配置化），没有日志/指标、没有单测/CI。
 
 ## 1.2 关键坐标（2026-11-05 快照）
 
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `15e4438 docs: 新增 AI 接手自动入口与文档跳读表，降低接手 token 成本`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
-| 前两个提交 | `e30ccb3 docs: 新增 README 与架构/现状/路线图文档，移除 media 试验框架相关描述`、`787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库共 3 个提交） |
+| HEAD | `283bab5 pipeline: 用 config/push.json 驱动采集尺寸与推流编码/协议`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
+| 前几个提交 | `af6b307`、`aa5846d`、`15e4438`、`e30ccb3`（均为 `docs:`）、`787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库共 6 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
@@ -97,7 +97,7 @@ EdgeVisionService/
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
-├── config/                     # 空（配置化未落地）
+├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口
 ├── scripts/                    # 空（部署脚本未落地）
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
@@ -171,10 +171,10 @@ ViNode::create(0, "vi")   → start()          // 独立线程 run()：按通道
    采集：FfmpegCapture / V4l2Capture → 写 FrameBuffer(NV12, stride 128 对齐) → MemMeta::set_ptr
         │
         ▼  push_input_pipe(block)  → 下游 m_queue.pushFrame(block)（深度 20，满则丢最老帧）
-PushNode::create(0, "rtsp") → start()        // 独立线程 run()：MppEncoder 硬编码 H.265
+PushNode::create(0, "rtsp") → start()        // 独立线程 run()：MppEncoder，codec/fps/码率来自 config/push.json
         │  编码回调 EncodedPacket → zlm_rtsp_input_encodeData()
         ▼
-ZLMediaKit RTSP Server                        // rtsp://<ip>:8550/live/ch0（参数多处硬编码）
+ZLMediaKit RTSP Server                        // rtsp://<ip>:<port>/<app>/<stream>（端口/app/stream 来自 config/push.json）
 ```
 
 节点连接关系存在 `PipelineNode::next_nodes_` / `parent_nodes_`（**公有裸指针 `std::list`**），`link_to()` 双向登记。`PipelineNode` 继承 `std::enable_shared_from_this`，但链路本身用裸指针。
@@ -185,6 +185,7 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:8550/live/ch0（参
 - `ViNode` 写死 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` 后解引用（P0-2）。
 - `PushNode` 编码器是**值成员** `MppEncoder enc`（不是接口指针），`EncoderInterface` 抽象未真正生效。
 - 队列丢帧、丢帧计数、背压都没有对外开放。
+- 配置只覆盖「采集输出分辨率/帧率 + 编码 codec/fps/码率 + RTSP 端口/app/stream」；`gop` 字段已解析但 `EncoderInterface` 没暴露，**暂不生效**；`rtmp`/裸 RTP 协议**后端未实现**，写进配置会明确报错并跳过推流。
 
 ## 1.7 内存池与节点 API 速查（改代码前先看这段）
 
@@ -209,22 +210,23 @@ ZLMediaKit RTSP Server                        // rtsp://<ip>:8550/live/ch0（参
 
 | 能力 | 现状 |
 | --- | --- |
-| 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`、参数硬编码 |
+| 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；采集源参数（设备/源分辨率）仍硬编码，**输出分辨率已可配** |
 | 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
-| 流水线 | `ViNode → PushNode` 单链路；配置未解析、错误路径丢块 |
+| 流水线 | `ViNode → PushNode` 单链路；分辨率/帧率/codec/码率/端口已由 `config/push.json` 驱动，错误路径丢块仍未全修 |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
-| 推流 | 单路 RTSP 可演示；stop/空指针问题待修 |
-| 未落地 | RGA 预处理、OSD、录像、多通道、配置化、日志/指标/健康检查、单测、CI、Docker、OTA |
+| 推流 | 单路 RTSP 可演示，参数来自 `config/push.json`；stop/空指针问题待修；`rtmp`/裸 RTP 未实现 |
+| 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
-**P0 共 11 项**（构建失败 / 必现崩溃 / 资源泄漏），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3/4（块泄漏），这三个改动小、收益大。**
+**P0 共 11 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-4 已修复，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3（块泄漏），这两个改动小、收益大。**
 
 ## 1.9 任务 → 文件 索引表
 
 | 我要做的事 | 主文件 | 关联 |
 | --- | --- | --- |
+| 改推流分辨率/编码(h264,h265)/协议/端口 | `config/push.json`（改完重跑 `testnode` 即生效，无需重编） | `moudle_push.cpp::set_data`、`moudle_vi.cpp::set_data` |
 | 改采集行为 | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp` | `capture_interface.h`、`capture_factory.cpp` |
-| 改编码参数（码率/QP/GOP/H.264） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `moudle_push.h` 里的默认成员 |
-| 改推流地址/协议 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
+| 改编码参数（QP/GOP/码率） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `config/push.json`、`moudle_push.h` 里的默认成员 |
+| 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
 | 改内存池/引用计数 | `common/MemManager/MemPool.{h,cpp}`、`MemMeta.h`、`MemManager.cpp` | `common/frame_buffer.h` |
 | 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt` |
 | 装配服务入口 | `main/main.cpp`（当前空壳）、`main/test/main_node.cpp`（参考实现） | `main/CMakeLists.txt` |
@@ -446,5 +448,6 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-05 | 新建本文：整理接手流程，明确"当前情况 / 必须遵守的规定"两部分 | `e30ccb3` |
 | 2026-11-05 | 清理 remote 遗留的 `src/common/media/`、`src/pipeline/moudleRtsp/`，强推 `rk3588`；文档去除 media 试验框架描述 | `e30ccb3` |
 | 2026-11-05 | 新增 AI 自动接手入口 `.clinerules/00-handoff.md`、`AGENTS.md`；HANDOFF 增加 §0 事实卡、§0.1 按需跳读表；§1.2 坐标前移 | `15e4438` |
+| 2026-11-05 | 新增 `config/push.json` 推流配置（分辨率/编码/协议/端口/fps/码率）并打通到采集与推流节点；HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.8/§1.9，校准点前移 | `283bab5` |
 
 [返回 README](../README.md)

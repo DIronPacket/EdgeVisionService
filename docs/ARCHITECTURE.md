@@ -15,7 +15,7 @@ EdgeVisionService/
 │   ├── FindZLMediaKit.cmake    # 查找 libmk_api.so
 │   ├── FindRGA.cmake           # 查找 librga（尚未被引用）
 │   └── rk3588.toolchain.cmake  # aarch64 交叉编译工具链
-├── config/                     # 预留：通道/服务配置（当前为空）
+├── config/                     # 运行配置（push.json：推流分辨率/编码/协议/端口/fps/码率）
 ├── docs/                       # 设计文档
 │   ├── ARCHITECTURE.md         # 当前架构与扩展方式
 │   ├── STATUS.md               # 当前现状与已知问题
@@ -160,7 +160,9 @@ mp4 / RTSP 文件 ──┘
 4. 若新增数据类型，在 `MemMeta` 中用 `set_ptr()` 注册对应 `MemSlot<T>`，并在池初始化时声明。
 5. 编写节点级单测：构造假块 → `push_input_pipe` → 校验输出 slot 与 `user_cnt` 归零。
 
-### 4.2 配置草案（建议放入 `config/channels.json`）
+### 4.2 配置草案（目标态：`config/channels.json`）
+
+> 现状：`config/push.json`（提交 `283bab5`）已落地下文的推流子集——`enable/width/height/codec/fps/bitrate_kbps/gop/port/app/stream/protocol/transport`，由 `PushNode::set_data()` 与 `ViNode::set_data()` 解析并下发到采集与编码；`service`、`channels[]`、`source`、`pool`、`queue` 仍是目标态。
 
 ```json
 {

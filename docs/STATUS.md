@@ -2,7 +2,7 @@
 
 > 记录当前代码“做到哪、哪里会坏、先修什么”，不描述未来计划。
 > 架构与扩展方式见 [ARCHITECTURE.md](ARCHITECTURE.md)；未来排期见 [ROADMAP.md](ROADMAP.md)；项目入口见 [README](../README.md)。
-> 最后更新：2026-11-04；适用分支：`rk3588`。
+> 最后更新：2026-11-05；适用分支：`rk3588`。
 
 ## 1. 模块完成度总览
 
@@ -14,17 +14,17 @@
 | 内存池 | `common/MemManager/*` | 🟡 65% | `MemPool`/`MemBlock`/`MemQueue` 可跑通单消费者链路；存在泄漏、无锁读取、类型不安全等问题 |
 | 平台接口 | `platform/include/*` | 🟢 85% | 采集/编码/解码/预处理接口定义清晰；x86 编解码实现未对齐接口 |
 | FFmpeg 采集 | `capture/ffmpeg_source/*` | 🟡 75% | 支持本地文件/摄像头/RTSP 输入，软解后 `sws_scale` 转 NV12 写入池；`AVDictionary` 构造后未实际传入 |
-| V4L2 采集 | `capture/v4l2_source/*` | 🟡 65% | RK 专用；固定 YUYV 输入、固定缩放输出 1920×1080；无 `poll`、无缓冲区校验、失败路径未清理 |
+| V4L2 采集 | `capture/v4l2_source/*` | 🟡 65% | RK 专用；固定 YUYV 输入、缩放输出尺寸可由 `set_output_size()` 配置（默认 1920×1080）；无 `poll`、无缓冲区校验、失败路径未清理 |
 | MPP 硬编码 | `encoder/rk_mpp_encoder.*` | 🟡 70% | H.264/H.265、NV12、FIXQP(QP=33)、GOP=5s、回调输出裸流；每帧 `memcpy`，无 EOS flush/动态重配 |
 | FFmpeg 软编码 | `encoder/ffmpeg_encoder.*` | 🔴 15% | `encode()` 主体被注释；`open()` 参数是 `PixelFormat`，与接口的 `CodingType` 不一致；x86 未编译 |
 | MPP 解码 | `decoder/rk_mpp_decoder.*` | 🔴 35% | 流程草稿；回调前未分配 `FrameBuffer` 内存即 `memcpy`，会崩溃；未接入流水线 |
 | FFmpeg 解码 | `decoder/ffmpeg_decoder.*` | 🔴 15% | 使用已删除的 `avcodec_register_all()`；引用不存在的 `FrameBuffer::linesize/pixel_fmt`；未编译 |
 | RTSP 推流封装 | `platform/rtsp/zlm_push_server.*` | 🟡 65% | 一键起服务/建流、送 H.264/H.265、停止释放；存在停止 key 不匹配、空指针解引用等问题 |
-| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push` | 🟡 60% | Vi→Push 单链路可演示；配置未真正解析、参数大量硬编码、错误路径丢块、无多分支引用计数 |
+| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push` | 🟡 65% | Vi→Push 单链路可演示；推流分辨率/编码/协议/fps/码率已由 `config/push.json` 驱动；采集源路径与编码 QP 仍硬编码、错误路径丢块、无多分支引用计数 |
 | 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp` |
 | 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 25% | 有编码/推流/节点/内存池手工测试；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
-| 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 30% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/`、`scripts/` 仍为空 |
+| 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 35% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/push.json` 已生效；`scripts/` 仍为空 |
 
 ## 2. 已实现的主链路能力
 
@@ -47,7 +47,7 @@
 
 - `ProcessorInterface` / RGA 预处理没有实现文件。
 - `main.cpp` 未组装任何流水线，也没有命令行参数、配置文件加载、信号处理。
-- `config/`、`scripts/` 为空，通道参数只能写死在代码里；`docs/` 已建立架构/现状/路线图文档。
+- `config/push.json` 已驱动推流分辨率/编码/协议/端口/fps/码率；`scripts/` 为空，采集源路径与编码 QP 仍写在代码里；`docs/` 已建立架构/现状/路线图文档。
 - 没有统一日志（`printf`/`std::cout` 混用）、没有指标、没有健康检查。
 - 没有 CTest/GoogleTest 单测；测试程序均为 `main()` 手工验证。
 - `main_testpool.cpp` 仍是旧 API（`GlobalMemManager`、`FrameBuffer*`、`link_to(shared_ptr)`），与当前头文件不匹配，未参与编译。
@@ -59,9 +59,9 @@
 | # | 问题 | 位置 | 影响 |
 | --- | --- | --- | --- |
 | 1 | x86 配置强制从 `install/x86_64` 找 FFmpeg，但仓库只有 `install/rk3588` | `cmake/FindFFMPEG.cmake:11-15` | `cmake -S . -B build` 直接失败，x86 无法开发/调试 |
-| 2 | `ViNode` 固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp:77-79` | 随后 `m_capture->open()` 空指针崩溃 |
-| 3 | `read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp:108-112` | 反复失败后池子块耗尽，整条链路停摆 |
-| 4 | `enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp:142-153` | 同上，且编码器会反复重试失败 |
+| 2 | `ViNode` 固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃 |
+| 3 | `read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 反复失败后池子块耗尽，整条链路停摆 |
+| 4 | ✅ 已修复（`283bab5`）：`enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp::run` | 同上，且编码器会反复重试失败 |
 | 5 | `push_input_pipe()` 向多个下游推同一块，但不增加引用计数 | `pipeline/pipeline_node.cpp:28-38` | 多分支时第一个下游释放后块可能被复用，其他分支读到脏数据 |
 | 6 | `zlm_rtsp_stop()` 用 `bind_ip + port` 拼流 key，而注册时只用 `port`；服务 key 也同样不一致 | `platform/rtsp/zlm_push_server.cpp:104`、`167`、`181` | 找不到流直接 return，`mk_media` 不释放，服务引用计数无法归零 |
 | 7 | `zlm_rtsp_onekey_start()` 的入参校验里既判断 `!out_code` 又写 `*out_code` | `platform/rtsp/zlm_push_server.cpp:66-68` | 传 `nullptr` 直接崩溃 |
@@ -84,15 +84,15 @@
 | 8 | x86 软编/软解与接口不一致，且使用已移除 API | `ffmpeg_encoder.h:16`、`ffmpeg_decoder.cpp:6,67-69` | 对齐 `CodingType`、`data[]/stride[]/fmt`，删除 `avcodec_register_all()` |
 | 9 | `MemPool` 在无锁状态下读取 `free_list_.size()` | `MemPool.cpp:158`、`176` | 把 size 判断移入 `free_mtx_` |
 | 10 | `MemMeta::data<T>()` 用 `void*` 强转 `MemSlot<T>*`，类型写错即 UB | `MemMeta.h:56-66` | 增加类型标签（`type_index`）或改用 `std::any`（C++17）/统一基类 |
-| 11 | 推流参数硬编码：端口 8550、`live/ch0`、1920×1080、H.265、500kbps | `moudle_push.cpp:119-120`、`144` | 从 `set_data(json)` 解析并按通道下发 |
-| 12 | 编码 PTS 用文件级全局 `frame_index_`，多实例/多通道共享 | `moudle_push.cpp:85-101` | 改为每实例成员；支持源时间戳/帧率换算 |
-| 13 | 首帧只打开编码器、不编码 | `moudle_push.cpp:142-158` | 打开后同帧继续编码，减少一帧延迟 |
-| 14 | ZLMediaKit 发送加全局锁，且逐帧 `printf` + `fflush` | `zlm_push_server.cpp:145-158`、`moudle_push.cpp:113` | 按流加锁或无锁队列；日志分级并限流 |
+| 11 | ✅ 已修复（`283bab5`）：推流参数硬编码——端口 8550、`live/ch0`、1920×1080、H.265 已改由 `config/push.json` 驱动；`gop` 仍未透传 | `moudle_push.cpp::set_data` / `init_zlm_push` | 已按通道下发；剩余项见 ROADMAP |
+| 12 | ✅ 已修复（`283bab5`）：编码 PTS 用文件级全局 `frame_index_`，多实例/多通道共享 | `moudle_push.cpp::sendFrame` | 已改为每实例成员，步长按配置 fps |
+| 13 | 首帧只打开编码器、不编码 | `moudle_push.cpp::run` | 打开后同帧继续编码，减少一帧延迟 |
+| 14 | ZLMediaKit 发送加全局锁，且逐帧 `printf` + `fflush` | `zlm_push_server.cpp:145-158`、`moudle_push.cpp::sendFrame` | 按流加锁或无锁队列；日志分级并限流 |
 | 15 | `mk_media_input_h264/265` 返回值为实际消费长度，封装层始终返回 `ZLM_ERR_OK` | `zlm_push_server.cpp:148-158` | 校验返回值，处理半包/失败 |
 | 16 | `main_node.cpp` 在停止逻辑前 `while(1)` 永久阻塞 | `main_node.cpp:46-48` | 删除死循环，补充 SIGINT 优雅退出 |
 | 17 | `main_testpool.cpp` 使用不存在的 `GlobalMemManager` 与旧 `FrameBuffer*` | `main_testpool.cpp:62,141-143` | 按当前 `MemBlock`/`MemPool` API 重写或删除 |
 | 18 | 软编/软解未注册工厂（`create_decoder()` 只有声明） | `platform/include/decoder_interface.h:45` | 增加 `create_encoder/create_decoder` 实现与平台选择逻辑 |
-| 19 | `ffmpeg_capture` 以固定 30fps 覆盖源帧率，`ViNode` 再做 30fps 节流 | `moudle_vi.cpp:82-128` | 以源帧率为准，节流只做补偿，避免双重限速 |
+| 19 | `ffmpeg_capture` 以固定 30fps 覆盖源帧率，`ViNode` 再按配置 fps 节流 | `moudle_vi.cpp::run` | 以源帧率为准，节流只做补偿，避免双重限速 |
 
 ### 4.3 P2：工程质量
 

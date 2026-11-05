@@ -25,7 +25,7 @@
 当前限制：
 
 - x86 本机构建会缺 `install/x86_64` 依赖；FFmpeg 软编/软解尚未完成。
-- RGA 预处理、OSD、录像、配置化、统一日志/指标/健康检查均未落地。
+- RGA 预处理、OSD、录像、统一日志/指标/健康检查均未落地（推流分辨率/编码/协议/fps/码率已由 `config/push.json` 配置化）。
 - 内存池为 `MemManager`（`MemPool` + `MemQueue`），多下游引用计数未完成。
 
 > 模块完成度、P0–P2 问题与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
@@ -129,7 +129,7 @@ cmake --build build-rk -j"$(nproc)"
 ## 7. 开发约定
 
 - 新增节点继承统一的 `PipelineNode`：`push_input()` 只入队，耗时处理放 `run()`，处理完 `dispatch_to_children()`，终点 `release_block()`。
-- 配置统一走 `config/channels.json`，启动时校验分辨率/池容量/端口/app/stream 唯一性，失败拒绝启动。
+- 配置统一走 `config/`（当前已有 `push.json`：推流分辨率/编码/协议/端口/fps/码率），启动时校验分辨率/池容量/端口/app/stream；取值非法要明确报错，不要静默忽略。
 - 目录与命名统一小写，修正 `moudle` → `module`；头文件 guard 使用 `EVS_<MODULE>_<FILE>_H`。
 - 提交信息：`<模块>: <动词> <对象>`，例如 `pipeline: fix block leak on capture error`。
 - 合并前：x86 构建通过、单测通过、无新增告警；RK 改动需交叉编译通过并在板端跑 30 分钟。
