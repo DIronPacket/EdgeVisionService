@@ -218,6 +218,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 - `NodeProfiler::begin(节点名)` / `end(节点名)`（`node_profiler.h`）：节点拿到块后写开始时间戳、处理完传下游前写结束时间戳，内部用 `steady_clock` 微秒。
 - `report(frame_no)`：单行报表「各节点耗时 + 节点合计 + 首尾跨度」；`NodeCostScope` 是 RAII 版，**代码块里含等待下一帧的 sleep 时不要用**（会把空闲时间算进去）。
 - 挂在块上的 slot 名是 `profile::kProfilerSlot`（`"profiler"`），由 `MemManager::MemInit()` 注册、`MemBlock::reset()` 清空。
+- 读表口径：**首尾跨度 ≈ 帧节拍 `1/fps` + 末端节点耗时**，与「节点合计」的差值主要是 `ViNode` 的帧率节流 sleep（`end("vi0")` 写在 `sleep_for()` 之前），队列排队实测 ~0.1ms。实测 30fps → 合计 14.9/跨度 40.0，15fps → 13.1/71.7，10fps → 39.1/106.5（推导见 ARCHITECTURE §2.2）。
 
 ## 1.8 当前能力与缺口（摘要，明细看 STATUS.md）
 
