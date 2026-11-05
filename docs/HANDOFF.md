@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`9678e42`。
+> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`d158eca`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -17,7 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路可跑通，未产品化（推流参数已可配，仍无日志 / 单测 / CI） |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `9678e42`（后续纯 `docs:` 提交不算基线漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文校准点 `d158eca`（后续纯 `docs:` 提交不算基线漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
@@ -68,8 +68,8 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `9678e42 pipeline: 新增节点耗时统计与打印节点`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
-| 前几个提交 | `283bab5`（`config/push.json` 配置化）、`fa082f7`（`docs:`），再往前 `af6b307`、`aa5846d`、`15e4438`、`e30ccb3`（均为 `docs:`）、`787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库共 8 个提交） |
+| HEAD | `d158eca pipeline: 修复 read_frame 失败未归还内存块（P0-3）`（**本文校准点**；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
+| 前几个提交 | `3ee3913`（报表加实测 fps）、`ccc305f`（`docs:` 校正跨度口径）、`58a6ff2`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 12 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
@@ -216,9 +216,10 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 - `profile::get_profiler(block)`（`block_profiler.h`）：从 block 的 `MemMeta` 取 `NodeProfiler*`；块/槽位缺失返回 `nullptr`，**调用方必须判空**。
 - `NodeProfiler::begin(节点名)` / `end(节点名)`（`node_profiler.h`）：节点拿到块后写开始时间戳、处理完传下游前写结束时间戳，内部用 `steady_clock` 微秒。
-- `report(frame_no)`：单行报表「各节点耗时 + 节点合计 + 首尾跨度」；`NodeCostScope` 是 RAII 版，**代码块里含等待下一帧的 sleep 时不要用**（会把空闲时间算进去）。
+- `report(frame_no, fps = -1)`：单行报表「各节点耗时 + 节点合计 + 首尾跨度 [+ 实测帧率]」；`fps < 0`（默认）时不输出帧率段，`PrintNode` 传入自己算的窗口帧率。`NodeCostScope` 是 RAII 版，**代码块里含等待下一帧的 sleep 时不要用**（会把空闲时间算进去）。
 - 挂在块上的 slot 名是 `profile::kProfilerSlot`（`"profiler"`），由 `MemManager::MemInit()` 注册、`MemBlock::reset()` 清空。
 - 读表口径：**首尾跨度 ≈ 帧节拍 `1/fps` + 末端节点耗时**，与「节点合计」的差值主要是 `ViNode` 的帧率节流 sleep（`end("vi0")` 写在 `sleep_for()` 之前），队列排队实测 ~0.1ms。实测 30fps → 合计 14.9/跨度 40.0，15fps → 13.1/71.7，10fps → 39.1/106.5（推导见 ARCHITECTURE §2.2）。
+- **实测 fps 不等于 `1000/跨度`**（跨度是重叠窗口，取倒数会偏小）：它是「上一行报表到本行报表的帧数 / 墙钟时长」。`fps` 配得比采集端高时（如 60 配 V4L2 30fps），实测会稳定在采集端帧率、跨度反而小于帧节拍。
 
 ## 1.8 当前能力与缺口（摘要，明细看 STATUS.md）
 
@@ -227,12 +228,12 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；采集源参数（设备/源分辨率）仍硬编码，**输出分辨率已可配** |
 | 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
 | 流水线 | `ViNode → PushNode → PrintNode` 单链路；分辨率/帧率/codec/码率/端口已由 `config/push.json` 驱动，错误路径丢块仍未全修 |
-| 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧） |
+| 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧），报表带实测 fps |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
 | 推流 | 单路 RTSP 可演示，参数来自 `config/push.json`；stop/空指针问题待修；`rtmp`/裸 RTP 未实现 |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
-**P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-4、P0-12 已修复，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3（块泄漏），这两个改动小、收益大。**
+**P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-3、P0-4、P0-12 已修复，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
 
 ## 1.9 任务 → 文件 索引表
 
@@ -280,7 +281,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 3. 改了 `CMakeLists.txt` / `cmake/Find*.cmake` 后，必须**重新执行一次 `cmake -S . -B build`**，不能只 `cmake --build`。
 4. **新建 build 目录时 `rtsp` 不会被编译**（源码没有 `option(BUILD_RTSP_MODULE)`，见 §1.4 第 3 条）。若需要编 RTSP 模块，显式传 `-DBUILD_RTSP_MODULE=ON`；修 P1-2 时要把它补成正式 option。
 5. 验证顺序固定为：**编译通过 → `./build/run.sh EdgeVisionService` → 相关 `testnode`**。
-6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2/P0-3，不算你改坏**，但必须说明"未做运行验证及原因"。
+6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
 8. 长跑类验证（如 `testnode` 有 `while(1)`）一律用 `timeout 20 ./build/run.sh testnode`，避免挂死终端。
 
@@ -300,7 +301,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 ## 2.4 流水线与内存池规定
 
-1. **取块必有归还**：`acquire()` / `getBlock()` 之后的所有失败分支（读帧失败、编码打开失败、队列满、异常返回）都必须 `release()`。P0-3、P0-4 就是漏了这一步。
+1. **取块必有归还**：`acquire()` / `getBlock()` 之后的所有失败分支（读帧失败、编码打开失败、队列满、异常返回）都必须 `release()`。P0-3、P0-4 都是漏了这一步（均已修复）；`push_input_pipe()` 队列满丢块那条路径仍未处理（P0-5 一起修）。
 2. `push_input_pipe()` **只入队**，不做耗时处理；耗时逻辑放节点自己的 `run()` 线程。
 3. 链路的**终点节点负责 `m_queue.release(block)`**；中间节点处理后继续 `push_input_pipe()`。
 4. **接多下游之前，先把块级引用计数补对**（P0-5）。当前一源多下游会读到被复用的脏块——不要"先接上再说"。
@@ -399,7 +400,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | --- | --- |
 | `cmake -S . -B build` 配置失败 | P0-1：`install/x86_64` 缺失；确认是不是在本机（aarch64）构建 |
 | 一启动就段错误（无摄像头 / x86） | P0-2（`ViNode` 写死 V4L2 + 空指针）、P0-8（MPP 解码未分配内存） |
-| 跑几秒后链路停摆、拿不到块 | P0-3 / P0-4：失败分支漏 `release` 导致池子耗尽 |
+| 跑几秒后链路停摆、拿不到块 | 失败分支漏 `release` 导致池子耗尽（P0-3、P0-4 已修）；剩余检查 `push_input_pipe()` 队列满丢块（P0-5） |
 | 画面撕裂 / 花屏 / 脏数据 | P0-5：多下游共用块被提前复用 |
 | `rtsp://` 打开 404、服务关不掉 | P0-6（stop 的 key 与注册不一致）、P0-7（参数校验崩溃） |
 | 进程 `Ctrl+C` 无反应 | P1-16：`main_node.cpp` 的 `while(1)` |
@@ -454,8 +455,8 @@ cmake -S . -B build >/dev/null && cmake --build build -j"$(nproc)" 2>&1 | tail -
 # 5) 冒烟运行：期望输出 "EdgeVisionService start"
 ./build/run.sh EdgeVisionService
 
-# 6) 真实主链路（有 /dev/video0 时；无设备会按 P0-2/3 崩溃，属已知）
-timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P0-2/P0-3/P1-16）"
+# 6) 真实主链路（有 /dev/video0 时；无设备会按 P0-2 崩溃，属已知）
+timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P0-2/P1-16）"
 ```
 
 # 附录 B　变更记录
@@ -467,5 +468,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-05 | 新增 AI 自动接手入口 `.clinerules/00-handoff.md`、`AGENTS.md`；HANDOFF 增加 §0 事实卡、§0.1 按需跳读表；§1.2 坐标前移 | `15e4438` |
 | 2026-11-05 | 新增 `config/push.json` 推流配置（分辨率/编码/协议/端口/fps/码率）并打通到采集与推流节点；HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.8/§1.9，校准点前移 | `283bab5` |
 | 2026-11-05 | 新增节点耗时统计（`common/profiler`，每块一个 `NodeProfiler`）与终点节点 `PrintNode`，链路变为 vi→rtsp→print；顺手修掉 `ViNode`/`PushNode` 的 `std::atomic<bool> running_` 未初始化（P0-12）。HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.7/§1.8/§1.9/R2，校准点前移 | `9678e42` |
+| 2026-11-05 | 报表增加实测 fps（`report(frame_no, fps)` + `PrintNode` 窗口统计）；用 30/15/10/60 fps 实测校正「首尾跨度」与帧率的口径 | `3ee3913` |
+| 2026-11-05 | 修复 P0-3：`read_frame` 失败分支未归还 `MemBlock`，fps 配得比采集端高时几十帧后池子耗尽、链路静默停摆（gdb 栈定位到 `MemPool::acquire`）。校准点前移 | `d158eca` |
 
 [返回 README](../README.md)

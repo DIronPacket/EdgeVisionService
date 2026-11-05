@@ -45,7 +45,8 @@
 6. **耗时统计**
    - `MemManager::MemInit()` 给每块挂一个 `profile::NodeProfiler`（`MemMeta` slot `"profiler"`），块回收时由 `MemBlock::reset()` 清空。
    - `ViNode` / `PushNode` 在拿到块后 `begin(节点名)`、处理完传下游前 `end(节点名)`（`steady_clock` 微秒；采集侧的节流 sleep 不计入）。
-   - 终点 `PrintNode` 按 `config/push.json` 的 `print.interval`（默认 30 帧）打印单行报表：各节点耗时 + 节点合计 + 首尾跨度；打印后归还块。
+   - 终点 `PrintNode` 按 `config/push.json` 的 `print.interval`（默认 30 帧）打印单行报表：各节点耗时 + 节点合计 + 首尾跨度 + 实测 fps；打印后归还块。
+   - 实测 fps 由 `PrintNode` 自己算（上一行报表到本行的帧数 / 墙钟时长），**不能拿 `1000/首尾跨度` 反推**（跨度是重叠窗口，会偏小）。`fps` 配得比采集端高时（如 60 配 V4L2 30fps），实测会稳定在采集端帧率。
 
 ## 3. 占位与未完成
 
@@ -64,7 +65,7 @@
 | --- | --- | --- | --- |
 | 1 | x86 配置强制从 `install/x86_64` 找 FFmpeg，但仓库只有 `install/rk3588` | `cmake/FindFFMPEG.cmake:11-15` | `cmake -S . -B build` 直接失败，x86 无法开发/调试 |
 | 2 | `ViNode` 固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃 |
-| 3 | `read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 反复失败后池子块耗尽，整条链路停摆 |
+| 3 | ✅ 已修复（`d158eca`）：`read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 配置 fps 高于采集帧率时反复失败，池子几十帧内耗尽，整条链路静默停摆 |
 | 4 | ✅ 已修复（`283bab5`）：`enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp::run` | 同上，且编码器会反复重试失败 |
 | 5 | `push_input_pipe()` 向多个下游推同一块，但不增加引用计数 | `pipeline/pipeline_node.cpp:28-38` | 多分支时第一个下游释放后块可能被复用，其他分支读到脏数据 |
 | 6 | `zlm_rtsp_stop()` 用 `bind_ip + port` 拼流 key，而注册时只用 `port`；服务 key 也同样不一致 | `platform/rtsp/zlm_push_server.cpp:104`、`167`、`181` | 找不到流直接 return，`mk_media` 不释放，服务引用计数无法归零 |

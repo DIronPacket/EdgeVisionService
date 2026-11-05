@@ -21,7 +21,7 @@
 - **硬件编码**：`MppEncoder` 支持 H.264/H.265，NV12 输入、128 字节 stride 对齐、固定 QP 33、GOP 150，回调输出裸流。
 - **RTSP 推流**：通过 ZLMediaKit C API 启动 RTSP 服务、创建流并送 H.264/H.265，默认地址 `rtsp://<ip>:8550/live/ch0`。
 - **节点编排**：`PipelineNode` 提供 `link_to` / `push_input_pipe` / `push_data`，`ViNode` / `PushNode` / `PrintNode` 的线程启停可运行。
-- **耗时统计**：每个块挂一个 `profile::NodeProfiler`，各节点记录自己的开始/结束时间戳，终点 `PrintNode` 按配置周期打印「各节点耗时 + 节点合计 + 首尾跨度」。
+- **耗时统计**：每个块挂一个 `profile::NodeProfiler`，各节点记录自己的开始/结束时间戳，终点 `PrintNode` 按配置周期打印「各节点耗时 + 节点合计 + 首尾跨度 + 实测 fps」。
 
 当前限制：
 
