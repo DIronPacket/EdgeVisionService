@@ -3,6 +3,7 @@
 
 #include "pipeline_node.h"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <string>
@@ -47,6 +48,13 @@ private:
 
   uint64_t frame_no_ = 0;          // 已处理帧计数（只在 run() 线程访问）
   bool warned_no_profiler_ = false; // 缺耗时结构只告警一次
+
+  // ---- 实测帧率 ----
+  // 口径：上一行报表到本行报表之间的「帧数 / 墙钟时长」，即这一段窗口的
+  // 平均产出速率（第一行报表从首帧算起，等价于累计平均）。
+  // 用 steady_clock，和各节点耗时的时间基准一致；只在 run() 线程访问。
+  std::chrono::steady_clock::time_point fps_last_tp_{}; // 窗口起点时刻
+  uint64_t fps_last_frame_ = 0;                         // 窗口起点处的帧号，0 表示窗口未开始
 };
 
 #endif

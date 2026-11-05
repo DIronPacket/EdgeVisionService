@@ -152,9 +152,11 @@ public:
     return (first != 0 && last > first) ? (last - first) : 0;
   }
 
-  // 生成单行报表：各节点耗时(ms) + 节点合计 + 首尾跨度
+  // 生成单行报表：各节点耗时(ms) + 节点合计 + 首尾跨度 [+ 实测帧率]
   // 仅列已结束的节点，未结束的（例如打印节点自己）标注 running
-  std::string report(int frame_no = -1) const
+  // fps < 0 表示调用方没有帧率数据，此时不输出该段。本类不自己算帧率：
+  // 帧率是"整条流水线的产出速率"，只有末端节点才知道（见 PrintNode）
+  std::string report(int frame_no = -1, double fps = -1.0) const
   {
     std::ostringstream oss;
     oss.setf(std::ios::fixed);
@@ -174,6 +176,12 @@ public:
     }
     oss << " | 节点合计=" << (static_cast<double>(busy_us()) / 1000.0)
         << " 首尾跨度=" << (static_cast<double>(span_us()) / 1000.0);
+    if (fps >= 0.0)
+    {
+      // 帧率只保留两位小数（沿用 fixed 格式，精度在流上是粘的）
+      oss.precision(2);
+      oss << " | 实测=" << fps << "fps";
+    }
     if (overflowed_)
       oss << " [节点数超过 " << kMaxStages << "，超出部分未记录]";
     return oss.str();

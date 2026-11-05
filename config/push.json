@@ -21,7 +21,9 @@
     "",
     "print               流水线终点打印节点（vi -> rtsp -> print）的配置段。",
     "  interval          每 N 帧打印一次各节点耗时与总耗时，1 表示逐帧打印。",
-    "  enable            false 时不打印，但节点仍负责把 block 回收进池子。"
+    "  enable            false 时不打印，但节点仍负责把 block 回收进池子。",
+    "  报表尾部带「实测=X.XXfps」：上一行报表到本行报表的平均产出帧率（窗口即 interval 帧，",
+    "  第一行从首帧算起）。配置的 fps 高于采集端实际帧率时，它会稳定在采集端帧率上。"
   ],
   "print": {
     "enable": true,

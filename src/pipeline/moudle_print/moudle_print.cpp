@@ -97,6 +97,14 @@ void PrintNode::run()
 
     ++frame_no_;
 
+    // 帧率窗口起点：首帧到达时初始化（fps_last_frame_ 为 0 表示窗口未开始）
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    if (fps_last_frame_ == 0)
+    {
+      fps_last_tp_ = now;
+      fps_last_frame_ = frame_no_;
+    }
+
     profile::NodeProfiler *profiler = profile::get_profiler(block);
     if (!profiler)
     {
@@ -112,8 +120,24 @@ void PrintNode::run()
     else if (enable_ && (print_interval_ <= 1 ||
                          (frame_no_ % static_cast<uint64_t>(print_interval_)) == 0))
     {
+      // 实测帧率：本行报表相对上一行报表的窗口平均帧率
+      // （首行从首帧算起，等价于累计平均；窗口内帧数 = 帧间隔数）
+      // elapsed 为 0 说明时钟还没来得及走（例如首帧 interval=1），
+      // 此时保持 -1，report() 会跳过该段而不是输出 inf
+      double fps = -1.0;
+      const auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                                  now - fps_last_tp_)
+                                  .count();
+      if (elapsed_us > 0)
+      {
+        fps = static_cast<double>(frame_no_ - fps_last_frame_) * 1000000.0 /
+              static_cast<double>(elapsed_us);
+        fps_last_tp_ = now;
+        fps_last_frame_ = frame_no_;
+      }
+
       std::cout << "[" << get_full_name() << "] "
-                << profiler->report(static_cast<int>(frame_no_)) << std::endl;
+                << profiler->report(static_cast<int>(frame_no_), fps) << std::endl;
     }
 
     // 终点节点：用完还回池子
