@@ -2,7 +2,7 @@
 
 > 描述当前代码的分层、目录、数据流、内存/线程模型、平台接口与扩展方式。
 > 当前现状与已知问题见 [STATUS.md](STATUS.md)；未来计划见 [ROADMAP.md](ROADMAP.md)；项目入口见 [README](../README.md)。
-> 最后更新：2026-11-04；适用分支：`rk3588`。
+> 最后更新：2026-11-05；适用分支：`rk3588`。
 
 ## 1. 目录结构
 
@@ -19,7 +19,8 @@ EdgeVisionService/
 ├── docs/                       # 设计文档
 │   ├── ARCHITECTURE.md         # 当前架构与扩展方式
 │   ├── STATUS.md               # 当前现状与已知问题
-│   └── ROADMAP.md              # 未来扩展计划
+│   ├── ROADMAP.md              # 未来扩展计划
+│   └── HANDOFF.md              # 接手工作流（现状快照 + 规定 + 操作规程）
 ├── scripts/                    # 预留：部署/启动脚本（当前为空）
 ├── install/rk3588/             # 已放置 FFmpeg、MPP、ZLMediaKit、RGA 的头与库
 ├── src/

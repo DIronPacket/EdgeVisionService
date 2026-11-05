@@ -1,0 +1,445 @@
+# EdgeVisionService 接手工作流
+
+> **给谁看**：接管本项目的 AI 助手或新加入的工程师。
+> **解决什么问题**：切换对话 / 换人后，不用重新读全部代码就能在 10 分钟内安全动手。
+> **怎么用**：先读 §0 与 **第一部分（当前项目情况）**，动手前必读 **第二部分（必须遵守的规定）**，具体任务照 **第三部分（操作规程）** 执行。
+>
+> 本文只写"接手要知道什么、不许做什么、按什么流程做"。
+> 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
+> **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
+>
+> 最后更新：2026-11-05；适用分支：`rk3588`；基线提交：`e30ccb3`。
+
+## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
+
+| 项 | 值 |
+| --- | --- |
+| 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
+| 主线状态 | 单链路可跑通，未产品化（无配置化 / 日志 / 单测 / CI） |
+| 分支 / HEAD | `rk3588`（跟踪 `origin/rk3588`）· `e30ccb3` · 工作树干净 |
+| 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
+| 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
+| 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
+| 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
+| 最大问题 | P0 共 11 项（构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
+
+## 0.1 按需跳读表（本文约 9k token，**不要默认全文读**）
+
+| 你要做的事 | 读哪些章节 | 大致 token |
+| --- | --- | --- |
+| 只想了解现状 | §0 事实卡（13–26 行）+ §1.2 快照（63–75 行） | ~800 |
+| 要动手改代码 | §0 + §1.2 快照 + §1.4 目录 + §1.7 API + **§2 全部规定** | ~4k |
+| 修某个 P0/P1 | §1.9 索引表 + §1.5 构建坑 + R1 + R4 + STATUS 对应行 | ~2k |
+| 加一个新节点 | §2.4 内存规定 + R2 + §1.7 | ~1.5k |
+| 首次全量接手 / 换人 | 全文（约 445 行） | ~10k |
+
+> 章节标题自查：`grep -nE '^#{1,2} ' docs/HANDOFF.md`（本文编辑后行号会漂移，先用这条命令刷新再定向读）。
+> 需要**文件清单**时看 §1.4，需要**当前状态**看 §0/§1.2，需要**限制**看 §2 —— 这三处覆盖了 90% 的接手问题，不必 `search_codebase` 全仓扫描。
+
+## 0.2 接手三步（新对话开头照做）
+
+| 步骤 | 动作 | 目的 | 耗时 |
+| --- | --- | --- | --- |
+| 1 | 读 §0 事实卡 + §1.2 快照 | 建立事实认知：分支、环境、构建、主链路 | 1 min |
+| 2 | 跑 **附录 A** 的自检命令 | 确认代码与本文描述一致（git / build / 依赖） | 1 min |
+| 3 | 动手前读 **§2 全部规定** | 避免违反项目红线（C++14、依赖、命名、git） | 3 min |
+
+**不要做的事**：不要用 `search_codebase` 全仓扫描来"重新了解项目"——文件清单在 §1.4，现状在 §0/§1.2，限制在 §2，索引在 §1.9。
+
+**不知道该看哪个文件？** 直接查 §1.9「任务 → 文件」索引表。
+
+---
+
+# 第一部分　当前项目情况
+
+## 1.1 一句话定位
+
+边缘视觉服务原型：**V4L2/FFmpeg 采集 → 统一内存池 `MemBlock` → `PipelineNode` 节点流水线 → MPP 硬编码 → ZLMediaKit RTSP 推流**。
+主目标平台 RK3588S（本机即板端，原生 aarch64 编译）；x86_64 是规划中的开发调试目标，**当前不可用**。
+
+当前阶段：**原型链路已跑通，未产品化**。没有配置化、没有日志/指标、没有单测/CI。
+
+## 1.2 关键坐标（2026-11-05 快照）
+
+| 项 | 值 |
+| --- | --- |
+| 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净 |
+| HEAD | `e30ccb3 docs: 新增 README 与架构/现状/路线图文档，移除 media 试验框架相关描述` |
+| 上一提交 | `787edbd feat: 完成基础流媒体流水线与内存池框架`（仓库仅这两个提交） |
+| 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
+| 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
+| 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
+
+> ⚠️ 因为主干历史已被重写，**任何"重新 clone 后合并"的思路都会失败**，见 §2.6。
+
+## 1.3 环境与工具链
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| 架构 / 核数 | `aarch64` / 8 核 | 本机就是 RK3588S 板端，非交叉编译 |
+| CMake | 3.22.1 | 顶层要求 ≥ 3.16 |
+| 编译器 | g++ 11.4.0（Ubuntu 22.04） | `CMAKE_CXX_COMPILER=/usr/bin/c++` |
+| **C++ 标准** | **C++14**（`CMakeLists.txt:4`） | **禁止**使用 C++17+ 特性（`std::any`、`if constexpr`、结构化绑定等） |
+| 库类型 | `BUILD_SHARED_MODULE=ON` → 自研模块编 `.so` | 产物统一输出到 `build/lib` 与 `build/bin` |
+| 依赖位置 | `install/rk3588/{include,lib}` | FFmpeg 5.x、Rockchip MPP、ZLMediaKit(`libmk_api.so`)、RGA(`librga.so`) |
+| 交叉工具链 | `cmake/rk3588.toolchain.cmake` | 路径写死 `/usr/aarch64-linux-gnu/bin/aarch64-linux-gnu-g++`，**本机不存在，当前不可用** |
+| 被忽略目录 | `build/` `install/` `3rdparty/` `bin/` `lib/` `.vscode/` `*.zip` | 见 `.gitignore`；**这些目录里的文件不属于仓库内容** |
+
+## 1.4 目录与模块地图（只列真实存在的东西）
+
+```text
+EdgeVisionService/
+├── .clinerules/00-handoff.md   # ★ AI 助手自动加载入口（现状卡 + 跳读表 + 硬约束）
+├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
+├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
+├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
+├── config/                     # 空（配置化未落地）
+├── scripts/                    # 空（部署脚本未落地）
+├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文)
+├── install/rk3588/             # 第三方头文件与库（不入库）
+├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
+├── build/                      # 构建产物（不入库，见 §1.5）
+└── src/
+    ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
+    ├── common/                 #                      → libcommon_api.so
+    │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size）
+    │   ├── type_registry.h     # 旧版注册辅助，当前无人使用
+    │   ├── json.hpp            # nlohmann/json 单头库
+    │   └── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
+    ├── pipeline/               #                      → libpipeline_api.so
+    │   ├── pipeline_node.{h,cpp}   # 节点基类：link_to / push_input_pipe / push_data / m_queue
+    │   ├── moudle_vi/              # ViNode：采集源节点
+    │   ├── moudle_push/            # PushNode：编码 + 推流节点
+    │   └── moudle_vpss/            # 空目录（git 不跟踪）
+    ├── platform/               #                      → platform_api（INTERFACE 聚合层）
+    │   ├── include/            # capture / decoder / encoder / processor 四个抽象接口
+    │   ├── capture/            # capture_factory + ffmpeg_source/ + v4l2_source/ + desktop_source/(空)
+    │   ├── encoder/            # rk_mpp_encoder（RK 可用）+ ffmpeg_encoder（x86 未完成）
+    │   ├── decoder/            # rk_mpp_decoder（草稿）+ ffmpeg_decoder（x86 未完成）
+    │   └── rtsp/               # zlm_push_server：ZLMediaKit C API 封装
+    └── main/
+        ├── main.cpp            # 只打印一行，未装配流水线
+        └── test/               # testnode（真实主链路）· main_encode/main_pushStream（CMake 中已注释）· main_testpool（旧 API，未编译）
+```
+
+必须知道的四条：
+
+1. **`moudle_vi` / `moudle_push` 是历史拼写错误**（正确为 `module`）。重命名会牵动 CMake 与 `#include`，属于独立任务，**不要顺手改**。
+2. `src/pipeline/moudle_vpss/`、`src/platform/capture/desktop_source/` 是**空目录**，git 不跟踪，重 clone 不存在。
+3. `BUILD_RTSP_MODULE` 在 `src/platform/CMakeLists.txt:34` 被使用，但**源码里从未 `option()` 定义**（P1-2）。因此：
+   - **干净配置（新 build 目录）不会编译 `rtsp`**，`zlm_push_server.cpp` 不参与构建（已实测：`/tmp` 下全新配置的目标只有 `common_api`/`capture`/`encoder`/`decoder`/`pipeline_api`/`EdgeVisionService`/`testnode`）；
+   - **但现有 `build/CMakeCache.txt` 里恰好缓存了 `BUILD_RTSP_MODULE:BOOL=ON`**，所以在 `build/` 下 `cmake --build` 会编出 `librtsp.so`。
+   → 判断"rtsp 到底编没编"要看配置来源，别被两种现象搞混；修 P1-2 时应把它改成正式的 `option(BUILD_RTSP_MODULE "..." ON)`。
+4. `pipeline_api` 只链接 `platform_api`，**没有链接 `common_api`**，`common_api` 是在可执行文件层补链的（`testnode` 里手写）。属于隐式依赖，改动链接关系时要小心。
+
+## 1.5 构建产物现状（最容易踩坑的地方）
+
+`build/` 目录存在且**在部分情况下可直接复用**，但里面混着陈旧产物：
+
+| 事实 | 说明 |
+| --- | --- |
+| `build/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` | `/mnt/nvme/workspace/EdgeVisionService`，**与本机一致，缓存仍有效**（不必盲目 `rm -rf build`） |
+| 产物架构 | `build/bin/*`、`build/lib/*` 都是 ARM aarch64 ELF，本机可直接运行 |
+| ✅ 真实可跑 | `./build/run.sh EdgeVisionService` → 输出 `EdgeVisionService start`（已实测） |
+| ✅ 构建已实测 | `cmake -S . -B build && cmake --build build -j8` 全量通过（2026-11-05，含 `rtsp` 目标，原因见 §1.4 第 3 条） |
+| ✅ 真实主链路 | `./build/run.sh testnode`（来自 `src/main/test/main_node.cpp`） |
+| ⚠️ 陈旧产物 | `build/lib/libmoudleRtsp.a`、`libmoudleRtsp.so`（10 月产物，**对应源码已删除**，勿再引用） |
+| ⚠️ 陈旧可执行 | `build/bin/test_decoder`、`test_encoder`、`test_pushStream`、`testpool`（对应源码在 `test/CMakeLists.txt` 中已注释或与当前 API 不符） |
+| ❗ `build/run.sh` 未入库 | 属于 `build/` 被忽略的内容；**删除 `build/` 后需重新创建**，否则 §2.2 的运行验证方式失效 |
+
+`build/run.sh` 做的事（重建时照此写）：
+
+```bash
+#!/bin/bash
+set -e
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd); cd "${SCRIPT_DIR}"
+export LD_LIBRARY_PATH="${SCRIPT_DIR}/lib:${SCRIPT_DIR}/../install/rk3588/lib:$LD_LIBRARY_PATH"
+exec "${SCRIPT_DIR}/bin/$@"
+```
+
+## 1.6 运行时主链路（代码级）
+
+```text
+MemManager::getInstance().MemInit(50)        // 预建 50 块 1920x1080 NV12，挂到 MemPool 全局 free_list_
+        │
+        ▼
+ViNode::create(0, "vi")   → start()          // 独立线程 run()：按通道取 CaptureInterface，30fps 节流
+   采集：FfmpegCapture / V4l2Capture → 写 FrameBuffer(NV12, stride 128 对齐) → MemMeta::set_ptr
+        │
+        ▼  push_input_pipe(block)  → 下游 m_queue.pushFrame(block)（深度 20，满则丢最老帧）
+PushNode::create(0, "rtsp") → start()        // 独立线程 run()：MppEncoder 硬编码 H.265
+        │  编码回调 EncodedPacket → zlm_rtsp_input_encodeData()
+        ▼
+ZLMediaKit RTSP Server                        // rtsp://<ip>:8550/live/ch0（参数多处硬编码）
+```
+
+节点连接关系存在 `PipelineNode::next_nodes_` / `parent_nodes_`（**公有裸指针 `std::list`**），`link_to()` 双向登记。`PipelineNode` 继承 `std::enable_shared_from_this`，但链路本身用裸指针。
+
+**已知与上图不一致的地方**（照 STATUS.md 执行修复，不要"顺手美化"）：
+
+- `main.cpp` 根本没装配流水线，真实入口在 `main/test/main_node.cpp`（且含 `while(1)` 死循环，P1-16）。
+- `ViNode` 写死 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` 后解引用（P0-2）。
+- `PushNode` 编码器是**值成员** `MppEncoder enc`（不是接口指针），`EncoderInterface` 抽象未真正生效。
+- 队列丢帧、丢帧计数、背压都没有对外开放。
+
+## 1.7 内存池与节点 API 速查（改代码前先看这段）
+
+命名空间 `pool`（`src/common/MemManager/MemPool.h`）：
+
+| 类 | 关键接口 | 要点 |
+| --- | --- | --- |
+| `MemPool`（单例） | `getInstance()` · `addBuffer(MemMeta*)` · `acquire(name)` · `release(block,name)` · `pushBlock(block,name)` · `registerQueue(queue,name)` · `delGetBlock()` | 全局 `free_list_` 单锁 `free_mtx_`；**`Size()` 读 size 未加锁（P1-9）** |
+| `MemQueue` | `InitQueue(name, size=20, type)` · `getBlock(timeout=100)` · `pushFrame(block)` · `release(block)` · `release(block,name)` · `Size()` | `QueueType::OWNER`（源头取空块）/ `USER`（下游收块）；满则 drop-oldest |
+| `MemBlock` | `data()`→`MemMeta*` · `userCnt()` · `setOwner/addUser/subUser` · `reset()` | 引用计数是"名字列表"实现，**多下游扇出时不可靠（P0-5）** |
+| `MemMeta` | `set_ptr<T>(name,ptr)` · `data<T>(name)` · `has(name)` | 内部 `void*` + `MemSlot<T>`，**类型写错即 UB（P1-10）**；无析构，覆盖同名即泄漏（P0-11） |
+| `MemManager`（单例） | `MemInit(size=50)` · `FreeMem()` · `addImgConfig(ImgConfig)` | 只负责"建块 + 挂 FrameBuffer"，**`MemInit` 里 `new MemBlock` 后未使用、`FreeMem` 不删 FrameBuffer（P0-9）** |
+| `FrameBuffer` | `Allocate(w,h,fmt,align)` · `BindMemory(base,w,h,fmt,align)` · 字段 `data[3]/stride[3]/fmt/width/height/capacity/data_size/timestamp_ms` | 只是**视图**，注释明确"不拥有内存"；但 `Allocate()` 会 `new[]`（语义矛盾，P0-10） |
+
+编码器 / 推流的常用入口：
+
+- `MppEncoder`：`open(w,h,CodingType,fps,bitrate)` · `encode(FrameBuffer*)` · `set_encode_callback(EncodeCallback)`；NV12、stride 128 对齐、QP 33、GOP 150。
+- `CaptureInterface`：`open(uri)` · `read_frame(FrameBuffer*)` · `set_capture_callback` · `close()`；工厂 `CreateCapture(CaptureType)`（`CAPTURE_FFMPEG` / `CAPTURE_V4L2`）。
+- ZLM 封装（`zlm_push_server.h`）：`zlm_rtsp_onekey_start(...)` · `zlm_rtsp_input_encodeData(...)` · `zlm_rtsp_stop(...)`；**`stop` 的流 key 与注册时不一致（P0-6）、入参校验顺序错（P0-7）**。
+
+## 1.8 当前能力与缺口（摘要，明细看 STATUS.md）
+
+| 能力 | 现状 |
+| --- | --- |
+| 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`、参数硬编码 |
+| 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
+| 流水线 | `ViNode → PushNode` 单链路；配置未解析、错误路径丢块 |
+| 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
+| 推流 | 单路 RTSP 可演示；stop/空指针问题待修 |
+| 未落地 | RGA 预处理、OSD、录像、多通道、配置化、日志/指标/健康检查、单测、CI、Docker、OTA |
+
+**P0 共 11 项**（构建失败 / 必现崩溃 / 资源泄漏），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建）与 P0-3/4（块泄漏），这三个改动小、收益大。**
+
+## 1.9 任务 → 文件 索引表
+
+| 我要做的事 | 主文件 | 关联 |
+| --- | --- | --- |
+| 改采集行为 | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp` | `capture_interface.h`、`capture_factory.cpp` |
+| 改编码参数（码率/QP/GOP/H.264） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `moudle_push.h` 里的默认成员 |
+| 改推流地址/协议 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
+| 改内存池/引用计数 | `common/MemManager/MemPool.{h,cpp}`、`MemMeta.h`、`MemManager.cpp` | `common/frame_buffer.h` |
+| 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt` |
+| 装配服务入口 | `main/main.cpp`（当前空壳）、`main/test/main_node.cpp`（参考实现） | `main/CMakeLists.txt` |
+| 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
+| 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
+
+---
+
+# 第二部分　接手本项目必须遵守的规定
+
+> 这一部分是**红线**。违反其中任何一条，改动即使在技术上"更好"也算错误交付。
+
+## 2.1 绝对禁止（红线）
+
+| # | 禁止事项 | 原因 |
+| --- | --- | --- |
+| 1 | 未经任务明确要求**重命名目录 / 重构结构**（尤其 `moudle_*` → `module`） | 会牵动 CMake 与全部 `#include`，必须作为独立任务做 |
+| 2 | 使用 **C++17 及以上**特性（`std::any`、`if constexpr`、结构化绑定、`std::string_view`） | 工程标准是 C++14（`CMakeLists.txt:4`） |
+| 3 | 引入 `install/` 中**不存在**的新第三方库（OpenCV、gtest、spdlog、fmt…） | 板端依赖固定，加库等于加不可控风险；需要时先提方案 |
+| 4 | 修改 `install/`、`3rdparty/`、`build/` 里的第三方文件或旧产物 | 非仓库内容，改了下游无人知晓 |
+| 5 | `git push --force` 到 `rk3588` / `main`，或 `git reset --hard`、`git clean -xfd` | 主干历史已重写过一次，二次改写代价极高 |
+| 6 | 提交 `build/`、`install/`、`3rdparty/`、`.vscode/`（包括 `git add -f`） | 已在 `.gitignore`，属于本机资产 |
+| 7 | 重新引入 `src/common/media/` 一类**第二套内存池/框架** | 该试验框架已于 `e30ccb3` 彻底移除，不要再建"新框架" |
+| 8 | 做任务范围之外的"顺手修"（批量格式化、调整无关代码风格、改注释排版） | 污染 diff，让 review 与回滚失效 |
+| 9 | 在**没有实际执行构建/运行**的情况下声称"已修复/已通过" | 必须给出真实命令与输出 |
+| 10 | 擅自改动 `main` 分支或推送其他远程分支 | 只操作 `rk3588`，其他分支需用户明确指定 |
+
+## 2.2 构建与验证规定
+
+1. **默认原生构建**（本机是 aarch64 板端，不需要交叉编译）：
+   ```bash
+   cmake -S . -B build && cmake --build build -j"$(nproc)"
+   ```
+2. **不要盲目 `rm -rf build`**：`CMakeCache` 的 `CMAKE_HOME_DIRECTORY` 与本机一致，缓存有效。只有缓存报路径错误或 CMakeLists 结构大改时才清。
+3. 改了 `CMakeLists.txt` / `cmake/Find*.cmake` 后，必须**重新执行一次 `cmake -S . -B build`**，不能只 `cmake --build`。
+4. **新建 build 目录时 `rtsp` 不会被编译**（源码没有 `option(BUILD_RTSP_MODULE)`，见 §1.4 第 3 条）。若需要编 RTSP 模块，显式传 `-DBUILD_RTSP_MODULE=ON`；修 P1-2 时要把它补成正式 option。
+5. 验证顺序固定为：**编译通过 → `./build/run.sh EdgeVisionService` → 相关 `testnode`**。
+6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2/P0-3，不算你改坏**，但必须说明"未做运行验证及原因"。
+7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
+8. 长跑类验证（如 `testnode` 有 `while(1)`）一律用 `timeout 20 ./build/run.sh testnode`，避免挂死终端。
+
+## 2.3 C++ 代码规定
+
+| 项 | 规定 |
+| --- | --- |
+| 标准 | C++14；不引入 17+ 特性 |
+| 缩进 / 风格 | 2 空格缩进，K&R 大括号，与现有文件保持一致 |
+| 头文件 guard | **新增文件**用 `EVS_<MODULE>_<FILE>_H`；老文件（`MEM_POOL_H` 等）不批量改，随任务落地 |
+| 命名空间 | 内存池相关放 `pool`；新增公共组件放对应模块命名空间，**不要**新建 `evs::core` 之类大改造 |
+| 内存管理 | 现状是裸指针 + 手工 new/delete；任务内可局部改善，**不要**把整条链路改成智能指针 |
+| 日志 | 现状 `printf`/`std::cout`/`std::cerr` 混用；**新代码不要新增逐帧 `printf` + `fflush`**（P1-14） |
+| 注释 | 中文，说明"为什么"；不写无信息量的注释 |
+| 文件布局 | 一个 `.cpp` 配同名 `.h`；平台相关实现放 `platform/<backend>/`；对外接口不暴露 FFmpeg/MPP 类型，统一转 `FrameBuffer` |
+| 错误处理 | 不使用异常跨模块传播；返回码/空指针约定与现有代码一致 |
+
+## 2.4 流水线与内存池规定
+
+1. **取块必有归还**：`acquire()` / `getBlock()` 之后的所有失败分支（读帧失败、编码打开失败、队列满、异常返回）都必须 `release()`。P0-3、P0-4 就是漏了这一步。
+2. `push_input_pipe()` **只入队**，不做耗时处理；耗时逻辑放节点自己的 `run()` 线程。
+3. 链路的**终点节点负责 `m_queue.release(block)`**；中间节点处理后继续 `push_input_pipe()`。
+4. **接多下游之前，先把块级引用计数补对**（P0-5）。当前一源多下游会读到被复用的脏块——不要"先接上再说"。
+5. `FrameBuffer` 只是**视图**（`data[3]` 指向池内存），业务代码**不得**在 `FrameBuffer` 里 `new/delete`。
+6. 不要绕过 `MemPool` 单例自行管理 `free_list_`；不要新增第二个全局池。
+
+## 2.5 CMake 规定
+
+1. 新增源文件必须显式加入对应 `target_sources` / `add_library`。
+2. 新模块使用 `MODULE_LIB_TYPE` 变量，跟随顶层 `BUILD_SHARED_MODULE`（`common_api` 写死 `SHARED` 属于历史例外，不要扩散）。
+3. 输出目录统一走顶层全局设置（`build/lib`、`build/bin`），不要自定 `LIBRARY_OUTPUT_DIRECTORY`。
+4. 新开关必须 `option(... "描述" ON/OFF)` 给默认值并写注释；**改开关要同步 README §3 与 ARCHITECTURE §3**。
+5. 依赖查找只放在 `cmake/Find*.cmake`，不在 `CMakeLists.txt` 里硬编码绝对路径。
+6. 链接关系尽量用 `PUBLIC`/`PRIVATE` 表达真实依赖，避免依赖可执行文件层"补链"（P1-1 就是这类问题，修复时一次改到位）。
+
+## 2.6 Git 规定
+
+1. **主干只有 `rk3588`**（远程同名，已建立 upstream）。实验性改动先在本地建 `feature/<主题>` 分支，不要直接在主干堆 WIP 提交。
+2. **提交信息格式**：`<模块>: <动词> <对象>`，模块取 `build|capture|encoder|decoder|rtsp|mem|pipeline|docs|test`，例：
+   - `pipeline: 修正 read_frame 失败未归还 MemBlock`
+   - `docs: 补充 HANDOFF 接手流程`
+3. **提交前必查** `git status --short`：不得出现 `build/`、`install/`、`3rdparty/`、`.vscode/` 下的文件。
+4. **一次提交只做一件事**：代码与文档分开提交（现有两次提交就是这个粒度）。
+5. **推送前先 `git fetch origin`** 确认远程未被他人改动；本仓库 `origin` 是 SSH（`git@github.com:DIronPacket/EdgeVisionService.git`），已配 `~/.ssh/id_ed25519`。
+6. **禁止 force 推送**。历史已重写过一次；若确实必须重写，前置条件：用户明确同意 + 在本地先打备份 tag。
+7. **禁止在有未提交改动时**执行 `git reset --hard`、`git clean -xfd`、`git checkout -- .`。
+8. 提交后如需同步，用普通 `git push origin rk3588`；不要推 `main`。
+
+## 2.7 命名与目录规定
+
+- 新目录小写；**新模块用 `module`，不要复制 `moudle` 拼写错误**。
+- 公共类型放 `common/`；平台后端放 `platform/<backend>/`；业务节点放 `pipeline/`（未来为 `pipeline/nodes/<name>/`）。
+- 配置字段与 schema 以 [ARCHITECTURE.md §4.2](ARCHITECTURE.md) 草案为准，落地时同步该节。
+- 对外头文件不暴露 FFmpeg / MPP / ZLM 类型，统一收敛到 `FrameBuffer`、`CodingType` 等内部类型。
+
+## 2.8 环境与资产规定
+
+| 项 | 规定 |
+| --- | --- |
+| `install/rk3588/lib` | 交付依赖，**不得删除或替换**（尤其 `libmk_api.so`、`librockchip_mpp.so*`、`libavcodec.so.59`） |
+| `3rdparty/` | 只放第三方源码包，不要在里面对源码打补丁 |
+| `/dev/video0` | 板端独占设备，运行前确认没有其他进程占用；用完释放 |
+| 进程管理 | 不 kill 他人进程；自己启动的测试程序用 `timeout` 包裹 |
+| 系统层 | **不升级 glibc / 内核 / 驱动**：`libavcodec.so` 最高要求 `GLIBC_2.35`，`libmk_api.so` 依赖 OpenSSL 3，升级即破坏 ABI |
+| 端口 | ZLMediaKit 默认 8550（代码里还有 8554 的默认成员，见 P1-11），起服务前确认端口空闲 |
+
+## 2.9 交付前自检清单（每次都要过一遍）
+
+- [ ] 只修改了任务范围内的文件（`git status` / `git diff --stat` 复核）
+- [ ] **实际执行**了构建，并保留命令与输出
+- [ ] 能运行就运行验证；不能运行则明确说明原因（缺设备 / 缺依赖 / 已知 P0）
+- [ ] 无新增编译告警
+- [ ] 没有引入 C++17+ 特性、没有引入新第三方库
+- [ ] 所有取块失败分支都有 `release`
+- [ ] 新文件已加入 CMake、头文件 guard 符合规范
+- [ ] 行为/开关变化已同步 README、ARCHITECTURE、STATUS 中受影响的部分
+- [ ] 提交信息符合 `<模块>: <动词> <对象>`
+- [ ] 没有提交被忽略目录的内容
+
+---
+
+# 第三部分　常见任务操作规程
+
+## R1 修一个 P0 / P1 问题（最常做）
+
+1. 在 [STATUS.md §4](STATUS.md) 找到条目，确认**文件:行号**与影响面。
+2. 打开对应文件，先读上下文（不要只看那一行），确认现有错误处理约定。
+3. **最小改动**：只修这一条，不顺手重构。
+4. 构建：`cmake --build build -j8`；如改动涉及 CMake，先 `cmake -S . -B build`。
+5. 能验证就验证（板端设备/端口允许时）；不能验证就写清"未验证原因"。
+6. 若问题已修复，**同步更新 STATUS.md 对应表格**（删行或改状态），并把行号变化一并核对。
+7. 提交：`<模块>: <动词> <对象>`。
+
+## R2 新增一个处理节点（算法 / OSD / 录像都走这套）
+
+1. 在 `src/pipeline/` 下新建 `module_<name>/`（**注意是 `module`**），放 `<name>.h` / `<name>.cpp`。
+2. 类继承 `PipelineNode`，实现四个纯虚函数：`create(int channel_id, const std::string& name)`、`start()`、`stop()`、`set_data(const char* config)`。
+3. `start()` 起独立线程；`run()` 中 `m_queue.getBlock(100)` → 从 `MemMeta` 取数据 → 处理 → `push_input_pipe(block)`；终点节点改为 `m_queue.release(block)`。
+4. 在 `src/pipeline/CMakeLists.txt` 的 `target_sources` 里加 `.cpp`，必要时在 `target_include_directories` 加目录。
+5. 装配：先在 `src/main/test/main_node.cpp` 里连线验证（`MemInit` → `create` → `link_to` → `start`），稳定后再考虑接进 `main.cpp`。
+6. 若引入新的数据类型，用 `MemMeta::set_ptr<T>()` 挂 slot，并在初始化处声明。
+7. 多下游扇出前必须完成引用计数改造（见 §2.4 第 4 条）。
+
+## R3 新增平台后端（例如 RGA 预处理）
+
+1. 先读 `src/platform/include/processor_interface.h`，接口是唯一契约。
+2. 在 `src/platform/<模块>/<backend>_<模块>.{h,cpp}` 实现，**不暴露 RGA 类型到接口**。
+3. 在对应 `CMakeLists.txt` 用 `cmake/FindRGA.cmake` 查依赖，加 `target_link_libraries`。
+4. 在工厂里加选择分支（参考 `capture_factory.cpp`）。
+5. 同步 ARCHITECTURE §2.5 的接口实现表。
+
+## R4 排障口诀
+
+| 现象 | 先查 |
+| --- | --- |
+| `cmake -S . -B build` 配置失败 | P0-1：`install/x86_64` 缺失；确认是不是在本机（aarch64）构建 |
+| 一启动就段错误（无摄像头 / x86） | P0-2（`ViNode` 写死 V4L2 + 空指针）、P0-8（MPP 解码未分配内存） |
+| 跑几秒后链路停摆、拿不到块 | P0-3 / P0-4：失败分支漏 `release` 导致池子耗尽 |
+| 画面撕裂 / 花屏 / 脏数据 | P0-5：多下游共用块被提前复用 |
+| `rtsp://` 打开 404、服务关不掉 | P0-6（stop 的 key 与注册不一致）、P0-7（参数校验崩溃） |
+| 进程 `Ctrl+C` 无反应 | P1-16：`main_node.cpp` 的 `while(1)` |
+| 链接期 `undefined reference to zlm_rtsp_*` | P1-1：`pipeline_api` 未链 `common_api` / `rtsp` |
+
+## R5 文档更新规则
+
+四份文档分工固定，不要混写：
+
+| 文档 | 只写 | 不写 |
+| --- | --- | --- |
+| [README.md](../README.md) | 项目定位、能做什么、快速开始、状态摘要、文档导航 | 细节问题清单 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 稳定的分层、数据流、模型、扩展方式、规范 | 临时问题 |
+| [STATUS.md](STATUS.md) | 现状、完成度、P0–P2、优化建议 | 未来排期 |
+| [ROADMAP.md](ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
+| **HANDOFF.md（本文）** | **接手所需的事实快照 + 红线规定 + 操作规程** | 重复上面四份的内容 |
+
+改动后同步更新各文档头部"最后更新"日期。
+
+## R6 结束一轮工作 / 再次切换对话前
+
+1. 更新本文 **§0 事实卡**、**§1.2 关键坐标**（HEAD、分支、远程 ref）与 **附录 B 变更记录**。
+2. 同步更新 **`.clinerules/00-handoff.md` 与 `AGENTS.md` 里的现状卡**（两处内容与 §0 保持一致）。
+3. 确认工作树干净，或明确记录未提交改动的意图。
+4. 若 STATUS.md 中的问题被修复，同步删改对应行。
+5. 若本文增删章节导致行号漂移，刷新 `.clinerules/00-handoff.md` 跳读表里的行号（`grep -nE '^#{1,2} ' docs/HANDOFF.md`）。
+
+---
+
+# 附录 A　接手自检命令（复制粘贴即可）
+
+```bash
+cd /mnt/nvme/workspace/EdgeVisionService
+
+# 1) git 状态：应与 §1.2 一致（分支 rk3588、HEAD e30ccb3、工作树干净）
+git --no-pager branch -vv
+git --no-pager log --oneline -5
+git status -sb
+git --no-pager remote -v
+
+# 2) 环境：应与 §1.3 一致（aarch64 / cmake 3.22 / g++ 11.4 / 8 核）
+uname -m; cmake --version | head -1; g++ --version | head -1; nproc
+
+# 3) 依赖是否在位
+ls install/rk3588/lib | grep -E 'libmk_api|librockchip_mpp|libavcodec'
+ls install/rk3588/include | grep -E 'zlmediakit|ZLMediaKit|libavcodec'
+
+# 4) 构建（约 1 分钟；失败先对照 §2.2 与 STATUS P0-1）
+cmake -S . -B build >/dev/null && cmake --build build -j"$(nproc)" 2>&1 | tail -20
+
+# 5) 冒烟运行：期望输出 "EdgeVisionService start"
+./build/run.sh EdgeVisionService
+
+# 6) 真实主链路（有 /dev/video0 时；无设备会按 P0-2/3 崩溃，属已知）
+timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P0-2/P0-3/P1-16）"
+```
+
+# 附录 B　变更记录
+
+| 日期 | 变更 | 基线提交 |
+| --- | --- | --- |
+| 2026-11-05 | 新建本文：整理接手流程，明确"当前情况 / 必须遵守的规定"两部分 | `e30ccb3` |
+| 2026-11-05 | 清理 remote 遗留的 `src/common/media/`、`src/pipeline/moudleRtsp/`，强推 `rk3588`；文档去除 media 试验框架描述 | `e30ccb3` |
+
+[返回 README](../README.md)

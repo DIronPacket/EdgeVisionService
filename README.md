@@ -119,6 +119,8 @@ cmake --build build-rk -j"$(nproc)"
 
 | 想了解什么 | 看哪里 |
 | --- | --- |
+| **接手项目：现状快照、必须遵守的规定、常见任务流程** | **[docs/HANDOFF.md](docs/HANDOFF.md)**（新接手先读这篇） |
+| AI 助手自动加载入口（Cline / 其他 agent） | [`.clinerules/00-handoff.md`](.clinerules/00-handoff.md)、[`AGENTS.md`](AGENTS.md)（均指向 `docs/HANDOFF.md`） |
 | 当前架构、目录、数据流、内存/线程模型、平台接口 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 模块完成度、已实现/占位、P0–P2、优化建议、测试现状 | [docs/STATUS.md](docs/STATUS.md) |
 | 未来 WBS、排期、技术方案、验收指标、风险与待确认项 | [docs/ROADMAP.md](docs/ROADMAP.md) |
@@ -136,4 +138,4 @@ cmake --build build-rk -j"$(nproc)"
 
 ---
 
-最后更新：2026-11-04；适用分支：`rk3588`。
+最后更新：2026-11-05；适用分支：`rk3588`。
