@@ -143,6 +143,14 @@ void ViNode::run()
         // 先写结束时间戳再 continue，否则本帧在本节点会一直显示 running
         if (profiler)
           profiler->end(m_name);
+        // 取块必有归还（P0-3）：read_frame 失败常见于「配置 fps 高于采集端
+        // 实际帧率」，此时 DQBUF 拿不到新帧直接返回 false。不归还的话内存池
+        // 会被逐帧抽干，几十帧后源节点就永久卡在 MemPool::acquire() 上，
+        // 整条流水线静默停摆（下游全部在空队列上等待）。
+        m_queue.release(block);
+        // 采集层通常已自带退避（V4L2 里是 usleep(2000)），这里只做通用兜底，
+        // 保证换成别的采集源时也不会退化成忙轮询把 CPU 打满
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         continue;
       }
       // 【核心逻辑】计算这一帧处理花了多少时间
