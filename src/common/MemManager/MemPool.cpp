@@ -1,4 +1,5 @@
 #include "MemPool.h"
+#include "node_profiler.h"
 namespace pool
 {
 
@@ -31,6 +32,15 @@ namespace pool
     user_list.clear();
     owner = nullptr;
     owner_name.clear();
+    // 块归还到池子时清空本帧的耗时记录，
+    // 否则下一帧会读到上一帧残留的节点耗时
+    if (_memMeta)
+    {
+      profile::NodeProfiler *profiler =
+          _memMeta->data<profile::NodeProfiler *>(profile::kProfilerSlot);
+      if (profiler)
+        profiler->reset();
+    }
   }
 
   void MemBlock::userAdd() { user_cnt++; }

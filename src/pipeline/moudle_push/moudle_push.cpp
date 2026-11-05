@@ -1,5 +1,6 @@
 #include "moudle_push.h"
 #include "MemPool.h"
+#include "block_profiler.h"
 #include <cctype>
 #include <iostream>
 
@@ -14,7 +15,9 @@ std::string lower(const std::string &s) {
 }
 } // namespace
 
-PushNode::PushNode() {}
+// running_ 是 std::atomic<bool>，默认构造不写值（C++14），必须显式初始化，
+// 否则内存里的脏值会让 start() 里 running_.exchange(true) 直接返回 true，线程起不来
+PushNode::PushNode() : running_(false) {}
 
 PushNode::~PushNode() { stop(); }
 
@@ -235,6 +238,10 @@ void PushNode::run()
     FrameBuffer *fb = block->_memMeta->data<FrameBuffer *>("nv12");
     if (fb)
     {
+      // 本节点耗时统计：开始时间戳（拿到 block 之后、编码之前）
+      profile::NodeProfiler *profiler = profile::get_profiler(block);
+      if (profiler)
+        profiler->begin(m_name);
       // printf("############# push :%p,push-data:%p\n", (void *)fb, (void *)fb->data);
       if (!encoder_ready)
       {
@@ -265,6 +272,9 @@ void PushNode::run()
         {
           printf("failed open enc\n");
           encoder_ready = false;
+          // 先写结束时间戳，避免本帧在本节点一直显示 running
+          if (profiler)
+            profiler->end(m_name);
           // 取块必有归还，失败分支同样要 release
           m_queue.release(block);
           continue;
@@ -275,6 +285,9 @@ void PushNode::run()
         enc.encode(fb);
         // printf("successfully encode  frame\n");
       }
+      // 本节点耗时统计：结束时间戳（推给下游/归还池子之前）
+      if (profiler)
+        profiler->end(m_name);
       // printf("push :%p\n", (void *)fb);
       // 假设上游节点把编码后的裸流数据放在了 "encoded_data" 槽位里
       // 你可以根据实际业务修改这里的 Ke

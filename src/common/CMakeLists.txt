@@ -16,6 +16,7 @@ set_target_properties(common_api PROPERTIES
 target_include_directories(common_api PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/
+    ${CMAKE_CURRENT_SOURCE_DIR}/profiler/
 )
 
 # 5. 链接线程库

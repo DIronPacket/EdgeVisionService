@@ -1,8 +1,11 @@
 #include "moudle_vi.h"
 #include "MemPool.h"
+#include "block_profiler.h"
 #include <iostream>
 #include <chrono>
-ViNode::ViNode() {}
+// running_ 是 std::atomic<bool>，默认构造不写值（C++14），必须显式初始化，
+// 否则内存里的脏值会让 start() 里 running_.exchange(true) 直接返回 true，线程起不来
+ViNode::ViNode() : running_(false) {}
 
 ViNode::~ViNode() { stop(); }
 
@@ -129,16 +132,26 @@ void ViNode::run()
                out_width_, out_height_);
         is_open = true;
       }
+      // 本节点耗时统计：开始时间戳（拿到 block 之后、真正开始采集之前）
+      profile::NodeProfiler *profiler = profile::get_profiler(block);
+      if (profiler)
+        profiler->begin(m_name);
       // 记录当前帧的开始时间
       auto frame_start_time = std::chrono::steady_clock::now();
-      int cnt = 0;
-      if (m_capture->read_frame(fb))
+      if (!m_capture->read_frame(fb))
       {
-      }
-      else
+        // 先写结束时间戳再 continue，否则本帧在本节点会一直显示 running
+        if (profiler)
+          profiler->end(m_name);
         continue;
+      }
       // 【核心逻辑】计算这一帧处理花了多少时间
       auto frame_end_time = std::chrono::steady_clock::now();
+      // 本节点耗时统计：结束时间戳
+      // 必须放在下面的帧率节流 sleep 之前，否则会把等待下一帧的空闲时间
+      // 也算进节点耗时（每帧恒定 33ms，失去统计意义）
+      if (profiler)
+        profiler->end(m_name);
 
       // 【修复】直接相减，不进行 duration_cast，让 auto 自动推导类型
       auto process_cost = frame_end_time - frame_start_time;

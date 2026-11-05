@@ -1,5 +1,6 @@
 #include "MemManager.h"
 #include "MemMeta.h"
+#include "node_profiler.h"
 
 MemManager::MemManager()
 {
@@ -29,6 +30,9 @@ void MemManager::MemInit(int size) {
       //   frame->data[0],frame->data[1],frame->data[2]);
       _memMeta->set_ptr(iter->first,frame);
     }
+    //耗时统计结构初始化：每块一个，节点从 block 取出后记录本帧各阶段耗时
+    //（槽位名见 profile::kProfilerSlot，节点通过 profile::get_profiler(block) 获取）
+    _memMeta->set_ptr(profile::kProfilerSlot,new profile::NodeProfiler());
     //结构体初始化
     pool::MemBlock *block = new pool::MemBlock(_memMeta);
     pool.addBuffer(_memMeta);
@@ -46,6 +50,17 @@ void MemManager::FreeMem() {
     {
       MemMeta *_memData = block->data();
       //释放视频帧
+
+      //释放耗时统计结构
+      if(nullptr != _memData)
+      {
+        profile::NodeProfiler *profiler =
+            _memData->data<profile::NodeProfiler *>(profile::kProfilerSlot);
+        if(nullptr != profiler)
+        {
+          delete profiler;
+        }
+      }
 
       //释放结构体
 
