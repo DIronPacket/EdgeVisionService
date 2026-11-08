@@ -233,7 +233,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧），报表带实测 fps |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
 | 推流 | 单路 RTSP 可演示，参数来自 `config/push.json`；stop/空指针问题待修；`rtmp`/裸 RTP 未实现 |
-| 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；**主链路尚未使用它**（T5/T6 接入），`global.pool.*` 仍无人读取（T10a） |
+| 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；**主链路尚未使用它**（T5/T6 接入），`global.pool.*` 仍无人读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 = `dev:/dev/video0` 1080p@30，ch1~ch3 = 3 个 mp4，实测 **1024×576@24**），T3 验收 104 项断言见 TESTLOG §5.7；**4 路端到端仍待 T6/T7b** |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
 **P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-3、P0-4、P0-6、P0-7、P0-12 已修复，剩 7 项，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
@@ -244,6 +244,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | --- | --- | --- |
 | 改推流分辨率/编码(h264,h265)/协议/端口 | `config/push.json`（改完重跑 `testnode` 即生效，无需重编） | `moudle_push.cpp::set_data`、`moudle_vi.cpp::set_data` |
 | 改配置格式 / 调配置校验规则 / 加配置字段 | `src/common/configmgr/node_config_manager.cpp`（`ParseV1` / `ParseV0` / `ExpandRefs` / 数值守护） | `node_config.h`（数据模型 `GlobalDesc`/`PipelineDesc`/`NodeDesc`）、`config/node.json`、DESIGN §5、验收脚本 `scripts/tests/run_t2_node_config.sh`（53 项断言，改校验必跑） |
+| 改多链路配置（4 路：摄像头 + mp4） | `config/node.json`（ch0 = `dev:/dev/video0`；ch1~ch3 = `file:...mp4` + `loop`；**vi 与 push 的宽高/fps 必须等于素材实测值**，换素材先 `ffprobe`） | 验收脚本 `scripts/tests/run_t3_node_json.sh`（104 项断言，改配置必跑；含 ffprobe 交叉校验与 v0 等价断言）、`config/push.json`（v0 对照）、TESTLOG §5.7 |
 | 改采集行为 | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp` | `capture_interface.h`、`capture_factory.cpp` |
 | 改编码参数（QP/GOP/码率） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `config/push.json`、`moudle_push.h` 里的默认成员 |
 | 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
@@ -491,6 +492,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-08 | **T1 修 P0-6 / P0-7**（`src/platform/rtsp/zlm_push_server.{cpp,h}` + 新增 `scripts/tests/`）：流/服务 key 改为 ctx 自带并由 `ServerKey` / `StreamKey` 唯一生成（原 `bind_ip` 从未赋值，stop 拼出 `":8550"` 故停止路径静默失效）；新增 `ReleaseServerRef()` 收敛三处 `ref_cnt` 释放（原重复注册分支 `ref_cnt++` 后直接 return，导致 server 永久滞留、`mk_stop_all_server()` 永不执行）；stop / 送帧改为先按句柄在表内定位再解引用（避免已停句柄 UAF）；`!out_code` 判空移到最前；新增只读自检 `zlm_rtsp_stream_count` / `zlm_rtsp_server_count`。验收：`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`（18 项），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.5 | `87127e0` |
 | 2026-11-08 | 内存池归属定案（两次纯文档提交，**无代码改动、无需重新编译**）：`f87211f` 新增 `DESIGN_MULTI_PIPELINE.md` **§11.6**（现状事实：池为进程级单例、块尺寸统一硬编码 1080p、**一块挂所有 profile**、单一 `free_list_`、`acquire(name)` 无归属语义；A/A+/B 三方案对比；共享池三风险；内存账 199MB/92MB/63MB；DeepStream、GStreamer、ZLMediaKit、SRS、NVR 业界对照）+ `node.json` 增补 `global.pool.quota_per_channel`；`b6c639c` 把结论记为 **D9 = A（共享池 + 每路配额）**，A+ 不实施，**T10a 范围与人日扩为 1.5**（块数 + 队列深度 + 配额计数 + 丢帧分类计数 + 健康指标） | `f87211f` / `b6c639c` |
 | 2026-11-08 | **T2 新增 `NodeConfigManager`**（新模块 `src/common/configmgr/`：`node_config.h` 数据模型 + `node_config_manager.{h,cpp}`；`src/common/CMakeLists.txt` 注册源文件与头路径）：v1 `node.json` 解析（字段级校验、错误带字段路径如 `pipelines[0].nodes[1].config.port`、`${global.*}` 整值引用保留 JSON 类型、节点未写时注入 `global.media.rtsp.{port,app}`、默认值合并）+ v0 `push.json` 单链路适配（`vi` → `push(name=rtsp)` → `print`，与现 `main_node.cpp` 一致）；单例 + 不可变快照，**校验失败不破坏已生效快照**，`load_with_fallback()` 优先 v1、显式路径不回退。新增验收脚本 `scripts/tests/run_t2_node_config.sh` + 7 份 `fixtures/*.json`（53 项断言 → `ALL PASS (fails=0)`），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.6。**尚未接入 `main_node.cpp`**（T5/T6 才用）；`global.pool.*` 仍无人读取（T10a）；`config/node.json` 的本地改动按约定未入库 | `8d87731` |
+| 2026-11-08 | **T3 `config/node.json` 定稿**（只改配置 + 新增验收脚本，**无 C++ 改动**）：ch1~ch3 按 `ffprobe` 实测把 `1280×720@30` 改为 **`1024×576@24`**（`FfmpegCapture` 不缩放、`PushNode` 用 `fps` 推算流时间戳，两者不符必然花屏或播放加速），`vi.src` 补 `file:` 前缀并写明素材为本机绝对路径，`_comment` 去掉「NodeConfigManager 尚未实现」等过时说明；新增 `scripts/tests/run_t3_node_json.sh` + `t3_node_json.cpp`（104 项断言：链路结构 / `vi.src` 前缀与 `loop` / vi↔push 参数一致 / 端口只来自 global / 与 `ffprobe` 实测比对 / 与 v0 逐字段等价）。`passes=104 fails=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.7。**4 路端到端仍待 T6/T7b** | 待填 |
 
 
 

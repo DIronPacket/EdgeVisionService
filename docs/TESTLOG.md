@@ -65,6 +65,7 @@
 | 2026-11-08 | 池方案决策 **D9 = A**（纯文档） | `python3 -m json.tool config/node.json` → `JSON_OK`；`D9` 已出现在 DESIGN §1.4 决策表 / §9 第 6 项 / §11.6.2 / §11.6.4 / §11.6.6 / §11.6.7 / §12 变更记录（口径一致：共享池 + 每路配额，A+ 不实施）；**未改 C++，未重新编译** | ✅ 决策沉淀完成（T10a 范围与人日同步为 1.5；`node.json` 注释标注 D9） |
 | 2026-11-08 | **T1** 修 P0-6 / P0-7 | `cmake --build build --target rtsp -j8` → `EXIT=0`；`cmake --build build -j8` 全量 → `EXIT=0`（含 `testnode`）；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`，18 项断言（见 5.5） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 | 2026-11-08 | **T2** `NodeConfigManager`（v1 解析/校验/v0 适配） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t2_node_config.sh` → `ALL PASS (fails=0)`，53 项断言（见 5.6） | ✅ 代码 + 冒烟 + 验收断言全通过 |
+| 2026-11-08 | **T3** `config/node.json` 定稿（4 路） | `./scripts/tests/run_t3_node_json.sh` → `passes=104 fails=0 skips=0`，`EXIT=0`；素材缺失分支 `passes=95 skips=1`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.7） | ✅ 配置层通过（端到端待 T6/T7b） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -168,6 +169,30 @@
   - 端口只校验"节点 `port` 必须等于 `global.media.rtsp.port`"；`app/stream` 重复、两路抢同一设备属 T15；
   - 数值上限（宽高 ≤8192 且偶数、`bitrate ≤200000`、`gop ≤10000`、`interval ≤100000`）经代码走查确认，未逐项构造用例（`fps` 上下界已有用例）；
   - `v0` 适配只覆盖当前 `push.json` 的字段集合；若 `push.json` 增加新字段，需同步 `ParseV0`。
+
+### 5.7 L2 · T3 `config/node.json` 定稿（4 路：1 摄像头 + 3 路 mp4）（2026-11-08）
+
+- 代码基线：工作树（`rk3588`，基于 `e0ce88f`，T2 的 `NodeConfigManager` 可用）；本任务**只改配置与测试脚本，未改 C++ 源码**
+- 命令：
+  ```bash
+  python3 -m json.tool config/node.json > /dev/null   # JSON 语法
+  ./scripts/tests/run_t3_node_json.sh                 # 104 项断言（含 ffprobe 交叉校验）
+  ./build/run.sh EdgeVisionService                    # 冒烟
+  ```
+- 结果摘要：
+  - **素材实测**（`3rdparty/rk3588/ffmpeg/bin/ffprobe`）：`build/file/test1~3.mp4` = hevc **1024×576 @23.976fps**，8888s / 213098 帧；脚本四舍五入取 24 作为交叉校验期望值
+  - **配置按实测改定**：ch1~ch3 的 `vi`/`push` 宽高 `1280×720 → 1024×576`（`FfmpegCapture::transfer_frame` 不缩放，尺寸不符必花屏）、`fps 30 → 24`（`PushNode` 用 `1000000/fps` 推算流时间戳，配 30 会使时间戳比真实采集节奏快 20%，播放端表现加速/抖动）；`vi.src` 补 `file:` 前缀（原为本地改的无前缀绝对路径，不符 DESIGN §5.4 前缀规则）；ch0 保持 `dev:/dev/video0` + 1920×1080@30 与码率 4096 不变
+  - **脚本结果**：`==== T3 node.json 自检结果: passes=104 fails=0 skips=0 ====`，`SCRIPT_EXIT=0`。六组断言：A 加载/global 段（4 链、port 8550、app live、blocks 64、queue_depth 8、quota 10、images 1×nv12 1920×1080）；B 链路结构（ch0 4 节点含 vpss 且 `enable=false`、ch1~3 各 3 节点、name/channel/enable）；C `vi.src` 前缀与 `loop`（ch0 `dev:` 不写 loop、ch1~3 `file:` 且 `loop=true`）；D vi↔push 参数一致 + push 段 `port`/`app` 等于 global（原文里 push 不写 port/app）+ 队列名全局唯一（13 个）；E 与 ffprobe 实测比对；F 与 v0 `config/push.json` 逐字段等价
+  - **素材缺失分支**：把 3 个 `src` 指向不存在文件后再跑 → `passes=95 fails=0 skips=1`，`EXIT=0`（E 段打印 SKIP，其余断言照常）
+  - **与 v0 等价**：ch0 的 `push` / `print` 段 14 个字段与 `config/push.json` 完全一致（`port` / `app` 由 `global` 注入后也相等），即「v1 的 ch0 = 今天的单链路」
+  - 冒烟：`./build/run.sh EdgeVisionService` → `EdgeVisionService start`
+- 结论：✅ 通过（**配置层**）。T3 验收条件「4 路结构正确 + 用 v1 跑起来与 v0 单路现象一致」中，结构部分已全量断言，等价性以字段级断言替代，运行部分受限见下。
+- 未做 / 受限：
+  - **"真的跑起来"未验证**：`main_node.cpp` 仍只装配 v0 单链路（T6 才换 `PipelineBuilder`），`ViNode::run()` 仍硬编码 `CAPTURE_V4L2` + `/dev/video0:640:480:NV12:30`（T7 才解析 `vi.src`），`FfmpegCapture` 仍不 loop（T7b）→ 「4 路同时出流 + `rtsp://<ip>:8550/live/ch0..ch3`」的端到端验证必须等 T6/T7b 之后
+  - `global.pool.{blocks,queue_depth,quota_per_channel}` 仍是"配置里写了但无人读"（T10a）
+  - `vi.loop: true` 当前无实现（T7b）；ch1~ch3 要播到 8888s 末尾才会暴露问题
+  - 素材是**本机绝对路径**（`/mnt/nvme/workspace/EdgeVisionService/build/file/testN.mp4`），`build/` 不入库 → 换机器 / 重 clone 需自备同名文件或改路径（已写入配置 `_comment`）
+  - 三路素材是同一文件的副本，画面无差异，肉眼无法区分通道 → 排查串流问题只能靠 `stream` 名与日志
 
 ---
 
