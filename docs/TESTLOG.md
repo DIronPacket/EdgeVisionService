@@ -63,6 +63,7 @@
 | 2026-11-08 | 提交入库 | `e82e39e`（代码 22 文件）+ `d9f5ca2`（文档 6 文件）；提交后 `git status --short` 为空 | ✅ 工作树干净 |
 | 2026-11-08 | 内存池归属方案（纯文档 + `node.json` 增补字段） | `python3 -m json.tool config/node.json` → `JSON_OK`（239 行）；`git diff --stat` 仅 `config/node.json`(+5/-1) 与 `docs/DESIGN_MULTI_PIPELINE.md`(+102)；**未改 C++ 源码，未重新编译** | ✅ 文档/配置一致（`quota_per_channel` 尚未被二进制读取，随 T10a 生效） |
 | 2026-11-08 | 池方案决策 **D9 = A**（纯文档） | `python3 -m json.tool config/node.json` → `JSON_OK`；`D9` 已出现在 DESIGN §1.4 决策表 / §9 第 6 项 / §11.6.2 / §11.6.4 / §11.6.6 / §11.6.7 / §12 变更记录（口径一致：共享池 + 每路配额，A+ 不实施）；**未改 C++，未重新编译** | ✅ 决策沉淀完成（T10a 范围与人日同步为 1.5；`node.json` 注释标注 D9） |
+| 2026-11-08 | **T1** 修 P0-6 / P0-7 | `cmake --build build --target rtsp -j8` → `EXIT=0`；`cmake --build build -j8` 全量 → `EXIT=0`（含 `testnode`）；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`，18 项断言（见 5.5） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -114,6 +115,33 @@
 - 结果摘要：新增本文；HANDOFF §1.4/§1.9/§2.2 第 9 条/R5/附录 B 同步；`.clinerules/00-handoff.md` 与 `AGENTS.md` 入口各加一条指向本文。
 - 结论：✅ 机制生效（本文即自用示例）。
 - 未做 / 受限：**本轮没有代码改动，因此没有构建/运行验证**；首次真正用它记录的是下一个任务（T1）。
+
+### 5.5 L2 · T1 修 P0-6 / P0-7（RTSP 服务 key、ref_cnt 与入参校验）（2026-11-08）
+
+- 代码基线：工作树（`rk3588`，基于 `d9f5ca2`）；改动 `src/platform/rtsp/zlm_push_server.{cpp,h}` + 新增 `scripts/tests/`
+- 命令：
+  ```bash
+  cmake --build build --target rtsp -j"$(nproc)"   # EXIT=0
+  cmake --build build -j"$(nproc)"                 # 全量 EXIT=0（含 testnode）
+  ./build/run.sh EdgeVisionService                 # → EdgeVisionService start
+  ./scripts/tests/run_t1_zlm_rtsp_key.sh           # 18 项断言，默认端口 18550
+  ```
+- 结果摘要：
+  - `ALL PASS (fails=0)`；`out_code=nullptr` 不崩溃；空 `stream` / 0×0 / `fps=0` 均返回 `ZLM_ERR_INVALID_PARAM`
+  - stop 之后同名流可重新注册（**旧实现此处永为 `ZLM_ERR_STREAM_EXIST`**）
+  - 全部 stop 后 `streams=0 servers=0`，端口监听=0；重复 stop 幂等；已停句柄送帧回 `ZLM_ERR_NOT_FOUND`（不崩溃）
+  - start/stop ×10：每轮 `streams/servers` 起 1 落 0
+- 结论：✅ 通过。同一文件三处缺陷（同源）：
+  1. **P0-6-a**：`zlm_rtsp_stop()` 用 `bind_ip + port` 拼流 key，而 `bind_ip` 从未被赋值 → key 为 `":8550"`，与注册时的 `"8550"` 不等，停止路径静默失效。改为 `RtspServerCtx`/`OneKeyStreamCtx` 自带 `key`，`ServerKey(port)` / `StreamKey(port,app,stream)` 成为唯一生成入口。
+  2. **P0-6-b（本次新发现）**：重复注册分支在 `ref_cnt++` **之后**直接 `return`，每重复注册一次就漏一个服务引用 → 最后一个流 stop 时 `ref_cnt` 归不到 0、`mk_stop_all_server()` 永不执行、server 永久滞留（实测先出现 `streams=0 / servers=1`）。抽出 `ReleaseServerRef()` 作为唯一释放点（正常 stop / 重复注册回滚 / `mk_media_create` 失败三路共用）。
+  3. **P0-7**：`!out_code` 判断移到最前并直接返回，不再"先判空、后解引用"。
+  - 同因附带修复：`zlm_rtsp_stop()` 与 `zlm_rtsp_input_encodeData()` 原先直接 `static_cast` 解引用句柄；stop 真正生效后，对已停句柄再 stop / 再送帧即 UAF。改为先按指针在表内定位，命中才访问成员。
+  - 新增只读自检接口 `zlm_rtsp_stream_count()` / `zlm_rtsp_server_count()`（`zlm_push_server.h`）：两张表是文件内 `static`，不暴露就无法断言 T1 验收条件"stop 后两表为空"。
+- 未做 / 受限：
+  - 只验证同进程内单/双路起停，**未做 4 路并发与长稳**（属 M1 T8）；
+  - `mk_stop_all_server()` 是进程级"停所有服务"，多端口会误伤 → **T4 `MediaServer` 必须收敛**（已在代码注释标注）；
+  - 端口释放是**异步**的（监听 socket 由 ZLM 的 `TcpServer` 析构在 poller 线程关闭）：同一端口 stop 后立刻 restart 会 `bind: address already in use`，脚本做了 ≤3s 退避重试（10 轮共重试 8 次）。4 路共用 8550 时 server 只起一次，不受影响；但 T4 若按端口重建服务需考虑此约束。
+  - `scripts/tests/` 依赖 `ss`（观察端口）与 `install/rk3588`（ZLMediaKit 头/库），x86 未验证。
 
 ---
 

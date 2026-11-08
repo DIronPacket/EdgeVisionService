@@ -13,7 +13,7 @@
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池 → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
-| P0 问题 | 12 项（P0-4、P0-12 已修复），见 `docs/STATUS.md` §4.1 |
+| P0 问题 | 12 项（P0-3 / 4 / 6 / 7 / 12 已修复，剩 7 项），见 `docs/STATUS.md` §4.1 |
 
 ## 跳读表（**不要全文读**：先跑一条命令拿行号，再定向读区间）
 

@@ -47,5 +47,11 @@ ZlmServerStreamHandle zlm_rtsp_onekey_start(uint16_t rtsp_port,ZlmFrameCodec typ
 int zlm_rtsp_input_encodeData(ZlmServerStreamHandle h,ZlmFrameCodec type, const uint8_t* data, int len, uint64_t dts, uint64_t pts);
 // 销毁，流全部关完自动停server
 void zlm_rtsp_stop(ZlmServerStreamHandle h);
+
+// ===== 自检接口（只读，供测试/诊断用；不参与业务逻辑）=====
+// 当前注册的流数量（内部 g_stream_map 大小），正常 stop 之后应为 0
+int zlm_rtsp_stream_count(void);
+// 当前存活的 RTSP 服务数量（内部 g_server_map 大小），最后一个流 stop 之后应为 0
+int zlm_rtsp_server_count(void);
 }
 #endif

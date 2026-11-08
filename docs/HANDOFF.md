@@ -22,7 +22,7 @@
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
-| 最大问题 | P0 共 12 项（其中 P0-4、P0-12 已修复，剩 10 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 最大问题 | P0 共 12 项（P0-3 / 4 / 6 / 7 / 12 已修复，剩 7 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
@@ -98,7 +98,7 @@ EdgeVisionService/
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
 ├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口 / print 打印间隔
-├── scripts/                    # 空（部署脚本未落地）
+├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh + t1_zlm_rtsp_key.cpp（RTSP key / ref_cnt / 入参校验，18 项断言）
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
@@ -485,6 +485,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-08 | `DESIGN_MULTI_PIPELINE.md` 二次修订（纯文档）：与用户确认 8 项决策 D1–D8（**目标 4 路 × 30fps = 1 路 `/dev/video0` + 3 路 mp4 循环**；RTSP 共用 8550 端口只分 `stream`；不做热加载/鉴权/子码流；保持单进程；**迁移完成后删除 `config/push.json`**）；新增 §10 概念详解（主/子码流必要性、热加载边界、鉴权 vs rtsps）、§11 4 路容量估算与板端验收阈值；任务表加 **T7b**（`FfmpegCapture` 循环 + 缩放，当前 EOF 即停、且不缩放）、**T10a**（池块数 50 / 队列深度 20 配置化，4 路必做），M1 工期 5–8 人日。**无代码改动，仍为提案** | `d9f5ca2` |
 | 2026-11-08 | 新增 `docs/TESTLOG.md`（测试与验证记录）：按 **L1 冒烟 / L2 任务 / L3 版本** 三级粒度记录「命令 + 结果摘要 + 结论 + 未做项」，含模板、必填项、维护约定与 token 成本评估；归档既有三项结论（基线冒烟、`VpssNode` 验证、`node.json` 语法校验）。同步本文 §1.4/docs 行、§1.9 跳读表、R5 文档分工表 | `d9f5ca2` |
 | 2026-11-08 | 提交入库：`e82e39e`（预处理框架 + `VpssNode`，22 文件；提交前构建 `EXIT=0`）+ `d9f5ca2`（多链路设计 + `config/node.json` + `TESTLOG` 制度，6 文件）。同时回写 §0 事实卡、§1.2 坐标（HEAD / 代码校准点）、`.clinerules/00-handoff.md` 与 `AGENTS.md` 现状卡，并把附录 B 里标「未提交」的行补上实际 commit | `e82e39e` / `d9f5ca2` |
+| 2026-11-08 | **T1 修 P0-6 / P0-7**（`src/platform/rtsp/zlm_push_server.{cpp,h}` + 新增 `scripts/tests/`）：流/服务 key 改为 ctx 自带并由 `ServerKey` / `StreamKey` 唯一生成（原 `bind_ip` 从未赋值，stop 拼出 `":8550"` 故停止路径静默失效）；新增 `ReleaseServerRef()` 收敛三处 `ref_cnt` 释放（原重复注册分支 `ref_cnt++` 后直接 return，导致 server 永久滞留、`mk_stop_all_server()` 永不执行）；stop / 送帧改为先按句柄在表内定位再解引用（避免已停句柄 UAF）；`!out_code` 判空移到最前；新增只读自检 `zlm_rtsp_stream_count` / `zlm_rtsp_server_count`。验收：`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`（18 项），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.5 | 本次提交（见右列） |
 | 2026-11-08 | 内存池归属定案（两次纯文档提交，**无代码改动、无需重新编译**）：`f87211f` 新增 `DESIGN_MULTI_PIPELINE.md` **§11.6**（现状事实：池为进程级单例、块尺寸统一硬编码 1080p、**一块挂所有 profile**、单一 `free_list_`、`acquire(name)` 无归属语义；A/A+/B 三方案对比；共享池三风险；内存账 199MB/92MB/63MB；DeepStream、GStreamer、ZLMediaKit、SRS、NVR 业界对照）+ `node.json` 增补 `global.pool.quota_per_channel`；`b6c639c` 把结论记为 **D9 = A（共享池 + 每路配额）**，A+ 不实施，**T10a 范围与人日扩为 1.5**（块数 + 队列深度 + 配额计数 + 丢帧分类计数 + 健康指标） | `f87211f` / `b6c639c` |
 
 

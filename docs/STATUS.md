@@ -68,8 +68,8 @@
 | 3 | ✅ 已修复（`d158eca`）：`read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 配置 fps 高于采集帧率时反复失败，池子几十帧内耗尽，整条链路静默停摆 |
 | 4 | ✅ 已修复（`283bab5`）：`enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp::run` | 同上，且编码器会反复重试失败 |
 | 5 | `push_input_pipe()` 向多个下游推同一块，但不增加引用计数 | `pipeline/pipeline_node.cpp:28-38` | 多分支时第一个下游释放后块可能被复用，其他分支读到脏数据 |
-| 6 | `zlm_rtsp_stop()` 用 `bind_ip + port` 拼流 key，而注册时只用 `port`；服务 key 也同样不一致 | `platform/rtsp/zlm_push_server.cpp:104`、`167`、`181` | 找不到流直接 return，`mk_media` 不释放，服务引用计数无法归零 |
-| 7 | `zlm_rtsp_onekey_start()` 的入参校验里既判断 `!out_code` 又写 `*out_code` | `platform/rtsp/zlm_push_server.cpp:66-68` | 传 `nullptr` 直接崩溃 |
+| 6 | ✅ 已修复（T1）：`zlm_rtsp_stop()` 曾用 `bind_ip + port` 拼流 key（`bind_ip` 从未赋值 → `":8550"` ≠ 注册时的 `"8550"`），服务 key 同样不一致；现由 ctx 自带 `key`，`ServerKey` / `StreamKey` 为唯一生成入口。**同修 ref_cnt 泄漏**：重复注册分支 `ref_cnt++` 后直接 `return`，最后一个流 stop 时计数归不到零、`mk_stop_all_server()` 永不执行 | `platform/rtsp/zlm_push_server.cpp` | 找不到流直接 return，`mk_media` 不释放，服务引用计数无法归零 |
+| 7 | ✅ 已修复（T1）：`!out_code` 判断移到函数最前并直接返回，不再"先判空、后解引用" | `platform/rtsp/zlm_push_server.cpp` | 传 `nullptr` 直接崩溃 |
 | 8 | `MppDecoder` 回调前未分配 `FrameBuffer` 内存就 `memcpy` | `platform/decoder/rk_mpp_decoder.cpp:104-106` | `fb.data` 为空，必现段错误 |
 | 9 | `MemManager::MemInit()` 中 `new MemBlock` 后未使用；`FreeMem()` 只删 `MemMeta`，不删 `FrameBuffer` | `common/MemManager/MemManager.cpp:22-34`、`40-54` | 每次初始化/退出均泄漏内存与对象 |
 | 10 | `FrameBuffer` 无析构、可拷贝、`Allocate()` 后再 `BindMemory()` 会覆盖指针 | `common/frame_buffer.h:16-125` | 裸指针生命周期不可控，易双重释放/泄漏 |
