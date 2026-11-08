@@ -197,7 +197,7 @@
 
 ### 5.8 L2 · T5 `NodeFactory` + `PipelineBuilder`（配置驱动的装配与拓扑校验）（2026-11-08）
 
-- 代码基线：工作树（`rk3588`，基于 `0635ad1`；代码校准点仍为 `8d87731`）
+- 代码基线：工作树（`rk3588`，基于 `0635ad1`；本次提交为 `b461ece`，其后的纯 `docs:` 提交不改变本记录）
 - 改动：新增 `src/pipeline/node_factory.{h,cpp}`（type→节点单例注册表，内置 vi/vpss/push/print）与 `src/pipeline/pipeline_builder.{h,cpp}`（拓扑校验 + 装配 + 连线 + 批量启停 + 计数/错误），`src/pipeline/CMakeLists.txt` 加 2 个源文件并 `PUBLIC` 链 `common_api`（builder 读 `NodeConfigManager`，需符号 + `configmgr` 头路径）；`src/main/test/CMakeLists.txt` 新增 `test_builder` target；新增 `scripts/tests/t5_builder.cpp`（64 断言）与 `scripts/tests/run_t5_builder.sh`
 - 命令：
   ```bash
