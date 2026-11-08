@@ -68,6 +68,8 @@
 | 2026-11-08 | **T3** `config/node.json` 定稿（4 路） | `./scripts/tests/run_t3_node_json.sh` → `passes=104 fails=0 skips=0`，`EXIT=0`；素材缺失分支 `passes=95 skips=1`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.7） | ✅ 配置层通过（端到端待 T6/T7b） |
 | 2026-11-08 | **T5** `NodeFactory` + `PipelineBuilder` | `./scripts/tests/run_t5_builder.sh` → `passes=64 fails=0 skips=2`，`EXIT=0`；真实 `node.json` 建成 4 条链；T3 `passes=104`、T2 `ALL PASS` 回归通过；全量 `cmake --build` 通过 + `run.sh EdgeVisionService` → start（见 5.8） | ✅ 装配层通过（`start_all` 顺序待 T6/T7 板端验） |
 | 2026-11-08 | **T6** `main_node.cpp` 改为 builder 驱动 + SIGINT 优雅退出 | `cmake --build build -j8` → `EXIT=0`；`timeout --preserve-status -s INT 12 ./build/run.sh testnode config/push.json` → `EXIT=0`（`vi0 → rtsp0 → print0` 正序停止、`FreeMem 完成`、无残留进程）；同命令跑 `config/node.json` → 4 条链建成/启动/正序停止、`EXIT=0`；T5 `passes=64`、T3 `passes=104`、T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → start（见 5.9） | ✅ 进程编排层通过（4 路**出帧**待 T7/T7b：`ViNode` 仍硬编码同一 `/dev/video0`） |
+| 2026-11-09 | README 重写（文档 + 命令实测） | `./build/run.sh testnode`（无参）→ `[builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条`，`V1_EXIT=0`（证实无参时命中 `../config/node.json`）；`./build/run.sh testnode ../config/push.json` → `建成 1 条`，`V0_EXIT=0`；README 代码围栏 16 个（成对闭合）、8 个相对链接目标全部存在；改 `config/node.json` 注释后 `python3 -m json.tool` → `JSON_OK`、`run_t3_node_json.sh` → `passes=104 fails=0 skips=0` | ✅ 文档里写出的运行命令与输出均实测；无残留进程 |
+
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
