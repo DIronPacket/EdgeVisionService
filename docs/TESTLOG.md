@@ -66,6 +66,7 @@
 | 2026-11-08 | **T1** 修 P0-6 / P0-7 | `cmake --build build --target rtsp -j8` → `EXIT=0`；`cmake --build build -j8` 全量 → `EXIT=0`（含 `testnode`）；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`，18 项断言（见 5.5） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 | 2026-11-08 | **T2** `NodeConfigManager`（v1 解析/校验/v0 适配） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t2_node_config.sh` → `ALL PASS (fails=0)`，53 项断言（见 5.6） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 | 2026-11-08 | **T3** `config/node.json` 定稿（4 路） | `./scripts/tests/run_t3_node_json.sh` → `passes=104 fails=0 skips=0`，`EXIT=0`；素材缺失分支 `passes=95 skips=1`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.7） | ✅ 配置层通过（端到端待 T6/T7b） |
+| 2026-11-08 | **T5** `NodeFactory` + `PipelineBuilder` | `./scripts/tests/run_t5_builder.sh` → `passes=64 fails=0 skips=2`，`EXIT=0`；真实 `node.json` 建成 4 条链；T3 `passes=104`、T2 `ALL PASS` 回归通过；全量 `cmake --build` 通过 + `run.sh EdgeVisionService` → start（见 5.8） | ✅ 装配层通过（`start_all` 顺序待 T6/T7 板端验） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -193,6 +194,30 @@
   - `vi.loop: true` 当前无实现（T7b）；ch1~ch3 要播到 8888s 末尾才会暴露问题
   - 素材是**本机绝对路径**（`/mnt/nvme/workspace/EdgeVisionService/build/file/testN.mp4`），`build/` 不入库 → 换机器 / 重 clone 需自备同名文件或改路径（已写入配置 `_comment`）
   - 三路素材是同一文件的副本，画面无差异，肉眼无法区分通道 → 排查串流问题只能靠 `stream` 名与日志
+
+### 5.8 L2 · T5 `NodeFactory` + `PipelineBuilder`（配置驱动的装配与拓扑校验）（2026-11-08）
+
+- 代码基线：工作树（`rk3588`，基于 `0635ad1`；代码校准点仍为 `8d87731`）
+- 改动：新增 `src/pipeline/node_factory.{h,cpp}`（type→节点单例注册表，内置 vi/vpss/push/print）与 `src/pipeline/pipeline_builder.{h,cpp}`（拓扑校验 + 装配 + 连线 + 批量启停 + 计数/错误），`src/pipeline/CMakeLists.txt` 加 2 个源文件并 `PUBLIC` 链 `common_api`（builder 读 `NodeConfigManager`，需符号 + `configmgr` 头路径）；`src/main/test/CMakeLists.txt` 新增 `test_builder` target；新增 `scripts/tests/t5_builder.cpp`（64 断言）与 `scripts/tests/run_t5_builder.sh`
+- 命令：
+  ```bash
+  ./scripts/tests/run_t5_builder.sh      # generate + 编译 test_builder + 运行
+  ./scripts/tests/run_t3_node_json.sh    # 回归
+  ./scripts/tests/run_t2_node_config.sh  # 回归
+  cmake --build build -j"$(nproc)"       # 全量
+  ./build/run.sh EdgeVisionService       # 冒烟
+  ```
+- 结果摘要：
+  - `==== T5 builder 自检结果: passes=64 fails=0 skips=2 ====`，`EXIT=0`。八组：A `NodeFactory` 14 项（未知 type 返回 `nullptr` 并报出已注册类型、重复注册被拒且不覆盖内置、空 type / 空 creator 被拒）；B `check_order` 拓扑规则 10 项（R1 空链 / 单节点、R2 首节点非 vi、R3 末节点非 push|print、R4 vi 非首位、R5 print 非末位，错误均带 `pipelines[i].nodes[j]` 字段路径）；C `build_one` 装配 13 项（节点数 / 全名 / channel 透传 / 正反向连线 / 失败不留半条链）；D 调用顺序与配置透传 6 项（`create` → `set_data` 各一次，收到 T2 包装后的配置原文）；E 真实 `config/node.json` `build_all` 10 项；F 单链失败隔离（N3）8 项；G 启停边界 3 项 + 2 SKIP；H 同配置重复 build 2 项
+  - **真实配置装配**：`ch0[0] vi0 -> vpss0 -> rtsp0 -> print0`、`ch1[1] vi1 -> rtsp1 -> print1`、`ch2` / `ch3` 各 3 节点，`[builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条`；连线数 = Σ(节点数−1)
+  - **N3 部分失败**：1 条合法 + 1 条未知 type（`vpsss`）+ 1 条无末端节点 → `建成 1 条, 失败 2 条, 跳过 0 条`，两条失败各留一条带字段路径的错误，合法链路照常建成
+  - 回归：T3 `passes=104 fails=0 skips=0`、T2 `ALL PASS (fails=0)`，两者 `EXIT=0`；全量 `cmake --build` 通过，`run.sh EdgeVisionService` → `EdgeVisionService start`
+- 结论：✅ 通过（**装配层**）。`config/node.json` 现在能直接驱动出 4 条已连线的链路对象；拓扑错误在 build 阶段拦截，单链失败不牵连其它链。
+- 未做 / 受限：
+  - **只 build，不 start**：`start_all` / `stop_all` 的顺序（终点先起、源头先停）会真拉 `/dev/video0` 并占 RTSP 端口，属端到端，留 T6/T7 板端验（G2 / G3 两个 SKIP 即此项）
+  - `main_node.cpp` 仍是 v0 手写单链路，**未接入 builder**（T6）
+  - `ViNode` 仍硬编码 `CAPTURE_V4L2` + `/dev/video0:640:480:NV12:30`，不解析 `vi.src`（T7）；`FfmpegCapture` 不 loop（T7b）
+  - `global.pool.{blocks,queue_depth,quota_per_channel}` 仍无人读（T10a）
 
 ---
 

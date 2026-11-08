@@ -47,3 +47,21 @@ PRIVATE
     ${FFMPEG_LIBRARIES}
     ${ZLM_LIBRARIES}
 )
+
+# ---------------------------------------------------------------
+# T5 验收：NodeFactory + PipelineBuilder 单测（源码在 scripts/tests/，
+# 由 scripts/tests/run_t5_builder.sh 触发）。
+# 只 build 不 start：不碰硬件、不起线程、不开 RTSP。
+# ---------------------------------------------------------------
+add_executable(test_builder
+    ${PROJECT_SOURCE_DIR}/scripts/tests/t5_builder.cpp
+)
+target_include_directories(test_builder PRIVATE ${FFMPEG_INCLUDE_DIRS} ${ZLM_INCLUDE_DIRS})
+target_link_libraries(test_builder
+PRIVATE
+    common_api
+    pipeline_api
+    platform_api
+    ${FFMPEG_LIBRARIES}
+    ${ZLM_LIBRARIES}
+)
