@@ -25,7 +25,9 @@
     "",
     "== 性能提示（RK3588 实测前先按此配置） ==",
     "文件源优先用 720p：3 路 1080p 软解约需 2.4~3.6 个 CPU 核，720p 大约减半。",
-    "pool.blocks = 路数 × (queue_depth + 2)，4 路 + 深度 8 → 40，这里取 64 留突发余量（约 199MB）。"
+    "pool.blocks = 路数 × (queue_depth + 2)，4 路 + 深度 8 → 40，这里取 64 留突发余量（约 199MB）。",
+    "quota_per_channel = 每路最多同时占用的块数（建议 queue_depth + 2）；超了只丢这一路，不会拖垮其他路。",
+    "内存池是全进程共享一个（不按链路分池）：块尺寸统一按最大 1920x1080 分配，720p 链路会浪费约 56% 内存，详见 DESIGN_MULTI_PIPELINE.md §11.6。"
   ],
 
   "global": {
@@ -36,6 +38,7 @@
     "pool": {
       "blocks": 64,
       "queue_depth": 8,
+      "quota_per_channel": 10,
       "images": [
         { "name": "nv12", "width": 1920, "height": 1080, "fmt": "nv12" }
       ]

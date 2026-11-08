@@ -526,6 +526,7 @@ int main(int argc, char **argv) {
 3. **通道命名**：用 `ch0..ch3`，还是业务名（`door`/`gate`/…）？`stream` 是任意字符串，会影响播放地址与后续对接。
 4. **池块数上限**：64 块 ≈ 199MB 的常驻内存是否可接受（板端总内存余量）。
 5. **是否 4 路都要推流**：若 1–2 路只做本地分析（print/AI），`push.enable=false` 可省掉对应 MPP 编码负载。
+6. **池要不要按 profile 分组（方案 A vs A+，见 §11.6.2）**：默认走 **A = 共享池 + 每路配额**（+0.5 人日，常驻约 199MB）；要降到约 92MB 需做 **A+ = 按 profile 分组池**（+1 人日，且必须先改 `MemInit` 的"一块挂所有 profile"）。**未指定前按 A 实施。**
 
 ---
 
@@ -647,6 +648,107 @@ int main(int argc, char **argv) {
 
 ---
 
+### 11.6 内存池归属：全局共享还是每路一个？（2026-11-08 追问的答复）
+
+#### 11.6.1 现状事实（代码级，改之前必须知道）
+
+| 事实 | 位置 | 含义 |
+| --- | --- | --- |
+| 池是**进程级单例** | `MemManager.h:14-17`、`MemPool.h:108-112` 双 `getInstance()` | 全进程只有一个池，`main_node.cpp` 调一次 `MemInit` |
+| **块尺寸单一且硬编码** | `MemManager.cpp:7` 构造里 `addImgConfig({1920,1080,FMT_NV12,"nv12"})` | 所有块都是 1080p NV12（3.11 MB），`addImgConfig()` 是 public 但**当前无人调用** |
+| **一块携带全部 profile** | `MemManager.cpp:20-32`：每块循环 `imgMap` 逐个 `new FrameBuffer` | ⚠️ 若配第 2 个 profile，**每块内存 = Σ各 profile**（加 profile 反而爆内存）。改造时必须改成"一块只挂一个 profile" |
+| 空闲块是**单一队列** | `MemPool.h:141` `free_list_` + `free_mtx_` | 没有 profile / channel 维度，谁先取谁用 |
+| `acquire(name)` 的 name | `MemPool.cpp:164` | 只用于统计与队列查找，**不决定尺寸、不代表归属** |
+| 块是**无状态可复用资源** | `MemPool.h:38-66`：`owner_name` + `user_list` + `user_cnt` + `subUser()` 引用计数 | 一帧可被多个下游共享（分支），引用归零才回池 |
+| 每路唯一的软上限 | `MemPool.h:73` `InitQueue(name, size=20)` | 只有队列深度，**不是**池占用上限 → 4 路最坏想吃 80 块 > 池 50 块（R13） |
+
+#### 11.6.2 三个层次的选择
+
+| 方案 | 做法 | 内存利用率 | 故障隔离 | 实现成本 | 结论 |
+| --- | --- | --- | --- | --- | --- |
+| **A 共享池 + 每路配额**（推荐） | 一个 `free_list_`；`channel → inflight 计数`，超 `quota` 丢帧 | **最高**（空闲路份额自动让给忙路） | 中（靠配额兜底） | 低（+0.5 人日） | ✅ M1 采用 |
+| **A+ 按 profile 分组池** | 池内按 `p1080 / p720` 各一组 `free_list_`，链路静态绑定 profile | 高（消除混分辨率浪费） | 中 | 中（+1 人日，含 `MemInit` 改造） | ⭕ 混分辨率时再做（M2 或 T10a 扩展） |
+| **B 每链路独立池** | N 个池实例，`channel → pool` 映射 | **低**（每路按峰值独占，总量翻倍） | **最好** | 高（`MemPool` 单例改成多实例，`FreeMem`/统计/Profiler 全改） | ❌ 不建议 |
+
+**为什么不做"块 → 链路归属 map"**：块是无状态资源，帧的生命周期只有几十毫秒。给块绑定归属后，A 路空闲的块无法给 B 路用（碎片化），还要跨路转移所有权；收益为负。要做的是**每路计数（配额）**，不是**归属绑定**。链路与池的关系是"静态绑定 profile"（配置项），不是运行时映射表。
+
+#### 11.6.3 共享池的三个真实风险（必须同时处理，否则别用共享池）
+
+1. **一路拖垮全局**：某路下游卡住 / 泄漏块 → 池空 → `acquire` 全返回 `nullptr` → **所有路一起丢帧**（现在就是这种结构）。
+   → 对策：每路 `quota`（超限只丢自己）+ 泄漏看门狗（块本身带 `owner_name`/`user_list`，直接打印"谁没还"）。
+2. **混分辨率浪费**：池块统一 1080p（3.11 MB），720p 链路每帧只用 1.32 MB → **浪费 56%**。
+   → 对策：要么全 1080p（简单、199 MB），要么按 profile 分组池（省一半，见 §11.6.4）。
+3. **软上限缺位**：现在每路上限只有队列深度 20，`4 × 20 = 80 > 池 50/64`，一路突发能让其他路饿死。
+   → 对策：`quota_per_channel` 与 `queue_depth` 分开配（配额管"池占用"，队列深度管"延迟"）。
+
+#### 11.6.4 内存账（3×720p + 1×1080p，每路配额 8）
+
+| 方案 | 构成 | 合计 | 相对浪费 |
+| --- | --- | --- | --- |
+| 现状/统一 1080p 池 | 64 块 × 3.11 MB | **≈ 199 MB** | 720p 链路每帧浪费 1.73 MB（56%） |
+| 按 profile 分组 | p1080 16 块（50 MB）+ p720 32 块（42 MB） | **≈ 92 MB** | 无 |
+| 全部降到 720p | 48 块 × 1.32 MB | **≈ 63 MB** | 无（但 ch0 掉分辨率） |
+
+**每路配额怎么定**：`quota = queue_depth + 2`（采集正在写 1 + 编码中 1）；`queue_depth` 取 4–8。
+例：4 路 × (8 + 2) = 40 → 总池取 48–64 留突发余量（与 §11.2 公式一致）。
+
+#### 11.6.5 主流业务方案对照（结论：共享池 + 每路配额是行业默认）
+
+| 平台 / 项目 | 池模型 | 每路控制手段 |
+| --- | --- | --- |
+| **NVIDIA DeepStream** | 两层：每 source 解码面池 + `nvstreammux` 后全局 batch 池 | `num-extra-surfaces`（每路）、`buffer-pool-size` / `batched-push-timeout`（全局） |
+| **GStreamer** | 每 element 协商 `GstBufferPool`，可共享 | `queue max-size-buffers` + `leaky=downstream`（每路配额，超了丢旧帧） |
+| **ZLMediaKit**（本项目推流端） | **无内存池**，帧用引用计数 `Frame::Ptr` | 每路独立 `MediaSource`，GOP 缓存有上限 |
+| **SRS** | 每 stream 独立 `SrsLiveSource` + 抖动队列 | `queue_length` 每路可配 |
+| **FFmpeg / libav** | `AVBufferPool` 按尺寸缓存 | 无每路概念 |
+| **NVR / 工业视觉盒子惯例**（海康、大华一类） | **按分辨率分组的共享池** | 每路 credit/配额 + 超限丢帧（实时优先于完整） |
+
+→ 三条可复用的行业共识：
+1. **共享池 + 每路配额**是默认解；"每 channel 独立池"几乎没人用在多路视频上（除非租户级隔离/SLA 强约束）。
+2. **按 profile（分辨率为代表）分组**是第二层优化，只在混分辨率且内存紧张时才做。
+3. **实时视频宁可丢帧也不积压**：所有方案的队列策略都是 drop-oldest，配额超限就丢，绝不让生产者阻塞。
+
+#### 11.6.6 `node.json` 的对应配置（v1.1 增补，向后兼容）
+
+池的配置只写**三处**，不需要"每路一个池"：
+
+```jsonc
+"global": {
+  "pool": {
+    "blocks": 64,              // 池总块数（全局一个池）
+    "queue_depth": 8,          // 每路队列深度（管延迟/丢帧）
+    "quota_per_channel": 10,   // 每路最多同时占用块数（管池占用；建议 = queue_depth + 2）
+    "images": [ { "name": "nv12", "width": 1920, "height": 1080, "fmt": "nv12" } ]
+  }
+}
+```
+
+若要按分辨率分组（§11.6.2 方案 A+，M2 再做），扩展成这样——**链路静态绑定 profile，不是运行时映射**：
+
+```jsonc
+"global": { "pool": { "profiles": [
+  { "name": "p1080", "width": 1920, "height": 1080, "fmt": "nv12", "blocks": 16 },
+  { "name": "p720",  "width": 1280, "height": 720,  "fmt": "nv12", "blocks": 32 }
+]}},
+"pipelines": [ { "channel": 1, "profile": "p720", "nodes": [ /* vi src 用 p720 */ ] } ]
+```
+
+> ⚠️ 走 profile 分组前**必须先改 `MemInit`**（见 §11.6.1 第 3 行）：现在是"一块挂所有 profile"，直接加 profile 会让每块内存变成各 profile 之和。
+
+#### 11.6.7 实施要点（并入 M1 的 T10a，0.5 → 1.5 人日）
+
+| # | 改动 | 位置 | 验收 |
+| --- | --- | --- | --- |
+| 1 | `MemInit(blocks, images)` 从配置注入，删掉构造里的硬编码 profile | `MemManager.{h,cpp}`、`MemManager.cpp:7` | 配 32/64 块都能起来；`PrintNode` 报出总块数 |
+| 2 | 每路配额：`channel → inflight` 计数，acquire 前置检查，超限返回 `nullptr` | `MemPool.{h,cpp}`（`acquire` / `release`） | 故意配 `quota=2` 能看到该路丢帧且**其他路不受影响** |
+| 3 | 丢帧分类计数：`drop_pool_empty` 与 `drop_quota` 分开统计 | `MemPool` + `PrintNode` 报表 | 报表能区分"池空"和"配额满"（排障关键） |
+| 4 | 健康指标：`free/total`、每路 `inflight`、泄漏看门狗（打印卡的块 `owner_name`） | `PrintNode` / `MemManager` | 4 路跑 10 分钟后 `free + Σinflight == total` 恒成立 |
+| 5 | （可选，A+）按 profile 分组 `free_list_`：`unordered_map<profile, queue<MemBlock*>>`，`acquire(profile, name)` | `MemPool.{h,cpp}` | 1080p 链路与 720p 链路互不抢块；总内存按 §11.6.4 下降 |
+
+> 红线复用：**acquire 之后所有失败分支必须 release**（HANDOFF §2.1 第 5 条）；配额计数必须与块的实际归还同源，否则一路泄漏会表现为"该路永久丢帧"——所以第 4 项的健康指标不是可选项。
+
+---
+
 ## 12. 变更记录
 
 | 日期 | 变更 |
@@ -654,6 +756,7 @@ int main(int argc, char **argv) {
 | 2026-11-08 | 初版：需求分析（F1–F5 / N1–N6）、现状 18 项事实盘点、三条判据与 16 项上提清单、7 类行业方案调研、四方案比选、`node.json` v1 schema、接口草案、M1–M3 分期计划与风险表 |
 | 2026-11-08 | 二次（用户确认 8 项）：新增 §1.4 决策表 D1–D8（**4 路 × 30fps = 1 路 `/dev/video0` + 3 路 mp4**、共用 8550 端口只分 `stream`、不做热加载/鉴权/子码流、保持单进程、**迁移后删除 `push.json`**）；schema 样例改为 4 路并新增 `vi.src` 前缀与 `vi.loop`；新增 §10 概念详解（主/子码流、热加载、鉴权 vs rtsps）、§11 4 路容量估算与验收阈值；任务表新增 **T7b**（文件源循环+缩放）、**T10a**（池块数/队列深度可配），T10 → T10b；风险新增 R11–R15；M1 工期 3–5 → **5–8 人日** |
 | 2026-11-08 | 三次（纯文档）：M1 验收标准新增第 8 条——**每条验收必须在 `docs/TESTLOG.md` 留记录**（每个 Tn 一条 L2，M1 收尾一条 L3，"没有记录的项不算通过"）；配套新建 `docs/TESTLOG.md`（分级 L1/L2/L3 + 模板 + 必填项 + token 成本评估） |
+| 2026-11-08 | 四次（纯文档，回答"池要不要按链路分"）：新增 **§11.6 内存池归属**——① 现状事实（进程级单例 / 块尺寸统一硬编码 1080p / **一块挂所有 profile**（加 profile 会爆内存）/ 单一 `free_list_` / `acquire(name)` 无归属语义）；② 三方案对比（**A 共享池+每路配额** 推荐 / A+ 按 profile 分组池 / B 每路独立池 不建议）；③ 共享池三个风险与对策（一路拖垮全局、混分辨率浪费 56%、软上限缺位）；④ 内存账 199MB vs 92MB vs 63MB；⑤ 业界对照（DeepStream / GStreamer / ZLMediaKit / SRS / NVR 惯例 = 共享池 + 每路配额）；⑥ `node.json` v1.1 增补 `quota_per_channel`；⑦ 实施要点并入 T10a（0.5 → 1.5 人日）。§9 新增第 6 项待确认（默认按 A 实施） |
 
 
 > 维护约定：M1 落地后回写 [STATUS.md](STATUS.md)（模块完成度、P0 清单）与 [HANDOFF.md](HANDOFF.md)（§1.2 关键坐标、§1.4 目录地图、附录 B），并把本文"状态"改为"已实现（M1）"。
