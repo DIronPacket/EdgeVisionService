@@ -17,7 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路可跑通，未产品化（推流参数已可配，仍无日志 / 单测 / CI） |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `8d87731`（T2 新增 `NodeConfigManager`；其后的纯 `docs:` 提交不算基线漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `8d87731`（T2 新增 `NodeConfigManager`；HEAD `7ee01b8` 是 T3 定稿 `config/node.json`，无 C++ 改动；其后的纯 `docs:` 提交不算基线漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）；`src/main/main.cpp` 只是空壳 |
@@ -68,8 +68,8 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `8d87731 config: 新增 NodeConfigManager（T2：v1 node.json 解析/校验/v0 适配）` · **代码基线 `8d87731`**（本文校准点；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
-| 前几个提交 | `e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 16 个提交） |
+| HEAD | `7ee01b8 config: T3 定稿 config/node.json（4 路：摄像头 + 3 路 mp4，按素材实测校正）` · **代码校准点 `8d87731`**（T2 `NodeConfigManager`；`7ee01b8` 只改 `config/` + `scripts/tests/` + docs，无 C++ 改动；此后纯 `docs:` 提交不改变本文任何结论，只有 `src/`、CMake、依赖变化才需回写本文） |
+| 前几个提交 | `e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 19 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
@@ -492,7 +492,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-08 | **T1 修 P0-6 / P0-7**（`src/platform/rtsp/zlm_push_server.{cpp,h}` + 新增 `scripts/tests/`）：流/服务 key 改为 ctx 自带并由 `ServerKey` / `StreamKey` 唯一生成（原 `bind_ip` 从未赋值，stop 拼出 `":8550"` 故停止路径静默失效）；新增 `ReleaseServerRef()` 收敛三处 `ref_cnt` 释放（原重复注册分支 `ref_cnt++` 后直接 return，导致 server 永久滞留、`mk_stop_all_server()` 永不执行）；stop / 送帧改为先按句柄在表内定位再解引用（避免已停句柄 UAF）；`!out_code` 判空移到最前；新增只读自检 `zlm_rtsp_stream_count` / `zlm_rtsp_server_count`。验收：`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`（18 项），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.5 | `87127e0` |
 | 2026-11-08 | 内存池归属定案（两次纯文档提交，**无代码改动、无需重新编译**）：`f87211f` 新增 `DESIGN_MULTI_PIPELINE.md` **§11.6**（现状事实：池为进程级单例、块尺寸统一硬编码 1080p、**一块挂所有 profile**、单一 `free_list_`、`acquire(name)` 无归属语义；A/A+/B 三方案对比；共享池三风险；内存账 199MB/92MB/63MB；DeepStream、GStreamer、ZLMediaKit、SRS、NVR 业界对照）+ `node.json` 增补 `global.pool.quota_per_channel`；`b6c639c` 把结论记为 **D9 = A（共享池 + 每路配额）**，A+ 不实施，**T10a 范围与人日扩为 1.5**（块数 + 队列深度 + 配额计数 + 丢帧分类计数 + 健康指标） | `f87211f` / `b6c639c` |
 | 2026-11-08 | **T2 新增 `NodeConfigManager`**（新模块 `src/common/configmgr/`：`node_config.h` 数据模型 + `node_config_manager.{h,cpp}`；`src/common/CMakeLists.txt` 注册源文件与头路径）：v1 `node.json` 解析（字段级校验、错误带字段路径如 `pipelines[0].nodes[1].config.port`、`${global.*}` 整值引用保留 JSON 类型、节点未写时注入 `global.media.rtsp.{port,app}`、默认值合并）+ v0 `push.json` 单链路适配（`vi` → `push(name=rtsp)` → `print`，与现 `main_node.cpp` 一致）；单例 + 不可变快照，**校验失败不破坏已生效快照**，`load_with_fallback()` 优先 v1、显式路径不回退。新增验收脚本 `scripts/tests/run_t2_node_config.sh` + 7 份 `fixtures/*.json`（53 项断言 → `ALL PASS (fails=0)`），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.6。**尚未接入 `main_node.cpp`**（T5/T6 才用）；`global.pool.*` 仍无人读取（T10a）；`config/node.json` 的本地改动按约定未入库 | `8d87731` |
-| 2026-11-08 | **T3 `config/node.json` 定稿**（只改配置 + 新增验收脚本，**无 C++ 改动**）：ch1~ch3 按 `ffprobe` 实测把 `1280×720@30` 改为 **`1024×576@24`**（`FfmpegCapture` 不缩放、`PushNode` 用 `fps` 推算流时间戳，两者不符必然花屏或播放加速），`vi.src` 补 `file:` 前缀并写明素材为本机绝对路径，`_comment` 去掉「NodeConfigManager 尚未实现」等过时说明；新增 `scripts/tests/run_t3_node_json.sh` + `t3_node_json.cpp`（104 项断言：链路结构 / `vi.src` 前缀与 `loop` / vi↔push 参数一致 / 端口只来自 global / 与 `ffprobe` 实测比对 / 与 v0 逐字段等价）。`passes=104 fails=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.7。**4 路端到端仍待 T6/T7b** | 待填 |
+| 2026-11-08 | **T3 `config/node.json` 定稿**（只改配置 + 新增验收脚本，**无 C++ 改动**）：ch1~ch3 按 `ffprobe` 实测把 `1280×720@30` 改为 **`1024×576@24`**（`FfmpegCapture` 不缩放、`PushNode` 用 `fps` 推算流时间戳，两者不符必然花屏或播放加速），`vi.src` 补 `file:` 前缀并写明素材为本机绝对路径，`_comment` 去掉「NodeConfigManager 尚未实现」等过时说明；新增 `scripts/tests/run_t3_node_json.sh` + `t3_node_json.cpp`（104 项断言：链路结构 / `vi.src` 前缀与 `loop` / vi↔push 参数一致 / 端口只来自 global / 与 `ffprobe` 实测比对 / 与 v0 逐字段等价）。`passes=104 fails=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.7。**4 路端到端仍待 T6/T7b** | `7ee01b8` |
 
 
 
