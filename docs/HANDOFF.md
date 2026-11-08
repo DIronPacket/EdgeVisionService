@@ -17,7 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6），未产品化（仍无日志 / 单测 / CI）；4 路同时出帧卡在 T7/T7b |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `29ab58b`（T6 重写真实入口：配置 → `PipelineBuilder` → SIGINT 优雅退出；其后的纯 `docs:` 提交不算基线漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `29ab58b`（T6 重写真实入口：配置 → `PipelineBuilder` → SIGINT 优雅退出；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
@@ -68,8 +68,8 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `29ab58b main: T6 重写真实入口（config → builder → SIGINT 优雅退出）` · 即**当前代码校准点**（T6；只改 `src/main/test/main_node.cpp` + TESTLOG §5.9）；上一个代码提交 `b461ece`（T5：`NodeFactory` + `PipelineBuilder`） |
-| 前几个提交 | `b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`7ee01b8`（`config:` T3 定稿 `config/node.json`）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 23 个提交） |
+| HEAD | `fe48838 config: 修正 node.json 注释里的过时状态（T5/T6 已接线，只剩 T7）`；前置 `949c3a8`（`docs:` 重写 README）。**当前代码校准点仍是 `29ab58b`**（T6）—— 这两个提交只改文档与 `config/node.json` 注释，不改变任何二进制行为 |
+| 前几个提交 | `29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
