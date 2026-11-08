@@ -9,6 +9,6 @@
 - **不要全仓扫描**：文件清单看 §1.4，构建/运行命令看 §0 与附录 A
 - 行号会漂移，读之前先跑 `grep -nE '^#{1,2} ' docs/HANDOFF.md` 一次拿行号，再定向读区间
 
-基线：分支 `rk3588` / 校准点 `d158eca`（纯 docs 提交不算漂移）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
+基线：分支 `rk3588` / 代码校准点 `e82e39e`（其后 `d9f5ca2` 为纯 docs 提交，不算漂移）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
 
 Cline 专用入口（内容一致，自动加载）：`.clinerules/00-handoff.md`。
