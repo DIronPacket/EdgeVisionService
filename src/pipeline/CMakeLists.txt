@@ -6,6 +6,7 @@ target_sources(${TARGET_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_push/moudle_push.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vi/moudle_vi.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_print/moudle_print.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vpss/moudle_vpss.cpp
 )
 
 # 如果是动态库，开启 PIC
@@ -17,10 +18,12 @@ PUBLIC
     ${PROJECT_SOURCE_DIR}/src/common
     ${PROJECT_SOURCE_DIR}/src/common/MemManager
     ${PROJECT_SOURCE_DIR}/src/common/profiler
+    ${PROJECT_SOURCE_DIR}/src/common/preprocess   # pre::ImagePreprocessor（VpssNode 用）
     ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_push
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vi
     ${CMAKE_CURRENT_SOURCE_DIR}/moudle_print
+    ${CMAKE_CURRENT_SOURCE_DIR}/moudle_vpss
 )
 
 # ==========================================

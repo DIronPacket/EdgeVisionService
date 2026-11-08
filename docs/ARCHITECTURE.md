@@ -32,10 +32,16 @@ EdgeVisionService/
 │   │   ├── profiler/           # 耗时统计（header-only）
 │   │   │   ├── node_profiler.h # NodeProfiler：节点名 + 开始/结束时间戳、报表
 │   │   │   └── block_profiler.h# get_profiler(block) 取用 + NodeCostScope（RAII）
-│   │   └── MemManager/         # 内存池实现（正在使用）
-│   │       ├── MemMeta.h       # MemMeta + MemSlot<T>
-│   │       ├── MemPool.h/.cpp  # MemBlock / MemQueue / MemPool 单例
-│   │       └── MemManager.h/.cpp
+│   │   ├── MemManager/         # 内存池实现（正在使用）
+│   │   │   ├── MemMeta.h       # MemMeta + MemSlot<T>
+│   │   │   ├── MemPool.h/.cpp  # MemBlock / MemQueue / MemPool 单例
+│   │   │   └── MemManager.h/.cpp
+│   │   └── preprocess/         # 预处理模块（框架，细节见其 README.md）
+│   │       ├── image_preprocessor.h/.cpp  # 门面：process(src,dst) = 转码 + 叠加
+│   │       ├── frame_converter.h/.cpp     # NV12 / YUV422P / YUV420P / BGR888 互转
+│   │       ├── frame_drawer.h/.cpp        # 画框 / 贴图 / 截图（24bit BMP）
+│   │       ├── osd_renderer.h/.cpp        # OSD 字符叠加（UTF-8、换行、底条）
+│   │       └── glyph_source.h/.cpp + freetype_glyph_source.h/.cpp # 点阵 / FreeType 字形
 │   ├── platform/
 │   │   ├── include/            # 抽象接口：capture / decoder / encoder / processor
 │   │   ├── capture/            # FfmpegCapture + V4l2Capture + 工厂
@@ -46,6 +52,7 @@ EdgeVisionService/
 │   │   ├── pipeline_node.h/.cpp# PipelineNode（裸指针、MemQueue）
 │   │   ├── moudle_vi/          # 采集源节点 ViNode
 │   │   ├── moudle_push/        # 编码推流节点 PushNode
+│   │   ├── moudle_vpss/        # 预处理节点 VpssNode（转码 + 叠加，处理逻辑待实现）
 │   │   └── moudle_print/       # 耗时打印节点 PrintNode（流水线终点）
 │   └── main/
 │       ├── main.cpp            # 目前仅为打印入口
@@ -172,6 +179,9 @@ PrintNode（独立线程）    getBlock → 取 profiler → 按 print.interval 
 - `common_api` 固定为 `SHARED`，未遵循顶层 `BUILD_SHARED_MODULE` 开关。
 - `pipeline_api` 使用 `zlm_push_server.h`，但其 include 路径未加入 `src/platform/rtsp`，也未链接 `rtsp` 目标；`testnode` 只链接了 `libmk_api.so`，而 `zlm_rtsp_*` 符号由 `zlm_push_server.cpp` 提供，链接时会出现未定义符号（除非手动补链）。
 - `main` 只链接 `platform_api`，未链接 `pipeline_api` / `common_api`，因此无法承载真实业务。
+- `BUILD_FREETYPE_OSD`（顶层 `option()`，默认 **OFF**）：控制 `src/common/preprocess` 的 OSD 是否使用
+  FreeType 矢量字体。关闭时只用内置点阵字体（`.evsfont`），`freetype_glyph_source.cpp` 的
+  `EVS_ENABLE_FREETYPE` 分支不参与编译；开启时由 `find_package(Freetype)` 找依赖（`install/` 里目前没有 freetype）。
 
 ## 4. 扩展方式与开发约定
 

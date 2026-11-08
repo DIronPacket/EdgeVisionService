@@ -62,6 +62,7 @@ PrintNode（独立线程：打印各节点耗时，配置项 `print`）
 | Rockchip MPP | 同上 | `install/rk3588/lib/librockchip_mpp.so` |
 | ZLMediaKit（`libmk_api.so`） | 同上 | `install/rk3588/lib/libmk_api.so` |
 | RGA | 同上 | `install/rk3588/librga.so`，代码尚未使用 |
+| FreeType（**可选**，OSD 矢量字体） | 系统库或 `install/<platform>` | 未提供。默认 `BUILD_FREETYPE_OSD=OFF`，OSD 只用内置点阵字体（`.evsfont`） |
 | 交叉工具链 | `cmake/rk3588.toolchain.cmake` | 路径需按本机实际安装修改 |
 
 ### 3.2 x86_64 本机构建

@@ -13,6 +13,13 @@ else()
     set(MODULE_LIB_TYPE STATIC CACHE INTERNAL "library type for our business module")
 endif()
 
+# ========== 预处理模块 OSD 是否启用 FreeType 矢量字体 ==========
+# 默认 OFF：install/ 里当前没有 freetype，默认构建不引入任何新依赖；
+# 关闭时 src/common/preprocess 只用内置点阵字体（.evsfont），freetype 相关代码不参与编译。
+# 需要矢量字时：先准备 freetype 头/库，再 cmake -DBUILD_FREETYPE_OSD=ON。
+option(BUILD_FREETYPE_OSD "Build OSD text overlay with FreeType (requires freetype headers/libs)" OFF)
+
+
 # 动态库必需PIC，静态库开启也兼容
 set(CMAKE_POSITION_INDEPENDENT_CODE ON CACHE BOOL "Generate PIC code")
 
