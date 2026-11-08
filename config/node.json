@@ -1,0 +1,236 @@
+{
+  "version": 1,
+  "_comment": [
+    "EdgeVisionService 多链路配置（v1）。",
+    "【重要】M1（NodeConfigManager）尚未实现，本文件目前不会被程序读取，testnode 仍读 config/push.json；",
+    "         此文件是目标格式，按 docs/DESIGN_MULTI_PIPELINE.md 的 M1 计划落地后生效。",
+    "",
+    "结构：global 段（进程级资源）+ pipelines[]（多链路）。每条 pipeline 是一条独立链路，",
+    "      各自拥有一个 vi 节点（= 一个采集实例）。所以「3 路 mp4」= ch1/ch2/ch3 三条链路，",
+    "      不是一个 vi 节点去读 3 个文件。",
+    "",
+    "== 需要你填的地方 ==",
+    "ch1 / ch2 / ch3 的 vi.src 现在是假路径（/data/videos/demo1.mp4 等），换成真实文件路径。",
+    "",
+    "== 填的时候必须遵守 ==",
+    "1) vi.width / vi.height 要与 mp4 文件的实际分辨率一致，并同步改该路的 push.width / push.height。",
+    "   当前 FfmpegCapture 不做缩放（transfer_frame 里源尺寸=目标尺寸），vi 与 push 尺寸不一致会花屏。",
+    "   （缩放能力由 M1 的 T7b 补上，做完后 vi.width/height 才可以任意写目标尺寸。）",
+    "2) 文件源请保留 \"loop\": true，否则 mp4 播完（几分钟）后该路不再出帧、静默停摆。",
+    "   摄像头源（dev:）不需要 loop。",
+    "3) channel 必须各链路唯一（队列名 = 节点名 + channel，重名会串队列）。",
+    "4) RTSP 端口只在 global.media.rtsp.port 配一处，节点里不再写 port；",
+    "   播放地址 = rtsp://<板端IP>:8550/live/<stream>，每条链路用自己的 stream。",
+    "5) stream 就是播放地址最后一段，按业务命名更清楚（当前先给 ch0..ch3）。",
+    "",
+    "== 性能提示（RK3588 实测前先按此配置） ==",
+    "文件源优先用 720p：3 路 1080p 软解约需 2.4~3.6 个 CPU 核，720p 大约减半。",
+    "pool.blocks = 路数 × (queue_depth + 2)，4 路 + 深度 8 → 40，这里取 64 留突发余量（约 199MB）。"
+  ],
+
+  "global": {
+    "log": {
+      "level": "info",
+      "file": ""
+    },
+    "pool": {
+      "blocks": 64,
+      "queue_depth": 8,
+      "images": [
+        { "name": "nv12", "width": 1920, "height": 1080, "fmt": "nv12" }
+      ]
+    },
+    "media": {
+      "rtsp": {
+        "port": 8550,
+        "bind_ip": "0.0.0.0",
+        "app": "live"
+      }
+    }
+  },
+
+  "pipelines": [
+    {
+      "name": "ch0",
+      "channel": 0,
+      "enable": true,
+      "_comment": "硬件摄像头。dev: 前缀 = V4L2 设备；这条不加 loop。",
+      "nodes": [
+        {
+          "type": "vi",
+          "name": "vi",
+          "config": {
+            "src": "dev:/dev/video0",
+            "width": 1920,
+            "height": 1080,
+            "fps": 30
+          }
+        },
+        {
+          "type": "vpss",
+          "name": "vpss",
+          "config": {
+            "enable": false,
+            "src_slot": "nv12",
+            "out_slot": "vpss_out",
+            "dst_fmt": "",
+            "align": 16
+          }
+        },
+        {
+          "type": "push",
+          "name": "rtsp",
+          "config": {
+            "enable": true,
+            "width": 1920,
+            "height": 1080,
+            "codec": "h265",
+            "protocol": "rtsp",
+            "transport": "tcp",
+            "fps": 30,
+            "bitrate_kbps": 4096,
+            "gop": 30,
+            "stream": "ch0"
+          }
+        },
+        {
+          "type": "print",
+          "name": "print",
+          "config": {
+            "enable": true,
+            "interval": 30
+          }
+        }
+      ]
+    },
+    {
+      "name": "ch1",
+      "channel": 1,
+      "enable": true,
+      "_comment": "文件源第 1 路。【假路径】把 /data/videos/demo1.mp4 换成真实文件；vi 与 push 的宽高要跟文件实际分辨率一致。",
+      "nodes": [
+        {
+          "type": "vi",
+          "name": "vi",
+          "config": {
+            "src": "file:/data/videos/demo1.mp4",
+            "loop": true,
+            "width": 1280,
+            "height": 720,
+            "fps": 30
+          }
+        },
+        {
+          "type": "push",
+          "name": "rtsp",
+          "config": {
+            "enable": true,
+            "width": 1280,
+            "height": 720,
+            "codec": "h265",
+            "protocol": "rtsp",
+            "transport": "tcp",
+            "fps": 30,
+            "bitrate_kbps": 2048,
+            "gop": 30,
+            "stream": "ch1"
+          }
+        },
+        {
+          "type": "print",
+          "name": "print",
+          "config": {
+            "enable": true,
+            "interval": 30
+          }
+        }
+      ]
+    },
+    {
+      "name": "ch2",
+      "channel": 2,
+      "enable": true,
+      "_comment": "文件源第 2 路。【假路径】把 /data/videos/demo2.mp4 换成真实文件。",
+      "nodes": [
+        {
+          "type": "vi",
+          "name": "vi",
+          "config": {
+            "src": "file:/data/videos/demo2.mp4",
+            "loop": true,
+            "width": 1280,
+            "height": 720,
+            "fps": 30
+          }
+        },
+        {
+          "type": "push",
+          "name": "rtsp",
+          "config": {
+            "enable": true,
+            "width": 1280,
+            "height": 720,
+            "codec": "h265",
+            "protocol": "rtsp",
+            "transport": "tcp",
+            "fps": 30,
+            "bitrate_kbps": 2048,
+            "gop": 30,
+            "stream": "ch2"
+          }
+        },
+        {
+          "type": "print",
+          "name": "print",
+          "config": {
+            "enable": true,
+            "interval": 30
+          }
+        }
+      ]
+    },
+    {
+      "name": "ch3",
+      "channel": 3,
+      "enable": true,
+      "_comment": "文件源第 3 路。【假路径】把 /data/videos/demo3.mp4 换成真实文件。",
+      "nodes": [
+        {
+          "type": "vi",
+          "name": "vi",
+          "config": {
+            "src": "file:/data/videos/demo3.mp4",
+            "loop": true,
+            "width": 1280,
+            "height": 720,
+            "fps": 30
+          }
+        },
+        {
+          "type": "push",
+          "name": "rtsp",
+          "config": {
+            "enable": true,
+            "width": 1280,
+            "height": 720,
+            "codec": "h265",
+            "protocol": "rtsp",
+            "transport": "tcp",
+            "fps": 30,
+            "bitrate_kbps": 2048,
+            "gop": 30,
+            "stream": "ch3"
+          }
+        },
+        {
+          "type": "print",
+          "name": "print",
+          "config": {
+            "enable": true,
+            "interval": 30
+          }
+        }
+      ]
+    }
+  ]
+}

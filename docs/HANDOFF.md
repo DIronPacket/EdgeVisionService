@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-05；适用分支：`rk3588`；校准点：`d158eca`。
+> 最后更新：2026-11-08；适用分支：`rk3588`；校准点：`d158eca`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -99,7 +99,7 @@ EdgeVisionService/
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
 ├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口 / print 打印间隔
 ├── scripts/                    # 空（部署脚本未落地）
-├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文)
+├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
 ├── build/                      # 构建产物（不入库，见 §1.5）
@@ -110,13 +110,14 @@ EdgeVisionService/
     │   ├── type_registry.h     # 旧版注册辅助，当前无人使用
     │   ├── json.hpp            # nlohmann/json 单头库
     │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
+    │   ├── preprocess/         # 预处理框架：image_preprocessor（门面：转码+叠加）· frame_converter（格式互转）· frame_drawer（画框/贴图/截图）· osd_renderer（字符叠加）· glyph_source + freetype_glyph_source（点阵 / FreeType 字形）
     │   └── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
     ├── pipeline/               #                      → libpipeline_api.so
     │   ├── pipeline_node.{h,cpp}   # 节点基类：link_to / push_input_pipe / push_data / m_queue
     │   ├── moudle_vi/              # ViNode：采集源节点
     │   ├── moudle_push/            # PushNode：编码 + 推流节点
     │   ├── moudle_print/           # PrintNode：终点节点，打印各节点耗时与合计
-    │   └── moudle_vpss/            # 空目录（git 不跟踪）
+    │   └── moudle_vpss/            # VpssNode：中间处理节点（转码+叠加，样板齐全，process_frame 待填）
     ├── platform/               #                      → platform_api（INTERFACE 聚合层）
     │   ├── include/            # capture / decoder / encoder / processor 四个抽象接口
     │   ├── capture/            # capture_factory + ffmpeg_source/ + v4l2_source/ + desktop_source/(空)
@@ -245,10 +246,15 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
 | 改内存池/引用计数 | `common/MemManager/MemPool.{h,cpp}`、`MemMeta.h`、`MemManager.cpp` | `common/frame_buffer.h` |
 | 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt` |
+| 接入 / 修改预处理节点（转码+叠加，VPSS 位置） | `pipeline/moudle_vpss/moudle_vpss.{h,cpp}`（`VpssNode::process_frame` 是唯一待填函数） | `config/push.json` 的 `vpss` 段、`common/preprocess/image_preprocessor.{h,cpp}`、`main/test/main_node.cpp`（装配位置） |
+| 做多链路 / 改配置格式 / 上提进程级资源 | `docs/DESIGN_MULTI_PIPELINE.md`（方案与分期，尚未实现；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5/P0-6 |
+| 转码 / 画框 / 贴图 / OSD 字符叠加（预处理） | `common/preprocess/image_preprocessor.{h,cpp}`（门面） | `frame_converter`（格式互转）、`frame_drawer`（画框/贴图/截图）、`osd_renderer` + `glyph_source`（字形）、`common/preprocess/README.md`、开关 `BUILD_FREETYPE_OSD` |
 | 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
 | 装配服务入口 | `main/main.cpp`（当前空壳）、`main/test/main_node.cpp`（参考实现） | `main/CMakeLists.txt` |
 | 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
 | 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
+| 记测试 / 查回归结果 / 证明"已修复" | [TESTLOG.md](TESTLOG.md) | §4 是 L1 冒烟汇总表，§5 是 L2/L3 明细；写完仍按本文 §2.2 顺序验证 |
+
 
 ---
 
@@ -284,6 +290,8 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
 8. 长跑类验证（如 `testnode` 有 `while(1)`）一律用 `timeout 20 ./build/run.sh testnode`，避免挂死终端。
+9. **每次验证都要留痕**：跑完按 [TESTLOG.md](TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
+
 
 ## 2.3 C++ 代码规定
 
@@ -416,6 +424,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 稳定的分层、数据流、模型、扩展方式、规范 | 临时问题 |
 | [STATUS.md](STATUS.md) | 现状、完成度、P0–P2、优化建议 | 未来排期 |
 | [ROADMAP.md](ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
+| [TESTLOG.md](TESTLOG.md) | **只有测试证据**：命令、结果摘要、结论、未做项（L1 冒烟 / L2 任务 / L3 版本三级） | 方案、现状盘点、规矩 |
 | **HANDOFF.md（本文）** | **接手所需的事实快照 + 红线规定 + 操作规程** | 重复上面四份的内容 |
 | `.clinerules/00-handoff.md` / `AGENTS.md` | 入口索引：现状卡（与本文 §0 一致）、跳读表、硬约束 7 条 | 任何细节展开 |
 
@@ -470,5 +479,11 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-05 | 新增节点耗时统计（`common/profiler`，每块一个 `NodeProfiler`）与终点节点 `PrintNode`，链路变为 vi→rtsp→print；顺手修掉 `ViNode`/`PushNode` 的 `std::atomic<bool> running_` 未初始化（P0-12）。HANDOFF 同步 §0/§1.2/§1.4/§1.6/§1.7/§1.8/§1.9/R2，校准点前移 | `9678e42` |
 | 2026-11-05 | 报表增加实测 fps（`report(frame_no, fps)` + `PrintNode` 窗口统计）；用 30/15/10/60 fps 实测校正「首尾跨度」与帧率的口径 | `3ee3913` |
 | 2026-11-05 | 修复 P0-3：`read_frame` 失败分支未归还 `MemBlock`，fps 配得比采集端高时几十帧后池子耗尽、链路静默停摆（gdb 栈定位到 `MemPool::acquire`）。校准点前移 | `d158eca` |
+| 2026-11-08 | 新增预处理框架 `src/common/preprocess/`（`pre::ImagePreprocessor` 门面 + `FrameConverter` / `FrameDrawer` / `OsdRenderer` / `glyph_source`；像素级实现留 TODO，未实现分支返回 `ERR_NOT_IMPL`）；新增开关 `BUILD_FREETYPE_OSD`（默认 OFF，`install/` 无 freetype，OSD 先用内置点阵字体）；同步 ARCHITECTURE §1/§3、README §3.1、本文 §1.4/§1.9。**工作树改动，尚未提交** | `7a2055b` + 未提交 |
+| 2026-11-08 | 新增中间节点 `pipeline/moudle_vpss/`（`VpssNode`）：生命周期/配置解析/槽位挂载/耗时统计/失败归还等样板代码已实现并实测通过（透传、输出帧、池子不泄漏），`process_frame()` 留空返回 true（等价透传）由使用者填；`pipeline/CMakeLists.txt` 加源文件与 `common/preprocess` 头路径；同步 ARCHITECTURE §1、本文 §1.4/§1.9。**尚未接入 `main_node.cpp`，未提交** | `7a2055b` + 未提交 |
+| 2026-11-08 | 新增设计文档 `docs/DESIGN_MULTI_PIPELINE.md`（提案，无代码改动）：`push.json` → 多链路 `node.json` + 全局配置对象 `NodeConfigManager` + 进程级资源上提（`MediaServer` 等 16 项）；含行业方案调研、四方案比选（A 轻量装配 → B 内核注入）、M1–M3 分期与人日、风险表、M1 文件级改动清单。同步本文 §1.4/§1.9 | `7a2055b` + 未提交 |
+| 2026-11-08 | `DESIGN_MULTI_PIPELINE.md` 二次修订（纯文档）：与用户确认 8 项决策 D1–D8（**目标 4 路 × 30fps = 1 路 `/dev/video0` + 3 路 mp4 循环**；RTSP 共用 8550 端口只分 `stream`；不做热加载/鉴权/子码流；保持单进程；**迁移完成后删除 `config/push.json`**）；新增 §10 概念详解（主/子码流必要性、热加载边界、鉴权 vs rtsps）、§11 4 路容量估算与板端验收阈值；任务表加 **T7b**（`FfmpegCapture` 循环 + 缩放，当前 EOF 即停、且不缩放）、**T10a**（池块数 50 / 队列深度 20 配置化，4 路必做），M1 工期 5–8 人日。**无代码改动，仍为提案** | `7a2055b` + 未提交 |
+| 2026-11-08 | 新增 `docs/TESTLOG.md`（测试与验证记录）：按 **L1 冒烟 / L2 任务 / L3 版本** 三级粒度记录「命令 + 结果摘要 + 结论 + 未做项」，含模板、必填项、维护约定与 token 成本评估；归档既有三项结论（基线冒烟、`VpssNode` 验证、`node.json` 语法校验）。同步本文 §1.4/docs 行、§1.9 跳读表、R5 文档分工表 | `7a2055b` + 未提交 |
+
 
 [返回 README](../README.md)
