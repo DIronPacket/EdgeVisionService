@@ -67,6 +67,7 @@
 | 2026-11-08 | **T2** `NodeConfigManager`（v1 解析/校验/v0 适配） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t2_node_config.sh` → `ALL PASS (fails=0)`，53 项断言（见 5.6） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 | 2026-11-08 | **T3** `config/node.json` 定稿（4 路） | `./scripts/tests/run_t3_node_json.sh` → `passes=104 fails=0 skips=0`，`EXIT=0`；素材缺失分支 `passes=95 skips=1`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.7） | ✅ 配置层通过（端到端待 T6/T7b） |
 | 2026-11-08 | **T5** `NodeFactory` + `PipelineBuilder` | `./scripts/tests/run_t5_builder.sh` → `passes=64 fails=0 skips=2`，`EXIT=0`；真实 `node.json` 建成 4 条链；T3 `passes=104`、T2 `ALL PASS` 回归通过；全量 `cmake --build` 通过 + `run.sh EdgeVisionService` → start（见 5.8） | ✅ 装配层通过（`start_all` 顺序待 T6/T7 板端验） |
+| 2026-11-08 | **T6** `main_node.cpp` 改为 builder 驱动 + SIGINT 优雅退出 | `cmake --build build -j8` → `EXIT=0`；`timeout --preserve-status -s INT 12 ./build/run.sh testnode config/push.json` → `EXIT=0`（`vi0 → rtsp0 → print0` 正序停止、`FreeMem 完成`、无残留进程）；同命令跑 `config/node.json` → 4 条链建成/启动/正序停止、`EXIT=0`；T5 `passes=64`、T3 `passes=104`、T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → start（见 5.9） | ✅ 进程编排层通过（4 路**出帧**待 T7/T7b：`ViNode` 仍硬编码同一 `/dev/video0`） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -218,6 +219,32 @@
   - `main_node.cpp` 仍是 v0 手写单链路，**未接入 builder**（T6）
   - `ViNode` 仍硬编码 `CAPTURE_V4L2` + `/dev/video0:640:480:NV12:30`，不解析 `vi.src`（T7）；`FfmpegCapture` 不 loop（T7b）
   - `global.pool.{blocks,queue_depth,quota_per_channel}` 仍无人读（T10a）
+
+### 5.9 L2 · T6 `main_node.cpp` 改为「配置 → 进程资源 → builder → SIGINT 优雅退出」（2026-11-08）
+
+- 代码基线：工作树（`rk3588`，基于 `b461ece`）
+- 改动：`src/main/test/main_node.cpp` 重写（116 行）。删除 v0 手写装配（3 个 `make_shared` + 2 次 `link_to` + `load_push_config()` 候选路径逻辑）、`while(1)` 死循环与**永不执行**的 `stop()`；改为 `NodeConfigManager::load_with_fallback(argv[1])` → `MemManager::MemInit()` → `PipelineBuilder::build_all()`（单链失败只告警）→ `std::signal(SIGINT/SIGTERM)` → `start_all()` → `while (g_run) sleep 200ms` → `stop_all()` → `sets.clear()` → `FreeMem()` → `return 0`。信号处理只写 `volatile sig_atomic_t g_run`（异步信号安全）。入口不再出现任何节点名/设备路径（M1 验收第 7 条）
+- 命令：
+  ```bash
+  cmake --build build -j"$(nproc)"                                   # 全量编译
+  timeout --preserve-status -s INT 12 ./build/run.sh testnode /abs/config/push.json   # v0 单链路 + 优雅退出
+  timeout --preserve-status -s INT 14 ./build/run.sh testnode /abs/config/node.json   # v1 四路 + 优雅退出
+  ./scripts/tests/run_t5_builder.sh ; ./scripts/tests/run_t3_node_json.sh ; ./scripts/tests/run_t2_node_config.sh
+  ./build/run.sh EdgeVisionService                                   # 冒烟
+  pgrep -af testnode                                                 # 残留检查
+  ```
+- 结果摘要：
+  - **v0 单链路（真拉 `/dev/video0` 12 秒）**：`[builder] 汇总: 建成 1 条, 失败 0 条, 跳过 0 条` → `successfully open stream:/dev/video0:640:480:NV12:30, output=1920x1080` → `[print0] frame#330 … 实测=29.85fps`（全程稳定 29.8–29.95fps）→ SIGINT → `[main] 收到退出信号，开始有序退出` → `[vi0] VI Node Stopped.` → ZLM 媒体注销（`fmp4/rtmp/rtsp/ts` 四条 schema）+ `Close tcp server [::]: 8550` → `[rtsp0] Push Node Stopped.` → `[print0] Print Node Stopped.` → `[main] FreeMem 完成，进程正常退出` → **`EXIT=0`**，`pgrep` 无残留
+  - **停止顺序证据**：`vi0 → rtsp0 → print0`（正序，源头先停），与启动日志的逆序 `print0 → rtsp0 → vi0` 相反 —— T5 的 `start_all`/`stop_all` 顺序在真实节点上成立（**关闭了 T5 的 G2/G3 两个 SKIP 的一半：顺序已实测，`MediaServer::shutdown` 那一跳等 T4**）
+  - **v1 四路**：`建成 4 条, 失败 0 条, 跳过 0 条` → 4 条链全部 `start_all` 成功（`[main] 4 条链路已启动`）→ SIGINT → 逐链正序停止（ch0：`vi0 → vpss0 → rtsp0 → print0`，ch1/2/3：`viN → rtspN → printN`）→ `FreeMem 完成` → `EXIT=0`，无残留
+  - **已知限制按预期暴露**：ch1~ch3 三路 `open file failed:/dev/video0:640:480:NV12:30`（4 条 `vi` 都硬编码同一设备）→ 属 P0-2 / T7 范围，**不是 T6 引入的回归**（旧 main 同样硬编码，只是旧 main 只有一路）
+  - 回归：T5 `passes=64 fails=0 skips=2`、T3 `passes=104 fails=0 skips=0`、T2 `ALL PASS (fails=0)`，三者 `EXIT=0`；全量 `cmake --build` 通过；`run.sh EdgeVisionService` → `EdgeVisionService start`；`git status --short` 仅 `M src/main/test/main_node.cpp`
+- 结论：✅ 通过（**进程编排层**）。T6 验收三条全部实测：Ctrl+C（等效 `SIGINT`）后 ① `stop_all` 执行（有逐节点 `Stopped` 日志）② `FreeMem` 执行（有 `[main] FreeMem 完成`）③ 进程 `EXIT=0`。`config/node.json` 现在**单独**决定跑几条链路，加一路只改配置。
+- 未做 / 受限：
+  - **4 路同时出帧未验证**：`ViNode::run()` 仍硬编码 `CAPTURE_V4L2` + `/dev/video0:640:480:NV12:30`（P0-2 / T7），ch1~ch3 必然打不开设备；同时 `ViNode` 只读 v0 的 `push` 段，`vi.width/height` 未生效（日志恒为 `1920x1080 fps=30`）
+  - **`MediaServer::shutdown()` 那一跳不存在**：T4（媒体服务上提）未做，ZLM 仍由 `PushNode::stop()` 内部 `zlm_rtsp_stop()` 关闭，效果等价但归属未变；T4 完成后退出序列要补 `MediaServer::shutdown()`（DESIGN §5.5 第 5 步）
+  - `MemInit()` 仍用默认 50 块（`global.pool.*` 未接线，T10a）；本次日志里 `[main] 注意: pool.blocks … 尚未接线（T10a）` 即为此提示
+  - 真终端 Ctrl+C 与 `timeout -s INT` 等效（`run.sh` 末行是 `exec`，SIGINT 直达二进制），未另做终端手工验证
 
 ---
 
