@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `b461ece`（`pipeline:` 新增 `NodeFactory` + `PipelineBuilder`，T5；其后的纯 `docs:` 提交不算漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `29ab58b`（`main:` T6 重写真实入口 = 配置 → `PipelineBuilder` → SIGINT 优雅退出；其后的纯 `docs:` 提交不算漂移） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |

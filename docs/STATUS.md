@@ -20,9 +20,9 @@
 | MPP 解码 | `decoder/rk_mpp_decoder.*` | 🔴 35% | 流程草稿；回调前未分配 `FrameBuffer` 内存即 `memcpy`，会崩溃；未接入流水线 |
 | FFmpeg 解码 | `decoder/ffmpeg_decoder.*` | 🔴 15% | 使用已删除的 `avcodec_register_all()`；引用不存在的 `FrameBuffer::linesize/pixel_fmt`；未编译 |
 | RTSP 推流封装 | `platform/rtsp/zlm_push_server.*` | 🟡 65% | 一键起服务/建流、送 H.264/H.265、停止释放；存在停止 key 不匹配、空指针解引用等问题 |
-| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print`、`node_factory.*`、`pipeline_builder.*` | 🟡 75% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由 `config/push.json` 驱动；各节点耗时已可采集并周期打印；**T5 新增 `NodeFactory`（type→节点）与 `PipelineBuilder`（拓扑校验 + 装配 + 连线 + 批量启停）**，装配不再靠手写，`config/node.json` 可直接建成 4 条链（TESTLOG §5.8）；采集源路径与编码 QP 仍硬编码、错误路径丢块、无多分支引用计数 |
-| 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp` |
-| 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；T5 的 `PipelineBuilder` 已能消费（`passes=64`，TESTLOG §5.8），**`main_node.cpp` 仍走 v0 手写单链路**（T6 接入），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 摄像头 1080p@30 + ch1~ch3 三个 mp4 实测 1024×576@24），T3 验收 `passes=104`（TESTLOG §5.7），**4 路端到端待 T6/T7b** |
+| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print`、`node_factory.*`、`pipeline_builder.*` | 🟡 80% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由配置驱动；各节点耗时已可采集并周期打印；**T5 新增 `NodeFactory`（type→节点）与 `PipelineBuilder`（拓扑校验 + 装配 + 连线 + 批量启停）**，装配不再靠手写（TESTLOG §5.8）；**T6 接入真实入口** —— `main_node.cpp` 只做「配置 → 进程资源 → builder → SIGINT 优雅退出」，`config/node.json` 单独决定跑几条链，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；采集源路径仍硬编码（T7）、编码 QP 未配置化、错误路径丢块、无多分支引用计数 |
+| 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp`（T6 后已是 builder 驱动的配置编排：正序停止、退出码 0、无 `while(1)`） |
+| 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）已能消费，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 摄像头 1080p@30 + ch1~ch3 三个 mp4 实测 1024×576@24），T3 验收 `passes=104`（TESTLOG §5.7），**4 路同时出帧待 T7/T7b** |
 | 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 30% | 有编码/推流/节点/内存池手工测试；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（`test_builder` 64 断言覆盖工厂/拓扑/装配/失败隔离）；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
 | 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 40% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/push.json`（v0，在用）与 `config/node.json`（v1，4 路定稿）并存；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（共 239 项断言），无 CI |
@@ -96,7 +96,7 @@
 | 13 | 首帧只打开编码器、不编码 | `moudle_push.cpp::run` | 打开后同帧继续编码，减少一帧延迟 |
 | 14 | ZLMediaKit 发送加全局锁，且逐帧 `printf` + `fflush` | `zlm_push_server.cpp:145-158`、`moudle_push.cpp::sendFrame` | 按流加锁或无锁队列；日志分级并限流 |
 | 15 | `mk_media_input_h264/265` 返回值为实际消费长度，封装层始终返回 `ZLM_ERR_OK` | `zlm_push_server.cpp:148-158` | 校验返回值，处理半包/失败 |
-| 16 | `main_node.cpp` 在停止逻辑前 `while(1)` 永久阻塞 | `main_node.cpp:46-48` | 删除死循环，补充 SIGINT 优雅退出 |
+| 16 | ✅ 已修复（`29ab58b`，T6，TESTLOG §5.9）：`main_node.cpp` 在停止逻辑前 `while(1)` 永久阻塞，`stop()` 永不执行 | `main_node.cpp` | 已删除死循环，改为 `SIGINT/SIGTERM → stop_all（正序）→ FreeMem → return 0` |
 | 17 | `main_testpool.cpp` 使用不存在的 `GlobalMemManager` 与旧 `FrameBuffer*` | `main_testpool.cpp:62,141-143` | 按当前 `MemBlock`/`MemPool` API 重写或删除 |
 | 18 | 软编/软解未注册工厂（`create_decoder()` 只有声明） | `platform/include/decoder_interface.h:45` | 增加 `create_encoder/create_decoder` 实现与平台选择逻辑 |
 | 19 | `ffmpeg_capture` 以固定 30fps 覆盖源帧率，`ViNode` 再按配置 fps 节流 | `moudle_vi.cpp::run` | 以源帧率为准，节流只做补偿，避免双重限速 |
