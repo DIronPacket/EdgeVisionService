@@ -97,8 +97,8 @@ EdgeVisionService/
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
-├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口 / print 打印间隔
-├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh + t1_zlm_rtsp_key.cpp（RTSP key / ref_cnt / 入参校验，18 项断言）
+├── config/                     # push.json：推流宽高 / h264|h265 / rtsp|rtmp 协议 / 端口 / print 打印间隔；node.json：v1 多链路配置（4 路，T2 已能解析，尚未被主链路使用）
+├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh（RTSP key / ref_cnt / 入参校验，18 项断言）· run_t2_node_config.sh + fixtures/（NodeConfigManager 解析/校验/v0 适配，53 项断言）
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
@@ -109,6 +109,7 @@ EdgeVisionService/
     │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size）
     │   ├── type_registry.h     # 旧版注册辅助，当前无人使用
     │   ├── json.hpp            # nlohmann/json 单头库
+    │   ├── configmgr/          # 节点配置管理：node_config.h（数据模型 ImgSpec/NodeDesc/PipelineDesc/GlobalDesc…）· node_config_manager.{h,cpp}（v1 node.json 解析 + 校验 + ${global.*} 展开 + v0 push.json 适配）
     │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
     │   ├── preprocess/         # 预处理框架：image_preprocessor（门面：转码+叠加）· frame_converter（格式互转）· frame_drawer（画框/贴图/截图）· osd_renderer（字符叠加）· glyph_source + freetype_glyph_source（点阵 / FreeType 字形）
     │   └── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
@@ -241,6 +242,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 我要做的事 | 主文件 | 关联 |
 | --- | --- | --- |
 | 改推流分辨率/编码(h264,h265)/协议/端口 | `config/push.json`（改完重跑 `testnode` 即生效，无需重编） | `moudle_push.cpp::set_data`、`moudle_vi.cpp::set_data` |
+| 改配置格式 / 调配置校验规则 / 加配置字段 | `src/common/configmgr/node_config_manager.cpp`（`ParseV1` / `ParseV0` / `ExpandRefs` / 数值守护） | `node_config.h`（数据模型 `GlobalDesc`/`PipelineDesc`/`NodeDesc`）、`config/node.json`、DESIGN §5、验收脚本 `scripts/tests/run_t2_node_config.sh`（53 项断言，改校验必跑） |
 | 改采集行为 | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp` | `capture_interface.h`、`capture_factory.cpp` |
 | 改编码参数（QP/GOP/码率） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `config/push.json`、`moudle_push.h` 里的默认成员 |
 | 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |

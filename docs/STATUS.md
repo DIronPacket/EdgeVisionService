@@ -2,7 +2,7 @@
 
 > 记录当前代码“做到哪、哪里会坏、先修什么”，不描述未来计划。
 > 架构与扩展方式见 [ARCHITECTURE.md](ARCHITECTURE.md)；未来排期见 [ROADMAP.md](ROADMAP.md)；项目入口见 [README](../README.md)。
-> 最后更新：2026-11-05；适用分支：`rk3588`。
+> 最后更新：2026-11-08；适用分支：`rk3588`。
 
 ## 1. 模块完成度总览
 
@@ -22,6 +22,7 @@
 | RTSP 推流封装 | `platform/rtsp/zlm_push_server.*` | 🟡 65% | 一键起服务/建流、送 H.264/H.265、停止释放；存在停止 key 不匹配、空指针解引用等问题 |
 | 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print` | 🟡 70% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由 `config/push.json` 驱动；各节点耗时已可采集并周期打印；采集源路径与编码 QP 仍硬编码、错误路径丢块、无多分支引用计数 |
 | 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp` |
+| 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；**尚未被 `main_node.cpp` 使用**（T5/T6 接入），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a） |
 | 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 25% | 有编码/推流/节点/内存池手工测试；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
 | 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 35% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/push.json` 已生效；`scripts/` 仍为空 |

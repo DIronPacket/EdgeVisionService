@@ -2,6 +2,7 @@
 add_library(common_api SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemPool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/configmgr/node_config_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/frame_converter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/frame_drawer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/glyph_source.cpp
@@ -22,6 +23,7 @@ set_target_properties(common_api PROPERTIES
 target_include_directories(common_api PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/
+    ${CMAKE_CURRENT_SOURCE_DIR}/configmgr/
     ${CMAKE_CURRENT_SOURCE_DIR}/profiler/
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/
 )

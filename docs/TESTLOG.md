@@ -64,6 +64,7 @@
 | 2026-11-08 | 内存池归属方案（纯文档 + `node.json` 增补字段） | `python3 -m json.tool config/node.json` → `JSON_OK`（239 行）；`git diff --stat` 仅 `config/node.json`(+5/-1) 与 `docs/DESIGN_MULTI_PIPELINE.md`(+102)；**未改 C++ 源码，未重新编译** | ✅ 文档/配置一致（`quota_per_channel` 尚未被二进制读取，随 T10a 生效） |
 | 2026-11-08 | 池方案决策 **D9 = A**（纯文档） | `python3 -m json.tool config/node.json` → `JSON_OK`；`D9` 已出现在 DESIGN §1.4 决策表 / §9 第 6 项 / §11.6.2 / §11.6.4 / §11.6.6 / §11.6.7 / §12 变更记录（口径一致：共享池 + 每路配额，A+ 不实施）；**未改 C++，未重新编译** | ✅ 决策沉淀完成（T10a 范围与人日同步为 1.5；`node.json` 注释标注 D9） |
 | 2026-11-08 | **T1** 修 P0-6 / P0-7 | `cmake --build build --target rtsp -j8` → `EXIT=0`；`cmake --build build -j8` 全量 → `EXIT=0`（含 `testnode`）；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`，18 项断言（见 5.5） | ✅ 代码 + 冒烟 + 验收断言全通过 |
+| 2026-11-08 | **T2** `NodeConfigManager`（v1 解析/校验/v0 适配） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t2_node_config.sh` → `ALL PASS (fails=0)`，53 项断言（见 5.6） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -142,6 +143,31 @@
   - `mk_stop_all_server()` 是进程级"停所有服务"，多端口会误伤 → **T4 `MediaServer` 必须收敛**（已在代码注释标注）；
   - 端口释放是**异步**的（监听 socket 由 ZLM 的 `TcpServer` 析构在 poller 线程关闭）：同一端口 stop 后立刻 restart 会 `bind: address already in use`，脚本做了 ≤3s 退避重试（10 轮共重试 8 次）。4 路共用 8550 时 server 只起一次，不受影响；但 T4 若按端口重建服务需考虑此约束。
   - `scripts/tests/` 依赖 `ss`（观察端口）与 `install/rk3588`（ZLMediaKit 头/库），x86 未验证。
+
+### 5.6 L2 · T2 新增 `NodeConfigManager`（v1 解析 / 校验 / v0 适配 / 引用展开）（2026-11-08）
+
+- 代码基线：工作树（`rk3588`，基于 `e9a620c`）；新增 `src/common/configmgr/{node_config.h,node_config_manager.h,node_config_manager.cpp}`，`src/common/CMakeLists.txt` 注册源文件与头路径；新增 `scripts/tests/{run_t2_node_config.sh,t2_node_config.cpp,fixtures/*.json}`（7 份样例配置）
+- 命令：
+  ```bash
+  cmake -S . -B build && cmake --build build -j"$(nproc)"   # 全量 EXIT=0（含 testnode）
+  ./build/run.sh EdgeVisionService                          # → EdgeVisionService start
+  ./scripts/tests/run_t2_node_config.sh                     # 53 项断言
+  ```
+- 结果摘要：`ALL PASS (fails=0)`，`EXIT=0`：
+  - **v1 正常样例**：2 条链路，`name` 缺省 = `type`、节点继承链路 `channel`、`enable:false` 生效、`NodeDesc.path` 记录字段路径（供 T5/T6 报错定位）
+  - **引用展开**：整值 `${global.media.rtsp.port}` 展开为 **数字** `18500`（不是字符串 `"18500"`）；`global.media.rtsp.{port,app}` 在节点未写时自动注入
+  - **拒绝路径 7 条，错误信息均带字段路径**：缺 `type`（`pipelines[0].nodes[0].type`）、`channel` 重复（`pipelines[1].channel`）、节点 `port` 与 global 冲突（`pipelines[0].nodes[1].config.port`）、`fps=0`（`...config.fps`）、同链路内节点重名导致队列名撞车（`pipelines[0].nodes[1].name`，"队列名 = name + channel"）、JSON 语法错误（带行列）、文件不存在
+  - **快照语义**：连续 7 次加载失败后仍保留上一次成功的快照（2 条链路 / 端口 18500），失败不污染已生效配置
+  - **v0 适配**：`config/push.json` → 1 条链路 3 节点（`vi` → `push(name=rtsp)` → `print`，与今天 `main_node.cpp` 装配一致）；池参数 50 / 20（与现状代码默认值一致）
+  - **`load_with_fallback()`**：`node.json` 与 `push.json` 同时存在时优先 `node.json` 并打印"已忽略 push.json"；显式传路径时只认它、不回退
+  - **真实 `config/node.json`**：4 条链路，`blocks=64`、`queue_depth=8`、`quota=10`、端口 8550、images 1 项
+- 结论：✅ 通过。T2 验收条件（"v1 正常 / 缺 type / 重名 / 端口冲突 4 份样例正确接受与拒绝、错误信息带字段路径"）已全部覆盖并扩大为 7 条拒绝路径 + 3 组正向用例。
+- 未做 / 受限：
+  - **尚未接入 `main_node.cpp`**（按计划 T6 才替换装配），故"配置真的驱动起链路"未经运行验证 → 由 T5/T6/T7 验收；
+  - 未知 `type` 本层**只记录不报错**（`vi/vpss/push/print` 之外一律放行），合法性由 T5 `NodeFactory` 负责（职责分离）；
+  - 端口只校验"节点 `port` 必须等于 `global.media.rtsp.port`"；`app/stream` 重复、两路抢同一设备属 T15；
+  - 数值上限（宽高 ≤8192 且偶数、`bitrate ≤200000`、`gop ≤10000`、`interval ≤100000`）经代码走查确认，未逐项构造用例（`fps` 上下界已有用例）；
+  - `v0` 适配只覆盖当前 `push.json` 的字段集合；若 `push.json` 增加新字段，需同步 `ParseV0`。
 
 ---
 

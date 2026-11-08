@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "global": { "media": { "rtsp": { "port": 8550 } } },
+  "pipelines": [
+    { "name": "ch0", "channel": 2,
+      "nodes": [
+        { "type": "vi", "name": "vi", "config": { "fps": 25 } },
+        { "type": "push", "name": "vi", "config": { "stream": "ch0", "fps": 25 } }
+      ] }
+  ]
+}

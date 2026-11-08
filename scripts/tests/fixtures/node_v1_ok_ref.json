@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "global": {
+    "pool": { "blocks": 32, "queue_depth": 4, "quota_per_channel": 6 },
+    "media": { "rtsp": { "port": 18500, "app": "live" } }
+  },
+  "pipelines": [
+    {
+      "name": "ch0", "channel": 0,
+      "nodes": [
+        { "type": "vi", "config": { "src": "dev:/dev/video0", "width": 1280, "height": 720, "fps": 25 } },
+        { "type": "push", "config": { "port": "${global.media.rtsp.port}", "stream": "ch0", "fps": 25, "width": 1280, "height": 720 } },
+        { "type": "print", "config": { "interval": 10 } }
+      ]
+    },
+    {
+      "name": "ch1", "channel": 1, "enable": false,
+      "nodes": [
+        { "type": "vi", "config": { "src": "file:/data/x.mp4", "loop": true, "width": 640, "height": 480, "fps": 15 } },
+        { "type": "push", "config": { "stream": "ch1", "fps": 15 } }
+      ]
+    }
+  ]
+}

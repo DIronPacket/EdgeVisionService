@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "global": { "media": { "rtsp": { "port": 8550 } } }
+  "pipelines": []
+}
