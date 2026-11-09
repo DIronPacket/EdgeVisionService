@@ -279,6 +279,17 @@
   - `FfmpegCapture` **不 loop**（T7b）：mp4 播完即断流，四路「30 分钟不 EOF 重播」未验证；文件源 `vi.width/height` 必须与文件实际分辨率一致（采集层不缩放）
   - `!m_capture` 分支（工厂返回 `nullptr`）在 RK 平台**不可达**（V4L2 后端已编入），本次以代码审查 + 上述 `open()` 失败路径动态覆盖；x86 侧复测需等 P0-1
   - `[vi0] open failed` 后该链路静默空转（下游无帧、RTSP 无输出），是否要「失败重试 / 拉黑该路」未定 → 归入 T10a 之后的稳定性任务
+- 复测（2026-11-09，T7 提交 `eac4bb0` + 两次纯文档提交之后的 HEAD 复验）：
+  ```bash
+  cmake --build build -j"$(nproc)"                                                    # 增量：100% Built target（无编译错误/警告）
+  timeout --preserve-status -s INT 14 ./build/run.sh testnode ../config/node.json      # 必须 ../config：run.sh 会切到 build/，显式路径不回退
+  ./build/run.sh EdgeVisionService
+  ```
+  - `RUN_EXIT=0`；四路 `successfully open stream` 全成功（`vi0` 设备 1920x1080、`vi1~vi3` 文件 1024x576）；`[ViNode] 采集源:` 四行与配置一致
+  - 报表：`print0=29.65~29.97fps`、`print1=23.90~23.96fps`、`print2=23.93~23.95fps`、`print3=23.90~23.97fps`
+  - SIGINT → 逐链正序停止（`vi0 → vpss0 → rtsp0 → print0` → `vi1 → rtsp1 → print1` → …）→ `[main] FreeMem 完成，进程正常退出`
+  - `pgrep -af testnode` → 无残留；`ss -lntp | grep 8550` → 空（端口已释放）；冒烟 `EdgeVisionService start`
+  - 备注（用法坑，非缺陷）：`./build/run.sh testnode config/node.json` 少了 `../` 会得到 `[configmgr] 配置被拒绝 -> 找不到配置：config/node.json 不存在或内容为空（显式路径不回退）` 且 `EXIT=1` —— `run.sh` 切到 `build/` 后显式路径不回退是 T6 的有意设计
 
 ---
 
