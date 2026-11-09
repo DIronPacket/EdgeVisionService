@@ -254,7 +254,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）都已消费它，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.*` 仍无人读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 = `dev:/dev/video0` 1080p@30，ch1~ch3 = 3 个 mp4，实测 **1024×576@24**），T3 验收 104 项断言见 TESTLOG §5.7；**4 路同时出帧已实测**（T7：`ViNode` 按 `vi.src` 选后端，TESTLOG §5.10），mp4 loop 待 T7b |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
-**P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-3、P0-4、P0-6、P0-7、P0-12 已修复，剩 7 项，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
+**P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-2、P0-3、P0-4、P0-6、P0-7、P0-12 已修复，剩 6 项，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
 
 ## 1.9 任务 → 文件 索引表
 

@@ -65,7 +65,7 @@
 | # | 问题 | 位置 | 影响 |
 | --- | --- | --- | --- |
 | 1 | x86 配置强制从 `install/x86_64` 找 FFmpeg，但仓库只有 `install/rk3588` | `cmake/FindFFMPEG.cmake:11-15` | `cmake -S . -B build` 直接失败，x86 无法开发/调试 |
-| 2 | ✅ 已修复（T7，TESTLOG §5.10）：`ViNode` 曾固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃；现采集实现由 `vi.src` 前缀选择（`dev:`→V4L2、`file:`/网络流→FFmpeg），工厂返回 `nullptr` 时明确报错并退出该节点线程（不崩、不拖垮其它链路） |
+| 2 | ✅ **P0-2 已修复**（T7，TESTLOG §5.10）：`ViNode` 曾固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃；现采集实现由 `vi.src` 前缀选择（`dev:`→V4L2、`file:`/网络流→FFmpeg），工厂返回 `nullptr` 时明确报错并退出该节点线程（不崩、不拖垮其它链路） |
 | 3 | ✅ 已修复（`d158eca`）：`read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 配置 fps 高于采集帧率时反复失败，池子几十帧内耗尽，整条链路静默停摆 |
 | 4 | ✅ 已修复（`283bab5`）：`enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp::run` | 同上，且编码器会反复重试失败 |
 | 5 | `push_input_pipe()` 向多个下游推同一块，但不增加引用计数 | `pipeline/pipeline_node.cpp:28-38` | 多分支时第一个下游释放后块可能被复用，其他分支读到脏数据 |
