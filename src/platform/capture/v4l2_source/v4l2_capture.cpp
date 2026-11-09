@@ -190,7 +190,7 @@ bool V4l2Capture::read_frame(FrameBuffer *frame)
     uint8_t *yuyv_data = (uint8_t *)m_buffers[buf.index].start;
 
     // ==========================================
-    // 【P0-13 续】写入前按本链路分辨率重绑视图
+    // 【P0-14】写入前按本链路分辨率重绑视图
     // 池块是跨链路共享的「裸内存 + 视图」，FrameBuffer 的 width/height/stride
     // 是块级状态：文件源（FfmpegCapture）用完块会把视图改成它自己的分辨率
     // （如 1024x576/stride=1024）再释放回池子。本链路复用到该块时视图已过期，
