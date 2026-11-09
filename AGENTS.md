@@ -9,6 +9,6 @@
 - **不要全仓扫描**：文件清单看 §1.4，构建/运行命令看 §0 与附录 A
 - 行号会漂移，读之前先跑 `grep -nE '^#{1,2} ' docs/HANDOFF.md` 一次拿行号，再定向读区间
 
-基线：分支 `rk3588` / 代码校准点 `eac4bb0`（T7：`ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；此前 T6 = 配置 → `PipelineBuilder` → SIGINT 优雅退出）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
+基线：分支 `rk3588` / 代码校准点 `c557d89`（P0-13：`MppEncoder` 按平面拷贝 NV12，修 mp4 路 UV 绿斑；前一校准点 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
 
 Cline 专用入口（内容一致，自动加载）：`.clinerules/00-handoff.md`。

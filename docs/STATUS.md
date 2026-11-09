@@ -15,7 +15,7 @@
 | 平台接口 | `platform/include/*` | 🟢 85% | 采集/编码/解码/预处理接口定义清晰；x86 编解码实现未对齐接口 |
 | FFmpeg 采集 | `capture/ffmpeg_source/*` | 🟡 75% | 支持本地文件/摄像头/RTSP 输入，软解后 `sws_scale` 转 NV12 写入池；`AVDictionary` 构造后未实际传入 |
 | V4L2 采集 | `capture/v4l2_source/*` | 🟡 65% | RK 专用；固定 YUYV 输入、缩放输出尺寸可由 `set_output_size()` 配置（默认 1920×1080）；无 `poll`、无缓冲区校验、失败路径未清理 |
-| MPP 硬编码 | `encoder/rk_mpp_encoder.*` | 🟡 70% | H.264/H.265、NV12、FIXQP(QP=33)、GOP=5s、回调输出裸流；每帧 `memcpy`，无 EOS flush/动态重配 |
+| MPP 硬编码 | `encoder/rk_mpp_encoder.*` | 🟡 70% | H.264/H.265、NV12、FIXQP(QP=33)、GOP=5s、回调输出裸流；每帧 `memcpy` 进 MPP buffer（**P0-13 后按 Y / UV 平面分别拷贝**，UV 不再被拷到池块级偏移，见 TESTLOG §5.11），无 EOS flush/动态重配 |
 | FFmpeg 软编码 | `encoder/ffmpeg_encoder.*` | 🔴 15% | `encode()` 主体被注释；`open()` 参数是 `PixelFormat`，与接口的 `CodingType` 不一致；x86 未编译 |
 | MPP 解码 | `decoder/rk_mpp_decoder.*` | 🔴 35% | 流程草稿；回调前未分配 `FrameBuffer` 内存即 `memcpy`，会崩溃；未接入流水线 |
 | FFmpeg 解码 | `decoder/ffmpeg_decoder.*` | 🔴 15% | 使用已删除的 `avcodec_register_all()`；引用不存在的 `FrameBuffer::linesize/pixel_fmt`；未编译 |
