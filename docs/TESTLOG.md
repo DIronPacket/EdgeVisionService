@@ -73,6 +73,8 @@
 
 
 
+| 2026-11-09 | **P0-13** NV12 UV 平面错位（mp4 路 Y 正常、UV 绿斑/花屏） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → `EXIT=0`、`hal_h265e_v580_ret_task` 报错 **0** 次、29.82 / 23.94 / 23.93 / 23.96fps；拉流解码统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源文件 `126.6±11.0 / 128.2±1.7`）；ch0（1920×1080）`U=70.5±66.1 / V=68.7±64.3` 与修复前一致（无回归）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.11） | ✅ 通过（UV 与源吻合，1080p 路零回归） |
+
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
 ### 5.1 L3 · 基线冒烟（2026-11-05）
@@ -290,6 +292,56 @@
   - SIGINT → 逐链正序停止（`vi0 → vpss0 → rtsp0 → print0` → `vi1 → rtsp1 → print1` → …）→ `[main] FreeMem 完成，进程正常退出`
   - `pgrep -af testnode` → 无残留；`ss -lntp | grep 8550` → 空（端口已释放）；冒烟 `EdgeVisionService start`
   - 备注（用法坑，非缺陷）：`./build/run.sh testnode config/node.json` 少了 `../` 会得到 `[configmgr] 配置被拒绝 -> 找不到配置：config/node.json 不存在或内容为空（显式路径不回退）` 且 `EXIT=1` —— `run.sh` 切到 `build/` 后显式路径不回退是 T6 的有意设计
+
+---
+
+### 5.11 L2 · 修 P0-13：`MppEncoder` 按平面拷贝 NV12（mp4 路 UV 绿斑/花屏）（2026-11-09）
+
+- 代码基线：工作树（`rk3588`，基于 `75eea5b`；代码校准点 `eac4bb0`）
+- 现象：T7 打通四路（ch0 = `dev:` 1920×1080，ch1~ch3 = `file:` 1024×576）后，**每路推流画面的 Y 正常、UV 出现大块绿斑 / 花屏**
+- 定位（实测数据，非推断）：临时在 `MppEncoder::encode()` 打印每帧尺寸，得到
+  - ch1（1024×576）：`w=1024 h=576 st0=1024 st1=1024 dsz=884736 cap=6220800 d1off=2073600`，即 **`data[1]` 相对 `data[0]` 偏移 = 2073600 = 1920×1080（池块分辨率）**，而不是本帧的 1024×576 = 589824
+  - ch0（1920×1080）：`d1off=2073600`，恰好等于 `1920×1080`，所以连续拷贝正确 —— 这解释了「为什么只有 mp4 路花屏」
+- 根因（**P0-13**，既有缺陷，被 T7 暴露）：`MppEncoder::encode()` 用
+  `memcpy(dst, fb->data[0], fb->data_size)` 一次性把 `data_size` 字节拷进 MPP buffer，
+  而 `FrameBuffer::BindDataPointers()` 里 `data[1] = base + stride[0] * 池块高`，
+  **UV 平面并不紧跟在「本帧 Y 平面」之后**。当本帧比池块小时，被当作 UV 拷进去的是
+  本帧 Y 之后的内存残影（上一帧 / 其它链路留下的亮度数据）→ 播放端 Y 正常、UV 花屏
+- 改动（`src/platform/encoder/rk_mpp_encoder.cpp`，+26/−1）：
+  - Y、UV **分别拷贝**：`const size_t y_size = frame_size / 3 * 2;`
+    `memcpy(dst_ptr, fb->data[0], y_size);`
+    `memcpy((uint8_t*)dst_ptr + y_size, fb->data[1], frame_size - y_size);`
+    （NV12 中 Y 占 2/3、UV 占 1/3，UV 在 MPP buffer 里紧跟 Y，偏移 = `hor_stride * ver_stride`）
+  - `frame_size == 0` 时按 `stride * height * 3 / 2` 兜底；`data[0] / data[1]` 空指针时归还 buffer 并返回 false
+  - 其余保持原写法（`mpp_frame_set_hor_stride(frame, fb->stride[0])`、`mpp_buffer_get(size = fb->data_size)`）
+- 命令：
+  ```bash
+  cmake --build build -j"$(nproc)"                                     # BUILD_EXIT=0
+  timeout --preserve-status -s INT 45 ./build/run.sh testnode ../config/node.json
+  ./3rdparty/rk3588/ffmpeg/bin/ffmpeg -rtsp_transport tcp -i rtsp://127.0.0.1:8550/live/ch1 \
+      -frames:v 5 -f rawvideo -pix_fmt yuv420p /tmp/fin_ch1.yuv -y      # ch0/ch2/ch3 同
+  ./scripts/tests/run_t5_builder.sh ; ./scripts/tests/run_t3_node_json.sh ; ./scripts/tests/run_t2_node_config.sh
+  ```
+  UV 判据：拉流解码成 yuv420p 后统计 U/V 均值与标准差，与**源 mp4 同分辨率解码帧**对比（UV 正确时两者应接近）
+- 结果摘要：
+  - **修复前**（`U/V` 均值±标准差，1024×576）：RTSP ch1 `U=105.4±41.1 / V=105.5±41.2`；源 `test1.mp4` `U=126.6±11.0 / V=128.2±1.7` → 均值偏离 + 方差 4 倍，典型 UV 花屏
+  - **修复后**：ch1/ch2/ch3 `U=128.1±10.9 / V=128.0±1.6` —— 与源吻合；ch0（1920×1080）`U=70.5±66.1 / V=68.7±64.3`，与修复前（`69.7±65.3 / 69.0±64.8`）一致，**无回归**
+  - 四路 fps：`print0=29.82`、`print1=23.94`、`print2=23.93`、`print3=23.96`（与配置 30/24 一致）；`hal_h265e_v580_ret_task` 编码错误 **0** 次；SIGINT → 正序停止 → `FreeMem 完成` → `EXIT=0`
+  - 隔离对照（用的配置副本放 `/tmp`，不动仓库）：
+    - 单路 ch1（1024×576）→ 0 错误、23.93fps；单路 ch0（1920×1080）→ 0 错误、29.84fps
+    - 基线代码（未修 P0-13）四路 → 0 错误、ch0 29.87fps（说明本次改动**不增加** 1080p 路负载）
+  - 回归：T5 `passes=64 fails=0 skips=2`、T3 `passes=104 fails=0 skips=0`、T2 `ALL PASS (fails=0)`
+- 结论：✅ 通过。P0-13（UV 平面错位）实测关闭，四路画面 UV 与源一致，1080p 路零回归
+- 排障坑（与缺陷无关，但会误导判断，记下来省下次的时间）：
+  1. **不要用 `pkill -9` 强杀 `testnode`**：rkvenc 硬件来不及释放，`dmesg` 会出现
+     `mpp_rkvenc2 ... found error status 00000100` / `soft reset timeout, use cru reset`，
+     之后的运行可能持续报 `hal_h265e_v580_ret_task enc not done`
+  2. **不要同时跑两个 `testnode`**：8550 端口与 MPP 硬件都会冲突，第二个实例可能直接 `EXIT=135`（SIGBUS）
+  3. 判断「是否回归」必须先跑一次基线对照（同一环境、同一轮次），否则容易把环境污染当成代码缺陷
+- 未做 / 受限：
+  - 未在播放器里逐帧目视（本环境无 GUI），以 yuv420p 的 U/V 统计作为客观判据；建议后续在带显示的机器上抽检一次
+  - `FfmpegCapture` 仍不缩放、不 loop（T7b）；`vi.width/height` 必须与素材实际分辨率一致，否则画面会被拉伸/裁切（与本次 UV 问题无关）
+  - 池块按最大分辨率（1920×1080）统一分配，720p 以下链路仍浪费约 56% 内存（T10a）
 
 ---
 

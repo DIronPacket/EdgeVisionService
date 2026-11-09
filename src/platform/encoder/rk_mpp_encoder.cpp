@@ -176,8 +176,23 @@ bool MppEncoder::encode(FrameBuffer *fb)
   mpp_frame_set_pts(frame, fb->timestamp_ms * 1000); // 单位微秒
 
   // 分配MppBuffer，把FrameBuffer的数据拷贝进MppBuffer
+  //
+  // 【必须按平面分别拷贝】FrameBuffer 的 NV12 布局是 data[0]=Y、data[1]=UV，而 data[1] 的
+  // 偏移由 BindDataPointers() 按「池块分辨率」算出（data[1] = base + stride[0] * 池块高），
+  // **不**等于 stride[0] * 本帧高。本帧比池块小时（1024x576 的 mp4 跑在 1920x1080 池块上
+  // 就是这种情况），若像以前那样「从 data[0] 起 data_size 字节一次性 memcpy」，UV 那半段
+  // 拷到的其实是本帧 Y 平面之后的内存残影（上一帧 / 其它链路留下的亮度数据）→ 播放端 Y
+  // 正常、UV 大块绿斑与花屏。所以 Y、UV 各自从自己的平面指针拷，UV 紧接在 Y 之后（MPP 对
+  // NV12 就是这么排的：offset = hor_stride * ver_stride）。
   MppBuffer buf = nullptr;
   size_t frame_size = fb->data_size;
+  if (frame_size == 0)
+  {
+    // 兜底：上游没填 data_size 时按 stride * height * 3 / 2 推算
+    const int fallback_stride = fb->stride[0] > 0 ? fb->stride[0] : fb->width;
+    frame_size = static_cast<size_t>(fallback_stride) *
+                 static_cast<size_t>(fb->height) * 3 / 2;
+  }
   ret = mpp_buffer_get(NULL, &buf, frame_size);
   if (ret != MPP_OK)
   {
@@ -185,8 +200,18 @@ bool MppEncoder::encode(FrameBuffer *fb)
     mpp_frame_deinit(&frame);
     return false;
   }
+  if (!fb->data[0] || !fb->data[1] || frame_size < 3)
+  {
+    fprintf(stderr, "MPP Encoder Error: fb->data[0]/data[1] invalid\n");
+    mpp_buffer_put(buf);
+    mpp_frame_deinit(&frame);
+    return false;
+  }
   void *dst_ptr = mpp_buffer_get_ptr(buf);
-  memcpy(dst_ptr, fb->data[0], frame_size);
+  // NV12 里 Y 占 2/3、UV 占 1/3（frame_size = stride * height * 3 / 2）
+  const size_t y_size = frame_size / 3 * 2;
+  memcpy(dst_ptr, fb->data[0], y_size);
+  memcpy(static_cast<uint8_t *>(dst_ptr) + y_size, fb->data[1], frame_size - y_size);
   mpp_frame_set_buffer(frame, buf);
   mpp_buffer_put(buf);
   // 送入编码

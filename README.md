@@ -204,7 +204,7 @@ timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json;
 | 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
 | 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
 
-> P0 共 12 项，已修 6 项（P0-2 / 3 / 4 / 6 / 7 / 12），剩 6 项。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
+> P0 共 13 项，已修 7 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13），剩 6 项。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 5. 路线图
 

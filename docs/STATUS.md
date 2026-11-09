@@ -76,6 +76,7 @@
 | 10 | `FrameBuffer` 无析构、可拷贝、`Allocate()` 后再 `BindMemory()` 会覆盖指针 | `common/frame_buffer.h:16-125` | 裸指针生命周期不可控，易双重释放/泄漏 |
 | 11 | `MemMeta` 无析构，`set_ptr()` 覆盖同名指针时旧 `MemSlot` 泄漏 | `common/MemManager/MemMeta.h:46-79` | 长时间运行内存持续增长 |
 | 12 | ✅ 已修复（`9678e42`）：`ViNode` / `PushNode` 的 `std::atomic<bool> running_` 未初始化（C++14 默认构造不写值） | `moudle_vi.cpp::ViNode`、`moudle_push.cpp::PushNode` | 内存脏值时 `start()` 里 `running_.exchange(true)` 直接返回，节点线程根本不起，整条链路静默堵死 |
+| 13 | ✅ **P0-13 已修复**（TESTLOG §5.11）：`MppEncoder::encode()` 把 `fb->data[0]` 起 `data_size` 字节**一次性 `memcpy`** 进 MPP buffer；而 `FrameBuffer::data[1]`（UV）的偏移由 `BindDataPointers()` 按**池块分辨率**算（`data[1] = base + stride[0] * 池块高`），不等于 `stride[0] * 本帧高` | `platform/encoder/rk_mpp_encoder.cpp::encode` | 本帧比池块小时（1024×576 的 mp4 跑在 1920×1080 池块上）UV 拷到的是本帧 Y 之后的内存残影（上一帧 / 其它链路数据）→ 播放端 **Y 正常、UV 大块绿斑与花屏**。T7 起四路出现不同分辨率才暴露。现 Y、UV 分别从 `data[0]` / `data[1]` 拷贝，UV 紧接 Y 之后 |
 
 ### 4.2 P1：功能正确性 / 稳定性 / 性能
 
