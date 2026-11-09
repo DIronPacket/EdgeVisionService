@@ -3,6 +3,82 @@
 #include "block_profiler.h"
 #include <iostream>
 #include <chrono>
+#include <sstream>
+
+namespace
+{
+
+// 把 vi.src 解析成「采集类型 + 采集实现认识的地址」（T7）。
+// 判据是前缀，不是「字符串里有没有 /dev」（DESIGN §5.4）：
+//   dev:            → V4L2（body 可写完整参数字段，也可只写设备路径）
+//   file:           → FFmpeg 本地文件
+//   rtsp/rtmp/http/udp → FFmpeg 网络流
+//   无前缀          → 兼容 T7 之前的写法：/dev/video* 当 V4L2，其余当本地文件
+bool ResolveSrc(const std::string &raw, int fps, CaptureType &type, std::string &real_src)
+{
+  const std::string dev_prefix = "dev:";
+  const std::string file_prefix = "file:";
+
+  if (raw.compare(0, dev_prefix.size(), dev_prefix) == 0)
+  {
+    type = CaptureType::CAPTURE_V4L2;
+    const std::string body = raw.substr(dev_prefix.size());
+    if (body.empty())
+      return false;
+
+    // V4l2Capture 的 src 契约是「设备:宽:高:格式:fps」共 5 段（v4l2_capture.cpp:21）。
+    // 配置里通常只写设备路径（dev:/dev/video0），这里补上采集端参数：
+    // 默认 640x480 NV12，与 T7 之前的默认采集参数一致。注意这不是输出尺寸——
+    // 输出尺寸由 vi.width/height 经 set_output_size() 交给 sws 缩放，两者解耦。
+    int segs = 1;
+    for (size_t i = 0; i < body.size(); ++i)
+    {
+      if (body[i] == ':')
+        ++segs;
+    }
+    if (segs == 5)
+    {
+      real_src = body; // 写全了参数就原样透传，不做二次解释
+      return true;
+    }
+    if (segs != 1)
+      return false; // 参数写了一半（例如 dev:/dev/video0:640）→ 直接报错，不猜
+    std::ostringstream oss;
+    oss << body << ":640:480:NV12:" << (fps > 0 ? fps : 30);
+    real_src = oss.str();
+    return true;
+  }
+
+  if (raw.compare(0, file_prefix.size(), file_prefix) == 0)
+  {
+    type = CaptureType::CAPTURE_FFMPEG;
+    real_src = raw.substr(file_prefix.size());
+    return !real_src.empty();
+  }
+
+  // 网络流前缀由 FfmpegCapture::open 自己再判一次（它按前缀设 options），这里只挑实现
+  if (raw.compare(0, 6, "rtsp://") == 0 || raw.compare(0, 6, "rtmp://") == 0 ||
+      raw.compare(0, 5, "http://") == 0 || raw.compare(0, 5, "udp://") == 0)
+  {
+    type = CaptureType::CAPTURE_FFMPEG;
+    real_src = raw;
+    return true;
+  }
+
+  if (raw.compare(0, 10, "/dev/video") == 0)
+  {
+    type = CaptureType::CAPTURE_V4L2;
+    real_src = raw;
+    return true;
+  }
+
+  type = CaptureType::CAPTURE_FFMPEG;
+  real_src = raw;
+  return !raw.empty();
+}
+
+} // namespace
+
 // running_ 是 std::atomic<bool>，默认构造不写值（C++14），必须显式初始化，
 // 否则内存里的脏值会让 start() 里 running_.exchange(true) 直接返回 true，线程起不来
 ViNode::ViNode() : running_(false) {}
@@ -57,13 +133,20 @@ void ViNode::set_data(const char *config_str)
     // 2. 解析 JSON
     json j = json::parse(config_str);
 
-    // 兼容 {"push":{...}}、{"push":[{...}]} 与直接 {...} 三种写法
-    if (j.contains("push"))
+    // T7：vi 节点优先读自己的 vi 段；v0 合成的 vi 段、以及老调用方式只有
+    // push 段或直接 {...}，此时退回 push 段，保证 T7 之前的行为不变。
+    // 同时兼容对象与单元素数组两种写法（{"vi":{...}} / {"vi":[{...}]}）。
+    static const char *kSegKeys[] = {"vi", "push"};
+    for (size_t i = 0; i < sizeof(kSegKeys) / sizeof(kSegKeys[0]); ++i)
     {
-      if (j["push"].is_object())
-        j = j["push"];
-      else if (j["push"].is_array() && !j["push"].empty())
-        j = j["push"][0];
+      const char *key = kSegKeys[i];
+      if (!j.contains(key))
+        continue;
+      if (j[key].is_object())
+        j = j[key];
+      else if (j[key].is_array() && !j[key].empty() && j[key][0].is_object())
+        j = j[key][0];
+      break; // 命中 vi / push 段即以其为准（vi 优先）
     }
 
     cfg_ = j;
@@ -87,10 +170,45 @@ void ViNode::set_data(const char *config_str)
 
     std::cout << "[ViNode] 采集输出分辨率: " << out_width_ << "x" << out_height_
               << " fps=" << out_fps_ << std::endl;
+
+    // 4. 采集源（T7）：只有显式写了 src 才覆盖，缺省仍走 T7 之前的 /dev/video0，
+    //    所以 v0 push.json（合成 vi 段里没有 src）的行为逐字节不变。
+    if (j.contains("src"))
+    {
+      if (!j["src"].is_string())
+      {
+        std::cerr << "[ViNode] src: 必须是字符串，忽略该字段，保持 " << m_src
+                  << std::endl;
+      }
+      else
+      {
+        const std::string raw = j["src"].get<std::string>();
+        CaptureType type = m_capture_type;
+        std::string real_src;
+        if (ResolveSrc(raw, out_fps_, type, real_src))
+        {
+          m_capture_type = type;
+          m_src = real_src;
+          std::cout << "[ViNode] 采集源: " << raw << " -> "
+                    << (m_capture_type == CaptureType::CAPTURE_V4L2
+                            ? "CAPTURE_V4L2"
+                            : "CAPTURE_FFMPEG")
+                    << " (" << m_src << ")" << std::endl;
+        }
+        else
+        {
+          // 不静默降级：配置写错时必须能从日志看出「实际用了哪个源」
+          std::cerr << "[ViNode] 无法解析 src=\"" << raw
+                    << "\"（支持 dev:/dev/video0、dev:/dev/video0:W:H:NV12:FPS、"
+                       "file:/path/x.mp4、rtsp://…），保持默认 "
+                    << m_src << std::endl;
+        }
+      }
+    }
   }
   catch (const json::parse_error &e)
   {
-    // 4. 捕获解析异常，防止崩溃
+    // 5. 捕获解析异常，防止崩溃
     std::cerr << "JSON Parse Error: " << e.what() << std::endl;
   }
   catch (const json::type_error &e)
@@ -101,9 +219,18 @@ void ViNode::set_data(const char *config_str)
 
 void ViNode::run()
 {
-  std::string fileName = "/dev/video0:640:480:NV12:30"; //"2.mp4";
   bool is_open = false;
-  m_capture = CreateCapture(CaptureType::CAPTURE_V4L2);
+  // T7：采集实现由 vi.src 前缀决定（set_data 里解析好），不再固定 V4L2
+  m_capture = CreateCapture(m_capture_type);
+  // P0-2：CAPTURE_V4L2 只在 RK 平台编入（capture_factory.cpp 用 TARGET_PLATFORM_RK3588
+  // 包住了），x86 下工厂返回 nullptr。以前这里接着就 m_capture->open()，必然段错误；
+  // 现在明确报错并退出本节点线程，让其余链路照常跑（N3：失败不拖垮全局）。
+  if (!m_capture)
+  {
+    std::cerr << "[" << get_full_name() << "] 采集实现不可用（src=" << m_src
+              << "）：当前平台未编译该采集后端，节点退出" << std::endl;
+    return;
+  }
 
   // 【新增】设定目标帧率和帧间隔（帧率来自 config/push.json 的 fps）
   const int TARGET_FPS = (out_fps_ > 0) ? out_fps_ : 30;
@@ -123,13 +250,16 @@ void ViNode::run()
       {
         // 先把配置的分辨率设为采集层的缩放目标（sws 上下文在 open() 里按此创建）
         m_capture->set_output_size(out_width_, out_height_);
-        if (!m_capture->open(fileName))
+        if (!m_capture->open(m_src))
         {
-          std::cerr << "open file failed:" << fileName << "\n";
+          // 取块必有归还（§2.4）：open 失败这条分支以前直接 break，已取的块没还，
+          // 池子会少一块（长跑里反复重建链路就会累积成 P0-9 那类"越跑越少"）。
+          m_queue.release(block);
+          std::cerr << "[" << get_full_name() << "] open failed: " << m_src << std::endl;
           break;
         }
-        printf("successfully open stream:%s, output=%dx%d\n", fileName.c_str(),
-               out_width_, out_height_);
+        std::cout << "[" << get_full_name() << "] successfully open stream:" << m_src
+                  << ", output=" << out_width_ << "x" << out_height_ << std::endl;
         is_open = true;
       }
       // 本节点耗时统计：开始时间戳（拿到 block 之后、真正开始采集之前）

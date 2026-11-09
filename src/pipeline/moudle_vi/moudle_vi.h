@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstdio> // fopen fwrite fclose
 #include <queue>
+#include <string>
 extern "C"
 {
 #include <libavformat/avformat.h>
@@ -48,6 +49,11 @@ private:
   int out_width_ = 1920;
   int out_height_ = 1080;
   int out_fps_ = 30;
+
+  // 采集源（T7）：由 vi.src 前缀决定采集实现，缺省值保持 T7 之前的硬编码行为，
+  // 这样 v0 push.json（合成的 vi 段没有 src）跑起来与以前完全一致。
+  CaptureType m_capture_type = CaptureType::CAPTURE_V4L2;
+  std::string m_src = "/dev/video0:640:480:NV12:30"; // 已剥前缀，交给采集实现
 
   std::unique_ptr<CaptureInterface> m_capture;
 };

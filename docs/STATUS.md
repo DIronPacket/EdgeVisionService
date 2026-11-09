@@ -20,9 +20,9 @@
 | MPP 解码 | `decoder/rk_mpp_decoder.*` | 🔴 35% | 流程草稿；回调前未分配 `FrameBuffer` 内存即 `memcpy`，会崩溃；未接入流水线 |
 | FFmpeg 解码 | `decoder/ffmpeg_decoder.*` | 🔴 15% | 使用已删除的 `avcodec_register_all()`；引用不存在的 `FrameBuffer::linesize/pixel_fmt`；未编译 |
 | RTSP 推流封装 | `platform/rtsp/zlm_push_server.*` | 🟡 65% | 一键起服务/建流、送 H.264/H.265、停止释放；存在停止 key 不匹配、空指针解引用等问题 |
-| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print`、`node_factory.*`、`pipeline_builder.*` | 🟡 80% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由配置驱动；各节点耗时已可采集并周期打印；**T5 新增 `NodeFactory`（type→节点）与 `PipelineBuilder`（拓扑校验 + 装配 + 连线 + 批量启停）**，装配不再靠手写（TESTLOG §5.8）；**T6 接入真实入口** —— `main_node.cpp` 只做「配置 → 进程资源 → builder → SIGINT 优雅退出」，`config/node.json` 单独决定跑几条链，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；采集源路径仍硬编码（T7）、编码 QP 未配置化、错误路径丢块、无多分支引用计数 |
+| 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print`、`node_factory.*`、`pipeline_builder.*` | 🟡 80% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由配置驱动；各节点耗时已可采集并周期打印；**T5 新增 `NodeFactory`（type→节点）与 `PipelineBuilder`（拓扑校验 + 装配 + 连线 + 批量启停）**，装配不再靠手写（TESTLOG §5.8）；**T6 接入真实入口** —— `main_node.cpp` 只做「配置 → 进程资源 → builder → SIGINT 优雅退出」，`config/node.json` 单独决定跑几条链，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；**T7 采集源已配置化** —— `ViNode` 按 `vi.src` 前缀选 V4L2/FFmpeg，`config/node.json` 四路（1 摄像头 + 3 mp4）同时出帧实测 29.96 / 23.96 / 23.93 / 23.94fps（TESTLOG §5.10）；编码 QP 未配置化、错误路径丢块、无多分支引用计数 |
 | 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp`（T6 后已是 builder 驱动的配置编排：正序停止、退出码 0、无 `while(1)`） |
-| 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）已能消费，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 摄像头 1080p@30 + ch1~ch3 三个 mp4 实测 1024×576@24），T3 验收 `passes=104`（TESTLOG §5.7），**4 路同时出帧待 T7/T7b** |
+| 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）已能消费，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 摄像头 1080p@30 + ch1~ch3 三个 mp4 实测 1024×576@24），T3 验收 `passes=104`（TESTLOG §5.7），**4 路同时出帧已实测（TESTLOG §5.10，T7）**，mp4 播完不重播待 T7b |
 | 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 30% | 有编码/推流/节点/内存池手工测试；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（`test_builder` 64 断言覆盖工厂/拓扑/装配/失败隔离）；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
 | 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 40% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/push.json`（v0，在用）与 `config/node.json`（v1，4 路定稿）并存；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（共 239 项断言），无 CI |
@@ -65,7 +65,7 @@
 | # | 问题 | 位置 | 影响 |
 | --- | --- | --- | --- |
 | 1 | x86 配置强制从 `install/x86_64` 找 FFmpeg，但仓库只有 `install/rk3588` | `cmake/FindFFMPEG.cmake:11-15` | `cmake -S . -B build` 直接失败，x86 无法开发/调试 |
-| 2 | `ViNode` 固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃 |
+| 2 | ✅ 已修复（T7，TESTLOG §5.10）：`ViNode` 曾固定创建 `CAPTURE_V4L2`，x86 下工厂返回 `nullptr` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 随后 `m_capture->open()` 空指针崩溃；现采集实现由 `vi.src` 前缀选择（`dev:`→V4L2、`file:`/网络流→FFmpeg），工厂返回 `nullptr` 时明确报错并退出该节点线程（不崩、不拖垮其它链路） |
 | 3 | ✅ 已修复（`d158eca`）：`read_frame()` 失败时直接 `continue`，未归还已取的 `MemBlock` | `pipeline/moudle_vi/moudle_vi.cpp::run` | 配置 fps 高于采集帧率时反复失败，池子几十帧内耗尽，整条链路静默停摆 |
 | 4 | ✅ 已修复（`283bab5`）：`enc.open()` 失败时 `continue`，未归还 `MemBlock` | `pipeline/moudle_push/moudle_push.cpp::run` | 同上，且编码器会反复重试失败 |
 | 5 | `push_input_pipe()` 向多个下游推同一块，但不增加引用计数 | `pipeline/pipeline_node.cpp:28-38` | 多分支时第一个下游释放后块可能被复用，其他分支读到脏数据 |

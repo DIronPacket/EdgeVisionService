@@ -3,17 +3,17 @@
 > 本文件只是**索引 + 事实卡**，完整内容在 **`docs/HANDOFF.md`**（唯一权威接手文档）。
 > **不要用 `search_codebase` 全仓扫描来"重新了解项目"**：文件清单在 HANDOFF §1.4，现状在 §0/§1.2，限制在 §2，任务→文件在 §1.9。
 
-## 现状卡（2026-11-08 基线；若与 git 实际不符，以 git 为准并回写文档）
+## 现状卡（2026-11-09 基线；若与 git 实际不符，以 git 为准并回写文档）
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `29ab58b`（`main:` T6 重写真实入口 = 配置 → `PipelineBuilder` → SIGINT 优雅退出；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `T7_COMMIT_PLACEHOLDER`（`T7` `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；此前 T6 = 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池 → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
-| P0 问题 | 12 项（P0-3 / 4 / 6 / 7 / 12 已修复，剩 7 项），见 `docs/STATUS.md` §4.1 |
+| P0 问题 | 12 项（P0-2 / 3 / 4 / 6 / 7 / 12 已修复，剩 6 项），见 `docs/STATUS.md` §4.1 |
 
 ## 跳读表（**不要全文读**：先跑一条命令拿行号，再定向读区间）
 

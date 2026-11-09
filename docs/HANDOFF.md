@@ -16,13 +16,13 @@
 | 项 | 值 |
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
-| 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6），未产品化（仍无日志 / 单测 / CI）；4 路同时出帧卡在 T7/T7b |
+| 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `29ab58b`（T6 重写真实入口：配置 → `PipelineBuilder` → SIGINT 优雅退出；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
-| 最大问题 | P0 共 12 项（P0-3 / 4 / 6 / 7 / 12 已修复，剩 7 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 最大问题 | P0 共 12 项（P0-2 / 3 / 4 / 6 / 7 / 12 已修复，剩 6 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
@@ -63,7 +63,7 @@
 
 当前阶段：**原型链路已跑通，未产品化**。推流参数已由 `config/push.json` 配置化（采集源路径、编码 QP 仍未配置化），没有日志/指标、没有单测/CI。
 
-## 1.2 关键坐标（2026-11-08 快照）
+## 1.2 关键坐标（2026-11-09 快照）
 
 | 项 | 值 |
 | --- | --- |
@@ -97,7 +97,7 @@ EdgeVisionService/
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
-├── config/                     # push.json：v0 单链路（推流宽高 / 编码 / 协议 / 端口 / print 间隔，T8 删除）；node.json：v1 多链路配置（4 路，T6 起由 testnode 直接消费，`ViNode` 的 src 解析待 T7）
+├── config/                     # push.json：v0 单链路（推流宽高 / 编码 / 协议 / 端口 / print 间隔，T8 删除）；node.json：v1 多链路配置（4 路，T6 起由 testnode 直接消费，T7 起 `ViNode` 按 `vi.src` 前缀选采集实现）
 ├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh（RTSP key / ref_cnt / 入参校验，18 项断言）· run_t2_node_config.sh + fixtures/（NodeConfigManager 解析/校验/v0 适配，53 项断言）
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
@@ -245,13 +245,13 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 | 能力 | 现状 |
 | --- | --- |
-| 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；采集源参数（设备/源分辨率）仍硬编码，**输出分辨率已可配** |
+| 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；**T7 起采集源由 `vi.src` 前缀选择**（`dev:`→V4L2，`file:` / 网络流→FFmpeg，无前缀按老规则兜底），源分辨率仍由 `dev:` 的 5 段写法或文件本身决定，输出分辨率可配（TESTLOG §5.10） |
 | 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
-| 流水线 | `ViNode → PushNode → PrintNode` 单链路可运行；分辨率/帧率/codec/码率/端口已由配置驱动，错误路径丢块仍未全修。**T5 起装配不再手写**：`NodeFactory`（type→节点）+ `PipelineBuilder`（拓扑校验 + 装配 + 连线 + `start_all`/`stop_all`），`config/node.json` 能直接建成并启动 4 条链路（TESTLOG §5.8）。**T6 起真实入口已接入 builder**：`main_node.cpp` 只做配置 → 进程资源 → 装配 → 启停 → `FreeMem`，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；但**4 路同时出帧仍不成立**——`ViNode` 写死 `/dev/video0`（T7） |
+| 流水线 | `ViNode → PushNode → PrintNode` 单链路可运行；分辨率/帧率/codec/码率/端口已由配置驱动，错误路径丢块仍未全修。**T5 起装配不再手写**：`NodeFactory`（type→节点）+ `PipelineBuilder`（拓扑校验 + 装配 + 连线 + `start_all`/`stop_all`），`config/node.json` 能直接建成并启动 4 条链路（TESTLOG §5.8）。**T6 起真实入口已接入 builder**：`main_node.cpp` 只做配置 → 进程资源 → 装配 → 启停 → `FreeMem`，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；**T7 起 `ViNode` 按 `vi.src` 前缀选采集实现，4 路（1 摄像头 + 3 mp4）同时出帧已实测**（TESTLOG §5.10） |
 | 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧），报表带实测 fps |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
 | 推流 | 单路 RTSP 可演示，参数来自 `config/push.json`；stop/空指针问题待修；`rtmp`/裸 RTP 未实现 |
-| 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）都已消费它，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.*` 仍无人读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 = `dev:/dev/video0` 1080p@30，ch1~ch3 = 3 个 mp4，实测 **1024×576@24**），T3 验收 104 项断言见 TESTLOG §5.7；**4 路同时出帧仍待 T7/T7b** |
+| 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）都已消费它，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.*` 仍无人读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 = `dev:/dev/video0` 1080p@30，ch1~ch3 = 3 个 mp4，实测 **1024×576@24**），T3 验收 104 项断言见 TESTLOG §5.7；**4 路同时出帧已实测**（T7：`ViNode` 按 `vi.src` 选后端，TESTLOG §5.10），mp4 loop 待 T7b |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
 **P0 共 12 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-3、P0-4、P0-6、P0-7、P0-12 已修复，剩 7 项，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
@@ -263,14 +263,14 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 改推流分辨率/编码(h264,h265)/协议/端口 | `config/push.json`（改完重跑 `testnode` 即生效，无需重编） | `moudle_push.cpp::set_data`、`moudle_vi.cpp::set_data` |
 | 改配置格式 / 调配置校验规则 / 加配置字段 | `src/common/configmgr/node_config_manager.cpp`（`ParseV1` / `ParseV0` / `ExpandRefs` / 数值守护） | `node_config.h`（数据模型 `GlobalDesc`/`PipelineDesc`/`NodeDesc`）、`config/node.json`、DESIGN §5、验收脚本 `scripts/tests/run_t2_node_config.sh`（53 项断言，改校验必跑） |
 | 改多链路配置（4 路：摄像头 + mp4） | `config/node.json`（ch0 = `dev:/dev/video0`；ch1~ch3 = `file:...mp4` + `loop`；**vi 与 push 的宽高/fps 必须等于素材实测值**，换素材先 `ffprobe`） | 验收脚本 `scripts/tests/run_t3_node_json.sh`（104 项断言，改配置必跑；含 ffprobe 交叉校验与 v0 等价断言）、`config/push.json`（v0 对照）、TESTLOG §5.7 |
-| 改采集行为 | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp` | `capture_interface.h`、`capture_factory.cpp` |
+| 改采集行为（含「哪种源用哪个后端」） | `platform/capture/{ffmpeg_source,v4l2_source}/*.cpp`；`vi.src` 前缀 → 后端的映射在 `pipeline/moudle_vi/moudle_vi.cpp` 的 `ResolveSrc()`（T7） | `capture_interface.h`、`capture_factory.cpp`、TESTLOG §5.10 |
 | 改编码参数（QP/GOP/码率） | `platform/encoder/rk_mpp_encoder.cpp`、`pipeline/moudle_push/moudle_push.cpp` | `config/push.json`、`moudle_push.h` 里的默认成员 |
 | 新增 rtmp / 裸 RTP 推流后端 | `platform/rtsp/zlm_push_server.cpp`、`moudle_push.cpp` | `platform/CMakeLists.txt`（`BUILD_RTSP_MODULE`） |
 | 改内存池/引用计数 | `common/MemManager/MemPool.{h,cpp}`、`MemMeta.h`、`MemManager.cpp` | `common/frame_buffer.h` |
 | 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt`、`pipeline/node_factory.cpp`（在 `RegisterBuiltins()` 里加一行 `type → creator`，否则 `create()` 认不出新 type） |
 | 改装配逻辑 / 拓扑规则（谁能接谁、第几个） | `pipeline/pipeline_builder.cpp`（`check_order` 的 R1–R5 规则、`build_one` 的 `create → node->create → set_data → link_to` 顺序） | `pipeline/pipeline_builder.h`（`PipelineSet` / `describe()` / 计数与 `errors()`）、验收脚本 `scripts/tests/run_t5_builder.sh`（64 项断言，改规则必跑）、TESTLOG §5.8 |
 | 接入 / 修改预处理节点（转码+叠加，VPSS 位置） | `pipeline/moudle_vpss/moudle_vpss.{h,cpp}`（`VpssNode::process_frame` 是唯一待填函数） | `config/push.json` 的 `vpss` 段、`common/preprocess/image_preprocessor.{h,cpp}`、`main/test/main_node.cpp`（装配位置） |
-| 做多链路 / 改配置格式 / 上提进程级资源 | `docs/DESIGN_MULTI_PIPELINE.md`（方案与分期，尚未实现；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5/P0-6 |
+| 做多链路 / 改配置格式 / 上提进程级资源 | `docs/DESIGN_MULTI_PIPELINE.md`（方案与分期；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**；**已落地 T2 配置 / T3 定稿 / T5 builder / T6 入口 / T7 采集源**，剩 T7b（loop + 缩放）、T8（删 `push.json`）、T10a（池参数接线）） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`pipeline/moudle_vi/moudle_vi.cpp`（T7 的 `ResolveSrc`）、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5 |
 | 转码 / 画框 / 贴图 / OSD 字符叠加（预处理） | `common/preprocess/image_preprocessor.{h,cpp}`（门面） | `frame_converter`（格式互转）、`frame_drawer`（画框/贴图/截图）、`osd_renderer` + `glyph_source`（字形）、`common/preprocess/README.md`、开关 `BUILD_FREETYPE_OSD` |
 | 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
 | 装配服务入口 | `main/test/main_node.cpp`（**T6 起是唯一真实入口**：config → `MemInit` → `build_all` → 信号 → `start_all` → `stop_all` → `FreeMem`）、`main/main.cpp`（仍是空壳） | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`、TESTLOG §5.9 |
@@ -430,7 +430,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 现象 | 先查 |
 | --- | --- |
 | `cmake -S . -B build` 配置失败 | P0-1：`install/x86_64` 缺失；确认是不是在本机（aarch64）构建 |
-| 一启动就段错误（无摄像头 / x86） | P0-2（`ViNode` 写死 V4L2 + 空指针）、P0-8（MPP 解码未分配内存） |
+| 一启动就段错误（无摄像头 / x86） | P0-2 **已修（T7）**：采集后端不可用或设备/文件打不开时只打印 `[viN] open failed` 并退出该节点线程（不崩、其余链路照跑）；仍崩则查 P0-8（MPP 解码未分配 `FrameBuffer`） |
 | 跑几秒后链路停摆、拿不到块 | 失败分支漏 `release` 导致池子耗尽（P0-3、P0-4 已修）；剩余检查 `push_input_pipe()` 队列满丢块（P0-5） |
 | 画面撕裂 / 花屏 / 脏数据 | P0-5：多下游共用块被提前复用 |
 | `rtsp://` 打开 404、服务关不掉 | P0-6（stop 的 key 与注册不一致）、P0-7（参数校验崩溃） |
@@ -514,6 +514,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-08 | **T2 新增 `NodeConfigManager`**（新模块 `src/common/configmgr/`：`node_config.h` 数据模型 + `node_config_manager.{h,cpp}`；`src/common/CMakeLists.txt` 注册源文件与头路径）：v1 `node.json` 解析（字段级校验、错误带字段路径如 `pipelines[0].nodes[1].config.port`、`${global.*}` 整值引用保留 JSON 类型、节点未写时注入 `global.media.rtsp.{port,app}`、默认值合并）+ v0 `push.json` 单链路适配（`vi` → `push(name=rtsp)` → `print`，与现 `main_node.cpp` 一致）；单例 + 不可变快照，**校验失败不破坏已生效快照**，`load_with_fallback()` 优先 v1、显式路径不回退。新增验收脚本 `scripts/tests/run_t2_node_config.sh` + 7 份 `fixtures/*.json`（53 项断言 → `ALL PASS (fails=0)`），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.6。**尚未接入 `main_node.cpp`**（T5/T6 才用）；`global.pool.*` 仍无人读取（T10a）；`config/node.json` 的本地改动按约定未入库 | `8d87731` |
 | 2026-11-08 | **T5 新增 `NodeFactory` + `PipelineBuilder`**（`src/pipeline/node_factory.{h,cpp}`、`pipeline_builder.{h,cpp}`）：`NodeFactory` 为 type→节点单例注册表（内置 `vi`/`vpss`/`push`/`print` 集中注册在 `RegisterBuiltins()`，重复注册被拒不覆盖，未知 type 返回 `nullptr` 并写 `last_error()`，**不抛异常**）；`PipelineBuilder` 消费 `NodeConfigManager` 的 `PipelineDesc`，先 `check_order` 校验拓扑（R1 至少 2 节点 · R2 首节点必须 `vi` · R3 末节点必须 `push`/`print` · R4 `vi` 只能首位 · R5 `print` 只能末位，错误带字段路径 `pipelines[i].nodes[j].…`），再按 `create → node->create → set_data → link_to` 装配连线，`build_all` 单链失败隔离（N3）、`start_all` 倒序 / `stop_all` 正序。`pipeline/CMakeLists.txt` 加 2 源文件并 **`PUBLIC` 链 `common_api`**（同时消除 §1.4 第 4 条那处隐式依赖）；新增 `scripts/tests/run_t5_builder.sh` + `t5_builder.cpp`（64 断言 → `passes=64 fails=0 skips=2`），真实 `config/node.json` 建成 4 条链（ch0 4 节点、ch1~ch3 各 3 节点），T2/T3 回归通过，详见 TESTLOG §5.8。**只 build 不 start**（启停顺序留 T6/T7 板端验）；`main_node.cpp` 仍未接入（T6） | `b461ece` |
 | 2026-11-08 | **T6 重写真实入口 `main_node.cpp`（builder 驱动 + SIGINT 优雅退出）**：删除 v0 手写装配（3 个 `make_shared` + 2 次 `link_to` + 自写候选路径读取 `load_push_config()`）、`while(1)` 死循环与永不执行的 `stop()`；新流程 `NodeConfigManager::load_with_fallback(argv[1])` → `MemManager::MemInit()` → `PipelineBuilder::build_all()`（单链失败只告警、全失败退出码 1）→ `std::signal(SIGINT/SIGTERM)` → `start_all()` → `while (g_run) 200ms` → `stop_all()` → `sets.clear()` → `FreeMem()` → `return 0`；信号处理只写 `volatile sig_atomic_t`（异步信号安全）；入口不再出现任何节点名/设备路径，并显式打印「配置里写了但尚未接线」的 `global.pool.*`（T10a）。实测：v0 单链路真拉 `/dev/video0` 12s（30fps 稳定）→ SIGINT → `vi0 → rtsp0 → print0` 正序停止 → ZLM 媒体注销 + 关 8550 → `FreeMem 完成` → `EXIT=0`、无残留；v1 `node.json` 4 条链全部建成并启动、逐链正序停止后同样 `EXIT=0`（ch1~ch3 因 `ViNode` 写死同一 `/dev/video0` 打不开设备，属 P0-2/T7）。T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS` 回归通过，详见 TESTLOG §5.9 | `29ab58b` |
+| 2026-11-09 | **T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2**（`pipeline/moudle_vi/moudle_vi.{h,cpp}`）：新增匿名命名空间 `ResolveSrc()`（`dev:`→`CAPTURE_V4L2`；`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://`→`CAPTURE_FFMPEG`；无前缀按老规则兜底。`dev:` 只写设备路径时补成 V4L2 契约的 5 段 `设备:宽:高:格式:fps`，写一半直接报错）；`set_data()` 优先读 `vi` 段、回落 `push` 段，`src` 解析失败只告警、不静默降级；`run()` 改用 `CreateCapture(m_capture_type)`，工厂返回 `nullptr` 时报错并退出该节点线程（**P0-2 不再空指针解引用**），`open()` 失败分支补 `m_queue.release(block)`；`vi.src` 缺省时行为与 T7 前一致（v0 `push.json` 不变）。实测：v0 单链路不变（29.6–30fps）→ `EXIT=0`；v1 四路 = `dev:/dev/video0`（V4L2, 1920×1080）+ 3 个 `file:...mp4`（FFmpeg, 1024×576）全部 open 成功、**四路同时出帧** 29.96/23.96/23.93/23.94fps → SIGINT → 逐链正序停止 → `FreeMem` → `EXIT=0`；设备/文件打不开时只 `[vi0] open failed` 并干净退出（无段错误）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS` 回归通过，详见 TESTLOG §5.10 | `T7_COMMIT_PLACEHOLDER` |
 
 
 

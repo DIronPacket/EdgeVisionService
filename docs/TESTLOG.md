@@ -69,6 +69,8 @@
 | 2026-11-08 | **T5** `NodeFactory` + `PipelineBuilder` | `./scripts/tests/run_t5_builder.sh` → `passes=64 fails=0 skips=2`，`EXIT=0`；真实 `node.json` 建成 4 条链；T3 `passes=104`、T2 `ALL PASS` 回归通过；全量 `cmake --build` 通过 + `run.sh EdgeVisionService` → start（见 5.8） | ✅ 装配层通过（`start_all` 顺序待 T6/T7 板端验） |
 | 2026-11-08 | **T6** `main_node.cpp` 改为 builder 驱动 + SIGINT 优雅退出 | `cmake --build build -j8` → `EXIT=0`；`timeout --preserve-status -s INT 12 ./build/run.sh testnode config/push.json` → `EXIT=0`（`vi0 → rtsp0 → print0` 正序停止、`FreeMem 完成`、无残留进程）；同命令跑 `config/node.json` → 4 条链建成/启动/正序停止、`EXIT=0`；T5 `passes=64`、T3 `passes=104`、T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → start（见 5.9） | ✅ 进程编排层通过（4 路**出帧**待 T7/T7b：`ViNode` 仍硬编码同一 `/dev/video0`） |
 | 2026-11-09 | README 重写（文档 + 命令实测） | `./build/run.sh testnode`（无参）→ `[builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条`，`V1_EXIT=0`（证实无参时命中 `../config/node.json`）；`./build/run.sh testnode ../config/push.json` → `建成 1 条`，`V0_EXIT=0`；README 代码围栏 16 个（成对闭合）、8 个相对链接目标全部存在；改 `config/node.json` 注释后 `python3 -m json.tool` → `JSON_OK`、`run_t3_node_json.sh` → `passes=104 fails=0 skips=0` | ✅ 文档里写出的运行命令与输出均实测；无残留进程 |
+| 2026-11-09 | **T7** `ViNode` 解析 `vi.src` 前缀选采集后端 + 修 P0-2 | `cmake --build build -j8` → `BUILD_EXIT=0`；`testnode config/push.json` → 源仍是 `/dev/video0:640:480:NV12:30`（v0 不变）、`EXIT=0`；`testnode config/node.json` → `dev:`→V4L2、3 路 `file:`→FFmpeg 全部 open 成功，四路 29.96 / 23.96 / 23.93 / 23.94fps，`EXIT=0`；设备/文件不存在的失败场景 → `[vi0] open failed` + 有序停止 + `EXIT=0`（无段错误）；T5/T3/T2 回归全通过 + 冒烟 start（见 5.10） | ✅ 通过（**四路同时出帧成立**；mp4 不 loop 待 T7b） |
+
 
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
@@ -247,6 +249,36 @@
   - **`MediaServer::shutdown()` 那一跳不存在**：T4（媒体服务上提）未做，ZLM 仍由 `PushNode::stop()` 内部 `zlm_rtsp_stop()` 关闭，效果等价但归属未变；T4 完成后退出序列要补 `MediaServer::shutdown()`（DESIGN §5.5 第 5 步）
   - `MemInit()` 仍用默认 50 块（`global.pool.*` 未接线，T10a）；本次日志里 `[main] 注意: pool.blocks … 尚未接线（T10a）` 即为此提示
   - 真终端 Ctrl+C 与 `timeout -s INT` 等效（`run.sh` 末行是 `exec`，SIGINT 直达二进制），未另做终端手工验证
+
+### 5.10 L2 · T7 `ViNode` 按 `vi.src` 前缀选采集实现 + 修 P0-2（2026-11-09）
+
+- 代码基线：工作树（`rk3588`，基于 `33d6690`；T6 代码校准点 `29ab58b`）
+- 改动：`src/pipeline/moudle_vi/moudle_vi.{h,cpp}`
+  - 新增匿名命名空间 `ResolveSrc()`：按**前缀**判采集实现（`dev:`→V4L2；`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://`→FFmpeg；无前缀按老规则兜底：`/dev/video*` 当 V4L2，其余当本地文件）。`dev:` 只写设备路径时补成 V4L2 契约的 5 段 `设备:宽:高:格式:fps`（默认 `:640:480:NV12:<vi.fps>`）；写了一半（如 `dev:/dev/video0:640`）直接报错，不猜
+  - `set_data()`：优先读 `vi` 段、回落到 `push` 段，支持对象或单元素数组；`src` 解析失败只告警，**不静默降级**到默认源
+  - `run()`：改用 `CreateCapture(m_capture_type)`；`m_capture == nullptr` 时报错并退出本节点线程（**P0-2**：不再空指针解引用）；`open()` 失败分支补 `m_queue.release(block)`（§2.4 取块必有归还）
+  - 兼容性：`vi.src` 缺省（v0 `push.json` 合成的 vi 段没有 src）→ 仍走 `/dev/video0:640:480:NV12:30`，行为与 T7 之前一致
+- 命令：
+  ```bash
+  cmake --build build -j"$(nproc)"
+  timeout --preserve-status -s INT 12 ./build/run.sh testnode /abs/config/push.json           # v0 不变性
+  timeout --preserve-status -s INT 14 ./build/run.sh testnode /abs/config/node.json            # v1 四路（1 V4L2 + 3 FFmpeg）
+  timeout -k 5 --preserve-status -s INT 8 stdbuf -oL ./build/run.sh testnode /tmp/t7_fail_dev.json   # 设备不存在
+  timeout -k 5 --preserve-status -s INT 8 stdbuf -oL ./build/run.sh testnode /tmp/t7_fail_file.json  # 文件不存在
+  ./scripts/tests/run_t5_builder.sh ; ./scripts/tests/run_t3_node_json.sh ; ./scripts/tests/run_t2_node_config.sh
+  ./build/run.sh EdgeVisionService ; pgrep -af testnode ; ss -lntp | grep 8550
+  ```
+  （失败场景配置由 `config/node.json` 的 ch0 派生：只保留 `pipelines[0]`，把 `nodes[0].config.src` 分别换成 `dev:/dev/no_such_video:640:480:NV12:30` 与 `file:/tmp/no_such_clip.mp4`，生成到 `/tmp/t7_fail_{dev,file}.json`）
+- 结果摘要：
+  - **v0 不变性**：`successfully open stream:/dev/video0:640:480:NV12:30, output=1920x1080`，`实测=29.63~29.98fps`，SIGINT → `vi0 → rtsp0 → print0` 正序停止 → `FreeMem 完成` → `EXIT=0`
+  - **v1 四路出帧（T7 主验收）**：`[ViNode] 采集源: dev:/dev/video0 -> CAPTURE_V4L2 (/dev/video0:640:480:NV12:30)`；ch1~ch3 `file:.../test{1,2,3}.mp4 -> CAPTURE_FFMPEG`；`[builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条`；四路 `successfully open stream` 全成功（`vi1/vi2/vi3` 文件源 1024x576、`vi0` 设备源 1920x1080）；报表 `print0=29.96fps`、`print1=23.96fps`、`print2=23.93fps`、`print3=23.94fps`（与 ch1~ch3 配置 24fps 一致）；SIGINT → 四链正序停止 → `FreeMem 完成` → `EXIT=0`，`pgrep` 无残留、8550 已释放
+  - **P0-2 同类路径（设备 / 文件打不开）**：`open v4l2 failed: No such file or directory` → `[vi0] open failed: /dev/no_such_video:640:480:NV12:30` → 节点线程退出（**无段错误**）→ SIGINT → `vi0 → vpss0 → rtsp0 → print0` 全部 `Stopped` → `FreeMem 完成` → `A_EXIT=0`；文件源同形（`[FfmpegCapture] Opening Local File: /tmp/no_such_clip.mp4` → `[vi0] open failed` → `B_EXIT=0`）
+  - 回归：T5 `passes=64 fails=0 skips=2`、T3 `passes=104 fails=0 skips=0`、T2 `ALL PASS (fails=0)`，三者 `EXIT=0`；全量 `cmake --build` → `BUILD_EXIT=0`；`run.sh EdgeVisionService` → `EdgeVisionService start`；`git status --short` 仅 `M src/pipeline/moudle_vi/moudle_vi.cpp` + `M ...h`
+- 结论：✅ 通过。T7 验收（`vi.src` 前缀 → 采集实现选择）与 **P0-2**（`nullptr` 采集的必现崩溃）均实测关闭；**四路同时出帧首次成立**（M1 验收第 1 条）。
+- 未做 / 受限：
+  - `FfmpegCapture` **不 loop**（T7b）：mp4 播完即断流，四路「30 分钟不 EOF 重播」未验证；文件源 `vi.width/height` 必须与文件实际分辨率一致（采集层不缩放）
+  - `!m_capture` 分支（工厂返回 `nullptr`）在 RK 平台**不可达**（V4L2 后端已编入），本次以代码审查 + 上述 `open()` 失败路径动态覆盖；x86 侧复测需等 P0-1
+  - `[vi0] open failed` 后该链路静默空转（下游无帧、RTSP 无输出），是否要「失败重试 / 拉黑该路」未定 → 归入 T10a 之后的稳定性任务
 
 ---
 
