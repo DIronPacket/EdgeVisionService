@@ -74,6 +74,7 @@
 
 
 | 2026-11-09 | **P0-13** NV12 UV 平面错位（mp4 路 Y 正常、UV 绿斑/花屏） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → `EXIT=0`、`hal_h265e_v580_ret_task` 报错 **0** 次、29.82 / 23.94 / 23.93 / 23.96fps；拉流解码统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源文件 `126.6±11.0 / 128.2±1.7`）；ch0（1920×1080）`U=70.5±66.1 / V=68.7±64.3` 与修复前一致（无回归）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.11） | ✅ 通过（UV 与源吻合，1080p 路零回归） |
+| 2026-11-09 | **P0-14** 池块 `FrameBuffer` 视图被跨链路改写（四路下 1080p 路下半屏全绿） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → 四路照常出帧；拉流解码统计 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**坏帧 0/73**；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.12） | ✅ 通过（下半屏绿关闭，1080p/576p 两路均无坏帧） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -342,6 +343,52 @@
   - 未在播放器里逐帧目视（本环境无 GUI），以 yuv420p 的 U/V 统计作为客观判据；建议后续在带显示的机器上抽检一次
   - `FfmpegCapture` 仍不缩放、不 loop（T7b）；`vi.width/height` 必须与素材实际分辨率一致，否则画面会被拉伸/裁切（与本次 UV 问题无关）
   - 池块按最大分辨率（1920×1080）统一分配，720p 以下链路仍浪费约 56% 内存（T10a）
+
+### 5.12 L2 · 修 P0-14：池块 `FrameBuffer` 视图被跨链路改写（四路下 1080p 路下半屏全绿）（2026-11-09）
+
+- 代码基线：工作树（`rk3588`，基于 `c557d89` = P0-13 校准点）
+- 现象：T7 打通四路后，**ch0（`dev:` 1920×1080）画面下半屏约 47% 以下全绿、上半屏正常**；ch1~ch3（`file:` 1024×576）正常。该现象**间歇出现**（同一路时好时坏），单路跑 ch0 → 176 帧全好
+- 定位（全部为实测数据，逐层排除，不是推断）：
+  1. **不是 USB 丢帧**：V4L2 `DQBUF` 后探针统计 `bytesused` 与期望（640×480×2 = 614400）是否一致 → 450 帧 `short=0`；摄像头原始 YUYV（`/tmp/cam45.yuyv`）零行分析全干净
+  2. **不是采集侧 sws 源数据**：在 `sws_scale` 之后同时打印输出 Y 十段均值与**UVC 源**十段均值 → 坏帧时源 `srcY` 十段全部正常（169.9 152.7 … 109.1），输出 `Ybands` 却是 `190.6 147.3 105.6 105.0 111.5 | 37.2 | 0 0 0 0`（band5 部分、band6~9 全 0）
+  3. **不是 MPP 输入拷贝**：`MppEncoder::encode()` 里对刚 `memcpy` 完的 MPP buffer 做同样的十段统计 → 与采集侧**完全一致**（坏帧后半同样为 0），说明 `memcpy` 忠实地把坏数据搬了过去
+  4. **不是编码/传输/解码**：MPP 码流 dump 后本地解码同样下半屏 0；720p（1280×720）也坏（排除垂直 stride 对齐）
+  5. **关键证据**：同一探针打印 `frame->stride[0] / width / height` →
+     - 第 0 帧：`st0=1920 st1=1920 w=1920 h=1080`（正常）
+     - 第 30 帧起：`st0=1024 st1=1024 w=1024 h=576`，甚至出现 `w=1920 h=1080` 但 `st0=1024` 的混合态
+     → 数字自洽：若 `stride=1024` 而写 1080 行，则只写入 `1024×1080 = 1105920` 字节，按 1920 宽折算恰为 **576 行**（band0~4 = 540 行全有数据、band5 前 36 行有数据 → 均值 36/108×112 ≈ 37.2，与观测的 37.1 吻合）
+- 根因（**P0-14**）：`MemMeta` 里的 `FrameBuffer` 是**块级共享视图**（`data[0]/data[1]/width/height/stride` 都存在块上），4 条链路从同一个全进程池取块。`FfmpegCapture::transfer_frame()` 写完自己那帧会把视图改成自己的分辨率（1024×576、`hw_stride=1024`）再随块释放回池子；`V4l2Capture::read_frame()` 取到这种块后**直接沿用** `frame->stride[0]` 让 `sws_scale` 输出 → 视图过期时行宽错、`data[1]`（UV）偏移也错，Y 平面只覆盖 576 行，`1080×1920` 缓冲的剩余部分保持旧数据/0 → 编码后下半屏绿。单路时没有别的链路改写视图，所以全好
+- 改动（2 个文件，+32/−1）：
+  - `src/platform/capture/v4l2_source/v4l2_capture.cpp::read_frame`（+24/−1）：`DQBUF` 之后、`sws_scale` 之前
+    `frame->BindMemory(frame->data[0], m_dst_width, m_dst_height, PixelFormat::FMT_NV12)`
+    （`data[0]` 恒为块首地址，可安全复用；布局固定 NV12 —— `sws_getContext` 输出就是 `AV_PIX_FMT_NV12`，`src` 里的 fmt 段不参与输出）
+  - 同函数补 `sws_scale` 返回行数校验：`ret_h != m_dst_height` → 归还 V4L2 buffer（`VIDIOC_QBUF`）并返回 false，不再静默产出半帧
+  - `src/platform/capture/ffmpeg_source/ffmpeg_capture.cpp::transfer_frame`（+9）：`sws_scale` 之前同样
+    `out_frame->BindMemory(out_frame->data[0], w, h, PixelFormat::FMT_NV12, 128)`
+    （`align=128` 与原 `hw_stride = ((w+127)/128)*128` 完全一致，`y_ptr/uv_ptr` 都改从重绑后的 `data[0]/data[1]` 取）
+- 命令：
+  ```bash
+  cmake --build build -j"$(nproc)"                                            # BUILD_EXIT=0
+  timeout --preserve-status -s INT 24 ./build/run.sh testnode ../config/node.json   # 四路
+  ffmpeg -rtsp_transport tcp -i rtsp://127.0.0.1:8550/live/ch0 \
+      -t 8 -pix_fmt yuv420p -f rawvideo -y /tmp/dec_fix_ch0.yuv             # 再做 ch1（1024×576）
+  python3 /tmp/badframe_fast.py /tmp/dec_fix_ch0.yuv 1920 1080 10            # Y/UV 各切 10 段，任一段均值 < 8 记坏帧
+  ./scripts/tests/run_t5_builder.sh ; ./scripts/tests/run_t3_node_json.sh ; ./scripts/tests/run_t2_node_config.sh
+  ./build/run.sh EdgeVisionService                                          # 冒烟
+  ```
+- 结果摘要：
+  - **ch0（1920×1080，四路并发）坏帧 0/166**（修复前：四路 51/64、两路 63/129）
+  - **ch1（1024×576，四路并发）坏帧 0/73**（ffmpeg 侧改动无回归）
+  - 四路帧率照常（`print0≈29.9`、`print1~3≈23.9`），SIGINT 后正序停止、无残留进程
+  - 回归：T5 `passes=64 fails=0 skips=2`、T3 `passes=104 fails=0 skips=0`、T2 `ALL PASS (fails=0)`；冒烟 `EdgeVisionService start`
+- 结论：✅ 通过。P0-14 实测关闭；四路混合分辨率下 1080p 路画面完整
+- 排障要点（省下次时间）：
+  1. 「帧的一半坏」先看**写入者的行宽**，不要先怀疑 USB/驱动：本例 `stride=1024` 与 `1920` 的差异仅靠画面无法分辨，必须打印 `stride/width/height`
+  2. 探针要**成对打印「源」和「目标」**（同一个循环里 srcY 与 Ybands），才能一刀切开「源坏」还是「转换/拷贝坏」
+  3. 内存池是**块级共享**的：任何"视图"字段（宽高/stride/平面指针）都必须在**使用前重绑**，不能假设初始化时的值还在
+- 未做 / 受限：
+  - `FrameBuffer::BindMemory()` 会把 `capacity` 重算为 `w*h*3`，掩盖了 `Allocate()` 时的真实分配大小；当前池块按 1920×1080 分配、所有链路 ≤1080p，故无越界，但把链路分辨率配到 1080p 以上时会失去保护（属 P0-10 那类 `FrameBuffer` 生命周期问题，未在本次范围）
+  - `vi.src` 里写 `YUV420P` 时 `frame->fmt` 仍写 `m_fmt`，而 `sws` 恒输出 NV12 → `MppEncoder` 会以「fmt 非 NV12」拒帧（既有缺陷，与本次无关；配置里实际都写 NV12）
 
 ---
 

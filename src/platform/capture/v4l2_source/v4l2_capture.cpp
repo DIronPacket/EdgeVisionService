@@ -189,6 +189,25 @@ bool V4l2Capture::read_frame(FrameBuffer *frame)
     // 2. 此时拿到了图像数据，在 m_buffers[buf.index].start 里
     uint8_t *yuyv_data = (uint8_t *)m_buffers[buf.index].start;
 
+    // ==========================================
+    // 【P0-13 续】写入前按本链路分辨率重绑视图
+    // 池块是跨链路共享的「裸内存 + 视图」，FrameBuffer 的 width/height/stride
+    // 是块级状态：文件源（FfmpegCapture）用完块会把视图改成它自己的分辨率
+    // （如 1024x576/stride=1024）再释放回池子。本链路复用到该块时视图已过期，
+    // 若直接沿用 frame->stride[0]=1024 让 sws_scale 写 1080 行，Y 平面只会
+    // 覆盖前 1024*1080 字节（= 576 行 x 1920），下半屏保持旧数据/0 ——
+    // 表现就是「上半屏正常、下半屏绿」。data[0] 恒指向块首地址，可安全复用。
+    // 布局格式固定按 NV12：open() 里 sws_getContext 输出的就是 AV_PIX_FMT_NV12，
+    // 视图必须与真实写入的字节布局一致（src 里的 fmt 段不参与 sws 输出）。
+    if (!frame->BindMemory(frame->data[0], m_dst_width, m_dst_height,
+                           PixelFormat::FMT_NV12))
+    {
+      fprintf(stderr, "V4l2Capture: BindMemory failed (%dx%d), drop frame\n",
+              m_dst_width, m_dst_height);
+      ioctl(m_fd, VIDIOC_QBUF, &buf);
+      return false;
+    }
+
     // 3. 转码写入 FrameBuffer
     const uint8_t *src_data[4] = {yuyv_data, nullptr, nullptr, nullptr};
     int src_linesize[4] = {m_src_width * 2, 0, 0, 0}; // YUYV 一像素2字节
@@ -197,7 +216,13 @@ bool V4l2Capture::read_frame(FrameBuffer *frame)
     int dst_linesize[4] = {frame->stride[0], frame->stride[1], 0, 0};
 
     int ret_h = sws_scale(m_sws_ctx, src_data, src_linesize, 0, m_src_height, dst_data, dst_linesize);
-    // printf("swscale ret_h:%d  h:%d\n", ret_h, m_dst_height);
+    if (ret_h != m_dst_height)
+    {
+        fprintf(stderr, "V4l2Capture: sws_scale 输出行数异常 ret_h=%d expect=%d\n",
+                ret_h, m_dst_height);
+        ioctl(m_fd, VIDIOC_QBUF, &buf);
+        return false;
+    }
     // 4. 更新元数据
     frame->width = m_dst_width;
     frame->height = m_dst_height;

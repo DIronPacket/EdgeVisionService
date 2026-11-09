@@ -168,6 +168,15 @@ bool FfmpegCapture::transfer_frame(AVFrame *av_frame, FrameBuffer *out_frame)
   }
 
   // 计算 Y 和 UV 的物理指针偏移（直接指向池子里的物理内存）
+  // 【P0-13 续】写入前按本链路分辨率重绑视图：池块被多链路共享，FrameBuffer 的
+  // width/height/stride 是块级状态，V4L2 等其它采集会把视图改成自己的分辨率后
+  // 归还池子。视图过期时 data[1] 会指向错误的 UV 偏移、stride 也会错 —— 必须
+  // 按本次输出的 (w, h) 重算（align=128 与下面 hw_stride 的算法一致）。
+  if (!out_frame->BindMemory(out_frame->data[0], w, h, PixelFormat::FMT_NV12, 128))
+  {
+    printf("FfmpegCapture Error: BindMemory failed (%dx%d)\n", w, h);
+    return false;
+  }
   uint8_t *y_ptr = out_frame->data[0];
   uint8_t *uv_ptr = out_frame->data[1];
 
