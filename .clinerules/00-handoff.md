@@ -7,13 +7,13 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `c557d89`（P0-13：`MppEncoder` 按平面拷贝 NV12，修 mp4 路 UV 绿斑；前一校准点 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `eee3b01`（P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图，修四路并发下 1080p 路下半屏绿；前一校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池 → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
-| P0 问题 | 13 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 已修复，剩 6 项），见 `docs/STATUS.md` §4.1 |
+| P0 问题 | 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复，剩 6 项），见 `docs/STATUS.md` §4.1 |
 
 ## 跳读表（**不要全文读**：先跑一条命令拿行号，再定向读区间）
 
