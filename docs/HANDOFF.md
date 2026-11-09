@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-09；适用分支：`rk3588`；校准点：`eee3b01`。
+> 最后更新：2026-11-09；适用分支：`rk3588`；校准点：`114c94d`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -17,7 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `eee3b01`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图；前一代码校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12，再前 `eac4bb0` = T7，再前 `29ab58b` = T6；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图 —— 实际修复提交 `eee3b01`，`114c94d` 仅把注释里的临时编号对齐；前一代码校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12，再前 `eac4bb0` = T7，再前 `29ab58b` = T6；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
@@ -68,7 +68,7 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `eee3b01 capture: 修 P0-14 采集写块前按本链路分辨率重绑 FrameBuffer 视图`；前置 `c557d89`（P0-13）/ `ffc0e02`（`docs:` 坐标回写）/ `75eea5b` / `eac4bb0`（T7）。**当前代码校准点 = `eee3b01`**（P0-14）；上一代码校准点 `c557d89`（P0-13），再前 `eac4bb0`（T7）、`29ab58b`（T6）。此后只改文档 / JSON 注释的 `docs:`、`config:` 提交不改变代码校准点 |
+| HEAD | `114c94d capture: 注释里把「P0-13 续」统一改称 P0-14`（纯注释）；前置 `eee3b01`（**P0-14 实际修复**）/ `e41e9bc`（`docs:` 坐标回写）/ `c557d89`（P0-13）/ `ffc0e02`（`docs:`）/ `eac4bb0`（T7）。**当前代码校准点 = `114c94d`**（P0-14）；上一代码校准点 `c557d89`（P0-13），再前 `eac4bb0`（T7）、`29ab58b`（T6）。此后只改文档 / JSON 注释的 `docs:`、`config:` 提交不改变代码校准点 |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
