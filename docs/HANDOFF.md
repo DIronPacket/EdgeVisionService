@@ -68,7 +68,7 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`，工作树干净，已与远程同步 |
-| HEAD | `eac4bb0 pipeline: T7 ViNode 按 vi.src 前缀选采集后端（dev:/file:/网络流），修 P0-2 空指针采集崩溃`；前置 `33d6690` / `fe48838`（`docs:` / `config:`，只改文档与 JSON 注释）。**当前代码校准点 = `eac4bb0`**（T7）；上一代码校准点 `29ab58b`（T6） |
+| HEAD | `eac4bb0 pipeline: T7 ViNode 按 vi.src 前缀选采集后端（dev:/file:/网络流），修 P0-2 空指针采集崩溃`；前置 `33d6690` / `fe48838`（`docs:` / `config:`，只改文档与 JSON 注释）。**当前代码校准点 = `eac4bb0`**（T7）；上一代码校准点 `29ab58b`（T6）。此后只改文档 / JSON 注释的 `docs:`、`config:` 提交不改变代码校准点 |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |

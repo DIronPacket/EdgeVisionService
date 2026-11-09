@@ -2,7 +2,7 @@
 
 > 边缘视觉服务原型：**配置驱动装配 → 采集 → 统一内存池 → 节点流水线 → 硬件/软件编码 → RTSP 推流**。
 > 主平台 RK3588（MPP / V4L2 / RGA），x86_64（FFmpeg）作为开发调试目标。
-> 当前阶段：**单条链路已能真机出帧并优雅退出，多链路装配已跑通、4 路同时出帧待 T7**；详细现状见 [docs/STATUS.md](docs/STATUS.md)。
+> 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；详细现状见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 目录
 
@@ -19,7 +19,7 @@
 - **配置驱动编排（T5/T6，已可跑）**：`config/node.json`（v1）描述 `global` + `pipelines[]`；`NodeConfigManager` 负责解析、字段级校验（错误带字段路径）、`${global.*}` 引用展开与默认值合并；`PipelineBuilder` 负责拓扑校验（R1–R5）→ `NodeFactory` 造节点 → 连队列 → 批量启停。
 - **真实入口是配置编排，不是手写装配**：`src/main/test/main_node.cpp`（可执行名 `testnode`）只做五件事 —— 读配置 → 建进程级资源（内存池）→ `build_all` → 等信号 → `stop_all` + `FreeMem`。代码里没有节点名、没有设备路径、没有 `while(1)`。
 - **SIGINT 优雅退出（T6，已实测）**：`Ctrl+C` / `SIGTERM` → 按链路**正序**（采集 → 推流 → 打印）停线程 → 释放 ZLMediaKit 流与服务 → `FreeMem` → 退出码 0，无残留进程。
-- **采集**：`FfmpegCapture` 支持本地文件、摄像头、RTSP/RTMP/HTTP 输入；`V4l2Capture` 面向 RK 的 `/dev/video*`。两者统一输出 NV12。
+- **采集（T7：后端由配置决定）**：`vi.src` 的前缀决定采集实现 —— `dev:` → `V4l2Capture`（RK 的 `/dev/video*`，可只写设备路径或写全 `设备:宽:高:格式:fps`）、`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://` → `FfmpegCapture`（本地文件、摄像头、网络流）；无前缀时按老规则兜底。两者统一输出 NV12。
 - **内存池与流水线**：`MemManager::MemInit(50)` 预建 50 个 1920×1080 NV12 块；节点间用 `MemQueue`（深度 20，满则丢最老帧）连接。⚠️ 这两个数字当前仍写死在代码里，`global.pool.blocks / queue_depth / quota_per_channel` 尚未被读取（T10a）。
 - **硬件编码**：`MppEncoder` 支持 H.264/H.265，NV12 输入、128 字节 stride 对齐、固定 QP 33、GOP 150，回调输出裸流。
 - **RTSP 推流**：通过 ZLMediaKit C API 起 RTSP 服务、建流、送裸流，播放地址 `rtsp://<板端IP>:8550/live/<stream>`（端口/app/stream/codec/fps/码率均可配）。
@@ -28,7 +28,7 @@
 
 当前限制（每条都有对应任务，不是"大概不行"）：
 
-- **只有一条链能真出帧**：`ViNode` 仍硬编码 `CAPTURE_V4L2` + `/dev/video0`（P0-2 / **T7**），所以 4 路配置里 ch1~ch3 打不开各自源；`vi.width/height` 也未生效。
+- **每路一个独立源**：4 路 = 1 个摄像头 + 3 个 mp4，各读各的源（T7 已打通）；源扇出到多个下游时**块引用计数未实现**（P0-5 / T9）。`vi.width/height` 已作为输出尺寸交给采集层，但 `FfmpegCapture` 只做 sws 转换、不保证严格缩放（**T7b**）。
 - `FfmpegCapture` 不循环、不缩放（**T7b**），mp4 播完即停。
 - 一个源扇出到多个下游时**块引用计数未实现**（P0-5 / T9），故当前是"每路独立源"，不是一源多流。
 - RGA 预处理、OSD、录像、统一日志 / 指标 / 健康检查均未落地；媒体服务仍由 `PushNode` 内部启停（**T4** 才上提到 `MediaServer`）。
@@ -152,7 +152,11 @@ export LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
 [builder] 链路就绪: ch0[0] vi0 -> vpss0 -> rtsp0 -> print0
 [builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条
 [main] 4 条链路已启动（Ctrl+C 退出）
-[print0] ……各节点耗时 + 实测 fps（ch0 约 30fps）
+[ViNode] 采集源: dev:/dev/video0 -> CAPTURE_V4L2 (/dev/video0:640:480:NV12:30)
+[ViNode] 采集源: file:/…/build/file/test1.mp4 -> CAPTURE_FFMPEG (/…/build/file/test1.mp4)
+[vi0] successfully open stream:/dev/video0:640:480:NV12:30, output=1920x1080
+[vi1] successfully open stream:/…/build/file/test1.mp4, output=1024x576
+[print0] ……各节点耗时 + 实测 fps（实测：摄像头路 ~30fps，mp4 路 ~24fps）
 ^C
 [main] 收到退出信号，开始有序退出
 [vi0] VI Node Stopped.          ← 正序：采集 → 推流 → 打印
@@ -161,7 +165,7 @@ export LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
 [main] FreeMem 完成，进程正常退出
 ```
 
-退出码 0、无残留进程。`ch1~ch3` 会报 `open file failed:/dev/video0`——这是 `ViNode` 硬编码同一个设备导致的（P0-2 / T7），**不是配置写错**。
+退出码 0、无残留进程。任一源打不开时（设备不存在 / 文件路径写错）该路只打印 `[viN] open failed: <src>` 并退出自己的节点线程，**其余链路照常出帧、进程不崩**（P0-2 已修）。
 
 自动化 / 长跑验证用 `timeout` 代替手按 Ctrl+C：
 
@@ -194,13 +198,13 @@ timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json;
 | 配置管理与装配 | 🟢 85% | T2/T5：v1 解析 + 字段级校验（带字段路径）+ `${global.*}` 展开 + `NodeFactory` + 拓扑校验 + 批量启停；`global.pool.*` 尚未接线（T10a） |
 | 进程编排 / 主程序 | 🟢 75% | T6：`testnode` = 配置 → builder → SIGINT 优雅退出 → `FreeMem`，退出码 0（实测）；`src/main/main.cpp` 仍是空壳；媒体服务未上提（T4） |
 | 内存池 / 流水线 | 🟡 65–80% | 单消费者链路可跑；块级引用计数未做（P0-5 / T9）；池块数与队列深度硬编码 50/20（T10a） |
-| 采集 | 🟡 65–75% | FFmpeg 文件/摄像头/网络可用但不循环、不缩放（T7b）；V4L2 参数硬编码，`ViNode` 仍写死 `CAPTURE_V4L2` + `/dev/video0`（P0-2 / T7） |
+| 采集 | 🟢 75% | T7：`vi.src` 前缀选后端（`dev:` → V4L2；`file:` / 网络流 → FFmpeg），4 路同时出帧已实测；`FfmpegCapture` 仍不循环、不保证缩放（T7b） |
 | 编码 | 🟡 70% | MPP H.264/H.265 可跑；x86 软编未完成；每帧 `memcpy`，无 EOS flush |
 | RTSP 推流 | 🟡 65% | 单路可演示；P0-6 / P0-7 已修（T1）；多路并存与"停一路不影响其他路"待 T4 |
 | 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
 | 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
 
-> P0 共 12 项，已修 5 项（P0-3 / 4 / 6 / 7 / 12），剩 7 项。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
+> P0 共 12 项，已修 6 项（P0-2 / 3 / 4 / 6 / 7 / 12），剩 6 项。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 5. 路线图
 
@@ -208,7 +212,7 @@ timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json;
 
 | 里程碑 | 目标 | 任务与进度 |
 | --- | --- | --- |
-| **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ → **下一个 T7**（`ViNode` 解析 `vi.src`）→ T7b（循环+缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
+| **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ · T7 ✅ → **下一个 T7b**（循环 + 缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
 | **M2**（P1） | 多路真正稳定 | T9 块级引用计数 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
 | **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进评估 |
 
