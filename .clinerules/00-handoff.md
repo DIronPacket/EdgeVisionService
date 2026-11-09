@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `T7_COMMIT_PLACEHOLDER`（`T7` `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；此前 T6 = 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `eac4bb0`（T7：`ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；此前 T6 = 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
