@@ -33,6 +33,7 @@
 | 要动手改代码 | §0 + §1.2 + §1.4 目录 + §1.7 API + **§2 全部规定** | ~4k |
 | 修某个 P0/P1 | §1.9 索引表 + §1.5 构建坑 + R1 + R4 + STATUS 对应行 | ~2k |
 | 加一个新节点 | §2.4 内存规定 + R2 + §1.7 | ~1.5k |
+| **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在本文：用 **`docs/BUG_CASES.md`**（原理剖析 + 函数级位置 + 定位手法 + 面试说法；修 bug 后必须追加） | ~1k |
 | 首次全量接手 / 换人 | 全文（约 450 行） | ~10k |
 
 > 章节行号自查（编辑后行号会漂移）：`grep -nE '^#{1,2} ' docs/HANDOFF.md`
@@ -99,7 +100,7 @@ EdgeVisionService/
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
 ├── config/                     # push.json：v0 单链路（推流宽高 / 编码 / 协议 / 端口 / print 间隔，T8 删除）；node.json：v1 多链路配置（4 路，T6 起由 testnode 直接消费，T7 起 `ViNode` 按 `vi.src` 前缀选采集实现）
 ├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh（RTSP key / ref_cnt / 入参校验，18 项断言）· run_t2_node_config.sh + fixtures/（NodeConfigManager 解析/校验/v0 适配，53 项断言）
-├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录)
+├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录) · BUG_CASES(bug 原理剖析 + 面试要点存档)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
 ├── build/                      # 构建产物（不入库，见 §1.5）
@@ -314,6 +315,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
 8. 长跑类验证（`testnode` 现在会一直跑到收信号）一律用 `timeout -s INT 20 ./build/run.sh testnode`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）。
 9. **每次验证都要留痕**：跑完按 [TESTLOG.md](TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
+10. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug —— ① 现象与根因不在同一层 ② 只在特定并发/时序/内存残留下复现 ③ 涉及资源所有权、生命周期、跨组件共享状态 ④ 曾被误判过方向 —— 修完必须在 **[BUG_CASES.md](BUG_CASES.md)** 追加案例（固定顺序：现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误 / 单行空指针且无连带语义的，只在 [STATUS.md](STATUS.md) 标注。
 
 
 ## 2.3 C++ 代码规定
@@ -391,6 +393,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 - [ ] 新文件已加入 CMake、头文件 guard 符合规范
 - [ ] 行为/开关变化已同步 README、ARCHITECTURE、STATUS 中受影响的部分
 - [ ] 提交信息符合 `<模块>: <动词> <对象>`
+- [ ] 若修的是"有原理含量"的 bug：已在 **`docs/BUG_CASES.md`** 追加案例（含根因原理与函数级位置），并更新其 §1 索引表
 - [ ] 没有提交被忽略目录的内容
 
 ---
@@ -450,6 +453,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | [STATUS.md](STATUS.md) | 现状、完成度、P0–P2、优化建议 | 未来排期 |
 | [ROADMAP.md](ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
 | [TESTLOG.md](TESTLOG.md) | **只有测试证据**：命令、结果摘要、结论、未做项（L1 冒烟 / L2 任务 / L3 版本三级） | 方案、现状盘点、规矩 |
+| [BUG_CASES.md](BUG_CASES.md) | **已定案 bug 的原理剖析**：现象 / 函数级位置 / 根因 / 修复 / 定位手法 / 面试说法，附 §1 索引表 | 未修问题的跟踪（在 STATUS）、测试命令与结果（在 TESTLOG） |
 | **HANDOFF.md（本文）** | **接手所需的事实快照 + 红线规定 + 操作规程** | 重复上面四份的内容 |
 | `.clinerules/00-handoff.md` / `AGENTS.md` | 入口索引：现状卡（与本文 §0 一致）、跳读表、硬约束 7 条 | 任何细节展开 |
 
@@ -518,6 +522,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-09 | **T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2**（`pipeline/moudle_vi/moudle_vi.{h,cpp}`）：新增匿名命名空间 `ResolveSrc()`（`dev:`→`CAPTURE_V4L2`；`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://`→`CAPTURE_FFMPEG`；无前缀按老规则兜底。`dev:` 只写设备路径时补成 V4L2 契约的 5 段 `设备:宽:高:格式:fps`，写一半直接报错）；`set_data()` 优先读 `vi` 段、回落 `push` 段，`src` 解析失败只告警、不静默降级；`run()` 改用 `CreateCapture(m_capture_type)`，工厂返回 `nullptr` 时报错并退出该节点线程（**P0-2 不再空指针解引用**），`open()` 失败分支补 `m_queue.release(block)`；`vi.src` 缺省时行为与 T7 前一致（v0 `push.json` 不变）。实测：v0 单链路不变（29.6–30fps）→ `EXIT=0`；v1 四路 = `dev:/dev/video0`（V4L2, 1920×1080）+ 3 个 `file:...mp4`（FFmpeg, 1024×576）全部 open 成功、**四路同时出帧** 29.96/23.96/23.93/23.94fps → SIGINT → 逐链正序停止 → `FreeMem` → `EXIT=0`；设备/文件打不开时只 `[vi0] open failed` 并干净退出（无段错误）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS` 回归通过，详见 TESTLOG §5.10 | `eac4bb0` |
 | 2026-11-09 | **修 P0-13：`MppEncoder` 按平面拷贝 NV12**（`platform/encoder/rk_mpp_encoder.cpp`，+26/−1）：`encode()` 原先把 `fb->data[0]` 起 `data_size` 字节一次性 `memcpy` 进 MPP buffer，但 `FrameBuffer::BindDataPointers()` 里 `data[1]`（UV）偏移按**池块分辨率**算（`base + stride[0] * 池块高`），本帧比池块小时（1024×576 的 mp4 跑在 1920×1080 池块上）UV 段拷到的是本帧 Y 之后的内存残影 → 播放端 Y 正常、UV 大块绿斑/花屏（T7 让四路出现不同分辨率后暴露）。改为 Y、UV 分别从 `data[0]`/`data[1]` 拷贝（UV 紧接 Y，offset = `hor_stride * ver_stride`），`data_size == 0` 按 `stride * height * 3 / 2` 兜底，`data[0]`/`data[1]` 为空时归还 buffer 并返回 false。实测：四路 45s → 编码错误 0、29.82/23.94/23.93/23.96fps、SIGINT 正序停止 `EXIT=0`；拉流 UV 统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源 `126.6±11.0 / 128.2±1.7`），ch0 1080p 无回归；T5/T3/T2 回归通过，详见 TESTLOG §5.11 | `c557d89` |
 | 2026-11-09 | **修 P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图**（`platform/capture/v4l2_source/v4l2_capture.cpp` +24/−1、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp` +9）：`MemMeta` 里的 `FrameBuffer` 是**块级共享视图**（`data[0]/data[1]/width/height/stride` 存在块上，四条链路共用同一个全进程池块），`FfmpegCapture::transfer_frame()` 写完自己那帧就把视图改成自己的分辨率（1024×576 / `hw_stride=1024`）再随块归还池子；`V4l2Capture::read_frame()` 取到这种块后**直接沿用** `frame->stride[0]` 去开 `sws_scale`，于是 1080p 路按 `stride=1024` 写 1080 行、Y 平面只覆盖 `1024×1080` 字节（= 576 行 × 1920），剩余部分保持旧数据/0 → 播放端**上半屏正常、下半屏（约 47% 以下）全绿**，且随块复用**间歇出现**（单跑 ch0 时 176 帧全好）。改为两个采集后端在 `sws_scale` 之前各自 `BindMemory(data[0], 本链路宽, 本链路高, FMT_NV12[, 128])`（`data[0]` 恒为块首地址；V4L2 侧固定 NV12 因 `sws_getContext` 输出恒为 `AV_PIX_FMT_NV12`，ffmpeg 侧 `align=128` 与原 `hw_stride` 算法一致，Y/UV 指针改取重绑后的 `data[0]/data[1]`），V4L2 侧另补 `sws_scale` 返回行数校验（异常则 `VIDIOC_QBUF` 归还并丢帧）。实测：四路并发拉流解码 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**0/73**；四路 fps 照常（29.9 / 23.9×3）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `EdgeVisionService start`，详见 TESTLOG §5.12 | `eee3b01` |
+| 2026-11-09 | 新增 **`docs/BUG_CASES.md`（bug 档案 · 面试要点）**：收录 9 个已定案缺陷（B1 RTSP key/ref_cnt、B2 出参判空、B3 漏 release 抽干池、B4 atomic 未初始化、B5 工厂 nullptr、B6 UV 平面错位、B7 池块视图被改写、B8 `while(1)` 挡停止、B9 配置值与素材不符），每案含**现象 / 函数级位置 / 根因原理 / 修复 / 为什么难发现 / 面试怎么讲**，另附 10 条排查方法论（M1–M10）。同时把「**修掉有原理含量的 bug 必须追加档案**」写成强制规定：本文 **§2.2 第 10 条**、§2.9 自检清单、R5 文档分工表、§0.1 跳读表，以及 `.clinerules/00-handoff.md` 硬约束第 9 条与 `AGENTS.md` 入口清单（用户 2026-11-09 要求） | 本文纯文档，不改变代码校准点 |
 
 
 
