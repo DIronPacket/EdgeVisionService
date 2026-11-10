@@ -22,6 +22,8 @@
 | B7 | 四路并发时 1080p 路**下半屏约 47% 全绿**、上半屏正常，间歇出现 | 池块上的 `FrameBuffer` 视图被**别的链路改写**，采集端沿用过期 `stride` 开 `sws_scale` | `eee3b01`（P0-14） | §2.7 |
 | B8 | Ctrl+C 后不退出、`stop()` 永不执行 | 停止逻辑前有 `while(1)` 永久阻塞 | `29ab58b`（T6） | §2.8 |
 | B9 | 播放端**加速/抖动**，或小分辨率素材花屏 | 配置的 `fps` / 宽高与素材真实值不符：`PushNode` 用 `1000000/fps` 推 PTS，`FfmpegCapture` 不缩放 | T3 | §2.9 |
+| B10 | 每次 `MemInit`/`FreeMem` 都整块漏 12.44 MB，日志全绿、退出码 0 | `FrameBuffer` 注释写「不拥有内存」，`Allocate()` 却在 `new[]`；`FreeMem()` 只删 `MemMeta` → 6.22 MB/块无人认领。**同日收口**：`~FrameBuffer(){Release();}` + 删拷贝（RAII），漏放/双放两条路径一起关 | 工作树（2026-11-10，P0-9 → P0-10 ①②） | §2.10 |
+| B11 | 反复启停仍每轮漏 128 B，且 vpss 自建的 `vpss_out` 帧整块 6.22 MB 永不回收 | 容器用 `void*` 存槽位：`void*` 不能安全 `delete`（UB、不调析构）也调不到 `freeObj()` → 槽位只增不减、`FreeMem()` 只能按 `imgMap` 点名 | 工作树（2026-11-10，P0-11） | §2.11 |
 
 **读法建议**：面试前只看 §1 索引 + 每案末尾的「面试怎么讲」；要复盘细节再读中间的定位过程。
 
@@ -280,6 +282,130 @@ return 0;
 **修复**：配置按 `ffprobe` 实测值定稿（`1024×576` / `fps=24`），并把「与 ffprobe 交叉校验」写成 T3 脚本的一条断言（`run_t3_node_json.sh` E 段），素材缺失时该段 SKIP 而不是失败。
 
 **面试怎么讲**：*"这类问题不会崩，只会'看起来不对'——所以配置的正确性也要被测试断言。我用 ffprobe 的实测值去断言配置，素材缺失时降级为 SKIP。"* 延伸：用"帧序号×固定步长"推时间戳的前提是**配置 fps 等于真实采集节奏**；根治要靠文件循环 + 缩放适配（T7b）与按源帧率取 PTS。
+
+---
+
+## 2.10 B10 · `FrameBuffer` 所有权声明与实现相反：每次 `MemInit`/`FreeMem` 漏 12.44 MB（P0-9）
+
+**现象**：进程**正常启停**——`FreeMem()` 打印"完成"、退出码 0、无段错误、无报错——但内存整块沉淀。4 路 1920×1080 默认池（32 块）一次起停就是 **199 MB**，反复启停几轮必然 OOM。比 B3 更阴：B3 是"跑着跑着静默堵死"，这个是"每次都漏一点、所有指标都绿"。
+
+**位置**：`src/common/frame_buffer.h::Allocate/Release`、`src/common/MemManager/MemManager.cpp::MemInit/FreeMem`。
+
+**根因（三层）**
+
+1. **所有权声明与实现相反**（主因）。`FrameBuffer` 顶部注释写「仅作为 MediaBlock 的视图，**不拥有内存，不负责释放**」，而 `Allocate()` 的实现是 `new (std::nothrow) uint8_t[capacity]` —— 它**真的**分配了堆内存。`FreeMem()` 的作者按注释办事，只 `delete _memData`（`MemMeta`），那块 6.22 MB 从此无人认领。
+2. **"绑自己的块"把所有权说了两遍**。`MemInit()` 在 `Allocate()` 之后又跟一句 `BindMemory(frame->data[0], ...)`，而 `BindMemory()` 的语义是"绑定外部内存的视图"。两个接口语义重叠 → 谁都不敢在释放路径上 `delete[]`，因为"看起来这是外部内存"。
+3. **附带泄漏**：`new MemBlock(_memMeta)` 后未使用（`MemPool::addBuffer()` 内部自己 `new`），`MemMeta` 无析构 → `MemSlot<T>` 每块漏 2 个（32 B/个）。
+
+**修复**
+
+```cpp
+struct FrameBuffer {
+  uint8_t *data[3];
+  uint8_t *owned_mem = nullptr;  // Allocate() 分配的基址；BindMemory() 的视图恒为 nullptr
+  void    *native    = nullptr;  // 平台句柄（MPP MppBuffer），仅视图，不拥有
+  void Release() {
+    if (owned_mem) { delete[] owned_mem; owned_mem = nullptr; }
+    data[0] = data[1] = data[2] = nullptr;
+    native = nullptr;
+  }
+};
+// MemInit：只调 Allocate()，失败即 delete frame + continue；不再补 BindMemory()（视图接口只用于外部内存）
+// FreeMem：frame->Release() → delete frame，再删 NodeProfiler / MemMeta / MemBlock
+```
+
+**后续（同日，P0-11 复查时收口）**：上面的 `Release()` 还是"靠调用方记得调"。复查 `MemMeta::clear()` 时发现更省心的写法是让**析构**负责——
+
+```cpp
+struct FrameBuffer {
+  FrameBuffer() = default;
+  FrameBuffer(const FrameBuffer &) = delete;             // 拷一份 = 两份 owned_mem = 双释放
+  FrameBuffer &operator=(const FrameBuffer &) = delete;
+  ~FrameBuffer() { Release(); }                          // RAII：delete 即归还
+};
+// 于是 MemMeta 里的 slot_free<FrameBuffer*> 特化可以删掉，主模板 delete 一句就够
+```
+
+这条改动**必须连拷贝一起禁**：加了析构却没有禁拷贝，等于把原来"隐式拷贝 → 泄漏"升级成"隐式拷贝 → 必崩"。ASAN 实测（`/tmp/fb_raii_copy_probe`）刚好抓到这条链：
+
+```
+ERROR: AddressSanitizer: attempting double-free on 0x007f85900100
+  #1 FrameBuffer::Release()        frame_buffer.h
+  #2 FrameBuffer::~FrameBuffer()
+  #3 main                          ← 拷贝体出作用域时二次 delete[]
+freed by thread T0 here:
+  #2 FrameBuffer::~FrameBuffer()
+  #3 main                          ← 原对象 delete 时已释放
+```
+
+栈上的视图（`ffmpeg_decoder.cpp:62` 那种 `FrameBuffer fb;` + `BindMemory()`）不受影响：`owned_mem == nullptr`，析构是 no-op（ASAN 实测外部缓冲出作用域后仍可写）。详见 TESTLOG §5.15。
+
+**为什么难发现（两个"指标陷阱"，这段最值钱）**
+
+1. **"RSS 涨了才叫泄漏"不成立**：`new[]` 的页不写就不进 RSS。首版探针 6 轮 `VmRSS` 全平在 2364 kB，看着像"没漏"。
+2. **换了 `hblkhd` 还会被骗第二次**：改看 `mallinfo2().hblkhd`（mmap 在用字节）后，第一轮 +12,443,648 B 很清楚——但**第二轮 init 显示 0**。原因是 glibc 在 free 掉大 mmap 块后会把 `mmap_threshold` 抬到该块尺寸，后续同尺寸分配改走 **brk 主堆**，于是 mmap 字节数不再增长。
+3. 正确口径是 **`uordblks + hblkhd`（在用堆总量）**：未修时每轮净 +12.44 MB 且 free 后一分不还；修复后 init 12.52 MB → free 回落 82 kB、6 轮零累积（残余 128 B/轮 = `MemSlot`，属 P0-11）。
+4. 方法论：这类 bug 的证据只能来自**能失败的测量**——先让探针在旧代码上稳定复现增长曲线，再改代码看它归零；"改完是平的"本身不构成证明。
+
+**面试怎么讲**：*"这不是内存'漏'，是**所有权没说清**：结构体注释写着'不拥有内存'，它的 `Allocate()` 却在 `new[]`；初始化时又用'绑定外部内存'的接口绑了自己的块，等于把所有权声明了两遍，释放路径谁都不敢删。我改成 `owned_mem` 显式记基址 + `Release()` 显式释放，并把 `FreeMem()` 补成帧 / profiler / meta / block 全释放。验证上也踩过两个坑：RSS 不反映未触碰的 malloc 页，glibc 的动态 mmap 阈值会让 `hblkhd` 在第二轮假性归零——所以要用 `uordblks + hblkhd` 的在用堆总量，并且先在旧代码上复现出增长。"*
+
+---
+
+## 2.11 B11 · 类型擦除擦掉了「销毁」：`MemMeta` 槽位只建不销 + 节点自建槽位漏收（P0-11）
+
+**现象**：P0-9 修完（B10）后，`MemInit(2)+FreeMem()` 每轮仍残留 **128 B**（2 块 × 2 个槽位），曲线是 `82208 → 82336 → 82464 …` 每轮稳定 +128 B；更隐蔽的一层是 `VpssNode::ensure_dst_frame()` 按块懒创建的输出帧挂在 `vpss_out` 槽位上，**整帧 6.22 MB/块**永远不会被回收——只是因为 `config/node.json` 里 vpss 是 `enable:false`，实测路径不触发，所以"看起来没问题"。
+
+**位置**：`src/common/MemManager/MemMeta.h::MemSlot/MemMeta::set_ptr/data`、`src/common/MemManager/MemManager.cpp::FreeMem`、`src/pipeline/moudle_vpss/moudle_vpss.cpp::ensure_dst_frame`。
+
+**根因原理（关键在"擦除擦过了头"）**
+
+1. `MemMeta` 里存的是 `unordered_map<string, void*> data_map_`，槽位对象是 `new MemSlot<T>(ptr)` —— **容器这一层确实做到了类型无关**（谁都能挂、`data<T>` 取回），这是设计意图，没问题。
+2. 但 `void*` 同时把**销毁**这条路擦掉了：`delete (void*)p` 是 **未定义行为**，标准明确它**不调用析构函数**；而唯一会把槽位里的对象还回去的函数 `MemSlot<T>::freeObj()` 是模板成员，调用点必须知道 `T`，运行期手里只有 `void*` 时**根本调不到**。
+3. 后果一：`set_ptr()` 只能写成 `data_map_[name] = new MemSlot<T>(ptr)` —— 同名覆盖时旧槽位指针直接被顶掉，槽位结构体（32 B）+ 里面挂的对象（可能是 6 MB 帧）一起失联。
+4. 后果二：`MemMeta` 没有析构、也没有 `clear()`，于是 `FreeMem()` 只能"按名字点名"遍历 `imgMap`（`nv12`）逐个 `Release()`+`delete`。名单是 `MemInit` 自己填的 ⇒ **节点后来挂上去的槽位天然不在名单里**（`vpss_out` 整帧漏收）；容器拿走了唯一能回收对象的指针，却不承担所有权。
+5. 后果三（顺带）：`data<T>()` 是 `(MemSlot<T>*)it->second` 的 C 风格硬转，槽位名对应错类型时静默 UB（P1-10）。
+
+**修复**（保留原 `MemSlot<T>` 抽象，只补"销毁通道"）
+
+```cpp
+// 1) 让擦除后的指针也能被正确析构
+class MemSlotBase { public: virtual ~MemSlotBase() {} };
+
+template <typename T>
+class MemSlot : public MemSlotBase {      // setObj/freeObj/getObj/getObjPtr 语义不变
+public:
+  ~MemSlot() { freeObj(); }               // 槽位死 = 对象一起还回去
+  void freeObj() { slot_free(t); t = nullptr; }
+};
+
+// 2) FrameBuffer* 要先 Release() 再 delete（否则 owned_mem 的几 MB 又漏回 P0-9）
+template <typename T> inline void slot_free(T t) { delete t; }
+template <> inline void slot_free<FrameBuffer *>(FrameBuffer *t) {
+  if (!t) return; t->Release(); delete t;
+}
+//    ↑ 这段特化在当日稍晚随 `~FrameBuffer(){Release();}` 一并删除（见 §2.10 后续段），
+//      现在主模板 `delete t` 一句就足够 —— 保留在此只为说明"当时为什么要它"
+
+// 3) 容器改存基类指针，补 clear()/析构，set_ptr 覆盖前先释放旧槽位
+std::unordered_map<std::string, MemSlotBase *> data_map_;
+size_t clear() {  // swap 出 map → 锁外逐个 delete → 虚析构 → freeObj() → slot_free()
+  std::unordered_map<std::string, MemSlotBase *> old; { std::lock_guard<std::mutex> lk(mtx_); old.swap(data_map_); }
+  size_t n = 0; for (auto &kv : old) { delete kv.second; ++n; } return n;
+}
+// 4) FreeMem() 统一 _memData->clear()，不再按 imgMap 点名
+// 5) data<T>() 用 dynamic_cast 校验类型，类型不符返回空 + 一行日志（同修 P1-10）
+```
+
+实测：`MemMeta` 探针 2 个槽位占 12.52 MB → 覆盖同名**不再多留一帧**（只 +128 B 记账）→ 同一指针重复登记**不双删**（保留在用对象）→ `clear() released=2` 回落 78 kB；`MemInit(2)+FreeMem()` 6 轮**恒定 82,080 B**；四路 `testnode` SIGINT 打印 `FreeMem: 释放 50 块 / 100 个槽位`、退出码 0。
+
+**为什么难发现**
+
+1. **前面刚修完一个更大的泄漏，128 B/轮看着像"噪声"**：如果不是刻意把残余量级算出来（2 块 × 2 槽位 × 32 B），很容易当成 allocator bookkeeping 放过。
+2. **真正的坑被配置挡住了**：`vpss` 的 `enable:false` 让 6.22 MB/块那一条完全不发作；换句话说"没复现"不是因为修好了，而是因为那条代码没跑。
+3. **`void*` 的破坏力在编译期完全安静**：`data_map_[name] = memSlot` 从 `MemSlot<T>*` 隐式转 `void*` 合法、无警告；`delete` 也编译得过（只是 UB）。这类"擦除擦过头"的缺陷只有把释放路径完整走一遍才暴露。
+4. **`FreeMem()` 的"点名"写法看着很负责**：它确实逐个 `Release()`+`delete` 了，只是名单之外的东西它一无所知——按名单回收永远只是"已知集合"的回收。
+
+**面试怎么讲**：*"我们那个数据池容器用 `void*` 做类型擦除，挂什么东西都行，看着很灵活。但我后来发现它把销毁那条路也擦掉了：`delete` 一个 `void*` 是 UB 而且不调析构，唯一会释放对象的 `freeObj()` 是模板成员，运行期没有 `T` 就调不到。结果槽位只能建不能销——同名覆盖就漏 32 B，节点自己挂上去的 6 MB 输出帧干脆整块漏，因为释放路径只能按初始化的名单点名。修法是给槽位补一个带虚析构的基类、容器改存基类指针并加 `clear()`，`delete` 时通过虚析构触发 `freeObj()`；`FrameBuffer*` 单独走先 `Release()` 再 `delete`。经验是：**类型擦除本身不难，难的是擦掉类型之后还得留下一条能正确销毁的通道**——虚函数或存一份删除器，二选一，别只留 `void*`。另外验证要算到字节级，128 B/轮也是漏。"*
 
 ---
 

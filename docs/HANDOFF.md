@@ -17,12 +17,12 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图 —— 实际修复提交 `eee3b01`，`114c94d` 仅把注释里的临时编号对齐；前一代码校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12，再前 `eac4bb0` = T7，再前 `29ab58b` = T6；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树**含未提交改动**：2026-11-10 的 P0-9 / P0-11 / P0-10-RAII（`frame_buffer.h`、`MemMeta.h`、`MemManager.cpp`、`moudle_vpss.cpp`）+ 同批文档 · 本文**代码**校准点 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图 —— 实际修复提交 `eee3b01`，`114c94d` 仅把注释里的临时编号对齐；前一代码校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12，再前 `eac4bb0` = T7，再前 `29ab58b` = T6；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
-| 最大问题 | P0 共 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复，剩 6 项；构建失败 / 必现崩溃 / 资源泄漏），见 [STATUS.md §4.1](STATUS.md) |
+| 最大问题 | P0 共 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；**P0-5 于 2026-11-10 核实为非缺陷**；**P0-9 / P0-11 于 2026-11-10 修复**，同日 `FrameBuffer` 补 RAII 收口 P0-10 的 ①②；剩 3 项 = P0-1 x86 FFmpeg 路径 / P0-8 解码器写栈 / P0-10 残余（仅 `capacity` 语义）），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
@@ -107,8 +107,7 @@ EdgeVisionService/
 └── src/
     ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
     ├── common/                 #                      → libcommon_api.so
-    │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size）
-    │   ├── type_registry.h     # 旧版注册辅助，当前无人使用
+    │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size + owned_mem；~FrameBuffer() 调 Release 归还，拷贝已删）
     │   ├── json.hpp            # nlohmann/json 单头库
     │   ├── configmgr/          # 节点配置管理：node_config.h（数据模型 ImgSpec/NodeDesc/PipelineDesc/GlobalDesc…）· node_config_manager.{h,cpp}（v1 node.json 解析 + 校验 + ${global.*} 展开 + v0 push.json 适配）
     │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
@@ -216,9 +215,9 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | `MemPool`（单例） | `getInstance()` · `addBuffer(MemMeta*)` · `acquire(name)` · `release(block,name)` · `pushBlock(block,name)` · `registerQueue(queue,name)` · `delGetBlock()` | 全局 `free_list_` 单锁 `free_mtx_`；**`Size()` 读 size 未加锁（P1-9）** |
 | `MemQueue` | `InitQueue(name, size=20, type)` · `getBlock(timeout=100)` · `pushFrame(block)` · `release(block)` · `release(block,name)` · `Size()` | `QueueType::OWNER`（源头取空块）/ `USER`（下游收块）；满则 drop-oldest |
 | `MemBlock` | `data()`→`MemMeta*` · `userCnt()` · `setOwner/addUser/subUser` · `reset()` | 引用计数是"名字列表"实现，**多下游扇出时不可靠（P0-5）**；`reset()` 同时清空块上的 `NodeProfiler` |
-| `MemMeta` | `set_ptr<T>(name,ptr)` · `data<T>(name)` · `has(name)` | 内部 `void*` + `MemSlot<T>`，**类型写错即 UB（P1-10）**；无析构，覆盖同名即泄漏（P0-11） |
-| `MemManager`（单例） | `MemInit(size=50)` · `FreeMem()` · `addImgConfig(ImgConfig)` | 建块时挂 `FrameBuffer` + `profile::NodeProfiler`（slot 名 `"profiler"`）；**`MemInit` 里 `new MemBlock` 后未使用、`FreeMem` 不删 `FrameBuffer`（P0-9）** |
-| `FrameBuffer` | `Allocate(w,h,fmt,align)` · `BindMemory(base,w,h,fmt,align)` · 字段 `data[3]/stride[3]/fmt/width/height/capacity/data_size/timestamp_ms` | 只是**视图**，注释明确"不拥有内存"；但 `Allocate()` 会 `new[]`（语义矛盾，P0-10）。**同一份 `FrameBuffer` 挂在块上、被所有链路共享，所以这些字段是「块级状态」**：任何写入方（采集后端等）在使用前必须按自己的输出分辨率 `BindMemory` 一次，否则会沿用别的链路留下的 `stride/宽高/UV 偏移`（P0-14，TESTLOG §5.12） |
+| `MemMeta` | `set_ptr<T>(name,ptr)` · `data<T>(name)` · `has(name)` · `clear()` | 内部 `unordered_map<string, MemSlotBase*>` + `MemSlot<T>`：槽位析构会调 `freeObj()` → `slot_free(t)` → `delete t`（`FrameBuffer*` 也走主模板，`~FrameBuffer()` 自己 `Release()`，**已无 `slot_free<FrameBuffer*>` 特化**）；有析构、删了拷贝，`set_ptr` 覆盖同名先释放旧槽位（同一指针重复登记则保留在用的对象），`data<T>` 用 `dynamic_cast` 校验类型（P0-11 / P1-10 已于 2026-11-10 修，TESTLOG §5.14）。**放新类型的规矩**：`new` 出来的裸指针直接挂（主模板 `delete` 就够，析构照常跑）；首选让类型自己写析构；分配器不匹配 / 不便加析构的（`malloc`/`new[]`/C 句柄）在该类型旁特化 `slot_free<T*>`；栈对象和 `BindMemory` 视图**不要入槽位**（槽位即所有权，`clear()` 会无条件 `delete`）；同一裸指针只能挂**一个**槽位名（`clear()` 不查重，挂两处即双删） |
+| `MemManager`（单例） | `MemInit(size=50)` · `FreeMem()` · `addImgConfig(ImgConfig)` | 建块时挂 `FrameBuffer` + `profile::NodeProfiler`（slot 名 `"profiler"`）；`FreeMem()` 统一调 `MemMeta::clear()` 把所有槽位（含节点自建的 `vpss_out`）连对象一起还回去，再删 `MemMeta` / `MemBlock` —— 不再按 `imgMap` 点名（P0-9 + P0-11 已修，TESTLOG §5.13 / §5.14） |
+| `FrameBuffer` | `Allocate(w,h,fmt,align)` · `BindMemory(base,w,h,fmt,align)` · `Release()` · 字段 `data[3]/owned_mem/native/stride[3]/fmt/width/height/capacity/data_size/timestamp_ms` | 两种来源：`Allocate()` 自己 `new[]` 一块（基址记 `owned_mem`）、`BindMemory()` 只绑外部内存（`owned_mem == nullptr`）。**析构调 `Release()`（RAII）**：`delete frame` 即归还，栈上视图是 no-op；**拷贝/赋值 `= delete`**（拷一份就是两份额度 → 双释放）。**同一份 `FrameBuffer` 挂在块上、被所有链路共享，所以这些字段是「块级状态」**：任何写入方（采集后端等）在使用前必须按自己的输出分辨率 `BindMemory` 一次，否则会沿用别的链路留下的 `stride/宽高/UV 偏移`（P0-14，TESTLOG §5.12）。P0-10 只剩 `capacity` 语义（恒为 `w*h*3`）未改 |
 
 节点工厂 / 装配（T5，`src/pipeline/`）：
 
@@ -247,7 +246,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 能力 | 现状 |
 | --- | --- |
 | 采集 | FFmpeg（本地文件 / 摄像头 / RTSP / RTMP / HTTP 输入）可用；V4L2 固定 YUYV→NV12、无 `poll`；**T7 起采集源由 `vi.src` 前缀选择**（`dev:`→V4L2，`file:` / 网络流→FFmpeg，无前缀按老规则兜底），源分辨率仍由 `dev:` 的 5 段写法或文件本身决定，输出分辨率可配（TESTLOG §5.10） |
-| 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数不完整 |
+| 内存池 | `MemManager + MemPool + MemBlock + MemQueue` 单消费者链路可跑通；引用计数链路完整（`acquire/push` → `addUser`、`release` → `subUser`，P0-5 已核实为假阳性），但 **fan-out 拓扑不可达**（builder 只连 `i→i+1`，STATUS §4.2 第 24 条） |
 | 流水线 | `ViNode → PushNode → PrintNode` 单链路可运行；分辨率/帧率/codec/码率/端口已由配置驱动，错误路径丢块仍未全修。**T5 起装配不再手写**：`NodeFactory`（type→节点）+ `PipelineBuilder`（拓扑校验 + 装配 + 连线 + `start_all`/`stop_all`），`config/node.json` 能直接建成并启动 4 条链路（TESTLOG §5.8）。**T6 起真实入口已接入 builder**：`main_node.cpp` 只做配置 → 进程资源 → 装配 → 启停 → `FreeMem`，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；**T7 起 `ViNode` 按 `vi.src` 前缀选采集实现，4 路（1 摄像头 + 3 mp4）同时出帧已实测**（TESTLOG §5.10） |
 | 耗时统计 | 每块挂 `NodeProfiler`；Vi/Push 各自记录本节点耗时，终点 `PrintNode` 按 `print.interval` 打印（默认每 30 帧），报表带实测 fps |
 | 编码 | MPP H.264/H.265 可用（每帧 `memcpy`，无 EOS flush）；FFmpeg 软编/软解未完成 |
@@ -255,7 +254,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 配置解析 | `common/configmgr`（M1/T2）：能读 v1 `node.json`（多链路 + 字段级校验 + `${global.*}` 展开 + 默认值）与 v0 `push.json`（合成单链路），见 TESTLOG §5.6；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）都已消费它，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.*` 仍无人读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 = `dev:/dev/video0` 1080p@30，ch1~ch3 = 3 个 mp4，实测 **1024×576@24**），T3 验收 104 项断言见 TESTLOG §5.7；**4 路同时出帧已实测**（T7：`ViNode` 按 `vi.src` 选后端，TESTLOG §5.10），mp4 loop 待 T7b |
 | 未落地 | RGA 预处理、OSD、录像、多通道、配置热加载、日志/指标/健康检查、单测、CI、Docker、OTA |
 
-**P0 共 14 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-2、P0-3、P0-4、P0-6、P0-7、P0-12、P0-13、P0-14 已修复，剩 6 项，编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
+**P0 共 14 项**（构建失败 / 必现崩溃 / 资源泄漏；P0-2、P0-3、P0-4、P0-6、P0-7、P0-12、P0-13、P0-14 已修复，P0-5 已核实为**假阳性**（引用计数链路完整），P0-9 于 2026-11-10 修复（TESTLOG §5.13 / BUG_CASES §2.10），P0-11 于 2026-11-10 修复（TESTLOG §5.14 / BUG_CASES §2.11），**剩 3 项**：P0-1、P0-8、P0-10（部分修复：`owned_mem`/`Release()` 已加，仍可拷贝无析构）；编号保留以维持引用稳定），清单见 [STATUS.md §4.1](STATUS.md)。接手后若不知从哪下手：**先修 P0-1（x86 构建），改动小、收益大。**
 
 ## 1.9 任务 → 文件 索引表
 
@@ -338,7 +337,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 2. `push_input_pipe()` **只入队**，不做耗时处理；耗时逻辑放节点自己的 `run()` 线程。
 3. 链路的**终点节点负责 `m_queue.release(block)`**；中间节点处理后继续 `push_input_pipe()`。
 4. **接多下游之前，先把块级引用计数补对**（P0-5）。当前一源多下游会读到被复用的脏块——不要"先接上再说"。
-5. `FrameBuffer` 只是**视图**（`data[3]` 指向池内存），业务代码**不得**在 `FrameBuffer` 里 `new/delete`。
+5. `FrameBuffer` 有两个身份：`Allocate()` 出来的**拥有内存**（`owned_mem`，析构 `Release()` 归还），`BindMemory()` 出来的**纯视图**（`owned_mem == nullptr`，析构 no-op）。业务代码**不得**绕过这两个接口自己 `new/delete` `data[]`；也**不得**按值拷贝 `FrameBuffer`（拷贝已删，要共享就传指针）。
 6. 不要绕过 `MemPool` 单例自行管理 `free_list_`；不要新增第二个全局池。
 7. **写入块之前必须重绑视图**：`FrameBuffer` 的 `width/height/stride/data[1]` 挂在块上、被所有链路共享，别的链路用完会把视图改成自己的分辨率。任何采集 / 生成帧的后端在写块前都要 `BindMemory(frame->data[0], 本链路输出宽, 高, 格式[, 对齐])`（`data[0]` 恒为块首地址，可安全复用；格式按**实际写入的字节布局**取，不按配置期望）。违反即 P0-14 那种「多路并发时某一路下半屏绿」（TESTLOG §5.12）。
 
@@ -523,6 +522,10 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-09 | **修 P0-13：`MppEncoder` 按平面拷贝 NV12**（`platform/encoder/rk_mpp_encoder.cpp`，+26/−1）：`encode()` 原先把 `fb->data[0]` 起 `data_size` 字节一次性 `memcpy` 进 MPP buffer，但 `FrameBuffer::BindDataPointers()` 里 `data[1]`（UV）偏移按**池块分辨率**算（`base + stride[0] * 池块高`），本帧比池块小时（1024×576 的 mp4 跑在 1920×1080 池块上）UV 段拷到的是本帧 Y 之后的内存残影 → 播放端 Y 正常、UV 大块绿斑/花屏（T7 让四路出现不同分辨率后暴露）。改为 Y、UV 分别从 `data[0]`/`data[1]` 拷贝（UV 紧接 Y，offset = `hor_stride * ver_stride`），`data_size == 0` 按 `stride * height * 3 / 2` 兜底，`data[0]`/`data[1]` 为空时归还 buffer 并返回 false。实测：四路 45s → 编码错误 0、29.82/23.94/23.93/23.96fps、SIGINT 正序停止 `EXIT=0`；拉流 UV 统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源 `126.6±11.0 / 128.2±1.7`），ch0 1080p 无回归；T5/T3/T2 回归通过，详见 TESTLOG §5.11 | `c557d89` |
 | 2026-11-09 | **修 P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图**（`platform/capture/v4l2_source/v4l2_capture.cpp` +24/−1、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp` +9）：`MemMeta` 里的 `FrameBuffer` 是**块级共享视图**（`data[0]/data[1]/width/height/stride` 存在块上，四条链路共用同一个全进程池块），`FfmpegCapture::transfer_frame()` 写完自己那帧就把视图改成自己的分辨率（1024×576 / `hw_stride=1024`）再随块归还池子；`V4l2Capture::read_frame()` 取到这种块后**直接沿用** `frame->stride[0]` 去开 `sws_scale`，于是 1080p 路按 `stride=1024` 写 1080 行、Y 平面只覆盖 `1024×1080` 字节（= 576 行 × 1920），剩余部分保持旧数据/0 → 播放端**上半屏正常、下半屏（约 47% 以下）全绿**，且随块复用**间歇出现**（单跑 ch0 时 176 帧全好）。改为两个采集后端在 `sws_scale` 之前各自 `BindMemory(data[0], 本链路宽, 本链路高, FMT_NV12[, 128])`（`data[0]` 恒为块首地址；V4L2 侧固定 NV12 因 `sws_getContext` 输出恒为 `AV_PIX_FMT_NV12`，ffmpeg 侧 `align=128` 与原 `hw_stride` 算法一致，Y/UV 指针改取重绑后的 `data[0]/data[1]`），V4L2 侧另补 `sws_scale` 返回行数校验（异常则 `VIDIOC_QBUF` 归还并丢帧）。实测：四路并发拉流解码 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**0/73**；四路 fps 照常（29.9 / 23.9×3）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `EdgeVisionService start`，详见 TESTLOG §5.12 | `eee3b01` |
 | 2026-11-09 | 新增 **`docs/BUG_CASES.md`（bug 档案 · 面试要点）**：收录 9 个已定案缺陷（B1 RTSP key/ref_cnt、B2 出参判空、B3 漏 release 抽干池、B4 atomic 未初始化、B5 工厂 nullptr、B6 UV 平面错位、B7 池块视图被改写、B8 `while(1)` 挡停止、B9 配置值与素材不符），每案含**现象 / 函数级位置 / 根因原理 / 修复 / 为什么难发现 / 面试怎么讲**，另附 10 条排查方法论（M1–M10）。同时把「**修掉有原理含量的 bug 必须追加档案**」写成强制规定：本文 **§2.2 第 10 条**、§2.9 自检清单、R5 文档分工表、§0.1 跳读表，以及 `.clinerules/00-handoff.md` 硬约束第 9 条与 `AGENTS.md` 入口清单（用户 2026-11-09 要求） | 本文纯文档，不改变代码校准点 |
+| 2026-11-10 | **修 P0-9：`MemInit()`/`FreeMem()` 每轮净漏 12.44 MB**（`common/frame_buffer.h`、`common/MemManager/MemManager.cpp`，并删除已无引用的 `common/type_registry.h`）：`FrameBuffer` 头注释写「只是视图、不负责释放」，`Allocate()` 却 `new[]` 了一块，`FreeMem()` 只 `delete` `MemMeta`/`MemBlock` → 每块 6.22 MB 像素缓冲无人认领。现 `FrameBuffer` 增 `owned_mem`（`Allocate()` 记录的基址）+ `Release()`（`delete[]` 后清 `data[]`/`native`），`BindMemory()` 视图的 `owned_mem` 恒为 `nullptr`、`Release()` 不碰别人的内存；`MemInit()` 删掉残留的 `new MemBlock`、`Allocate()` 失败时 `delete` + 继续；`FreeMem()` 逐槽 `Release()` → `delete`。实测（`mallinfo2().uordblks + hblkhd` 口径）：修复前每轮 +12,443,648 B，修复后 init 12.52 MB → free 82 kB、6 轮零增长；四路 29.9/23.9fps → SIGINT → `FreeMem 完成`、退出码 0。详见 TESTLOG §5.13 / BUG_CASES §2.10 | 工作树（2026-11-10） |
+| 2026-11-10 | **P0-10 收口：`FrameBuffer` 改 RAII + 禁拷贝**（`common/frame_buffer.h` +15/−3、`common/MemManager/MemMeta.h` −12）：P0-9 加的 `Release()` 仍"靠调用方记得调"，且结构体可拷贝（`Allocate()` 来的两份 `owned_mem` → 双释放）。现 `~FrameBuffer()` 调 `Release()`、拷贝构造/赋值 `= delete`，`MemMeta` 里 `slot_free<FrameBuffer*>` 特化随之删除（主模板 `delete t` 一句即归还），槽位侧不再需要认识 `FrameBuffer`。**加了析构必须连拷贝一起禁**——ASAN 反证：只加析构不禁拷贝＝隐式拷贝必双释放（`attempting double-free`，两次 `Release()`）。栈上视图（`BindMemory()`）`owned_mem == nullptr`，析构 no-op，实测外部缓冲不受影响。验证：`BUILD_RC=0`；`/tmp/meta_probe` 与 `/tmp/mem_probe 2 6` 数值与 P0-11 一致（6 轮恒定 82,080 B）；`/tmp/fb_real_probe`（真实头文件 + ASAN）零错误零泄漏；拷贝探针 2 处 `use of deleted function`；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位` + 退出码 0。详见 TESTLOG §5.15 / BUG_CASES §2.10 后续段 | 工作树（2026-11-10） |
+| 2026-11-10 | **修 P0-11：`MemMeta` 槽位从不销毁 + 节点自建槽位漏收**（`common/MemManager/MemMeta.h`、`MemManager.cpp::FreeMem`、`pipeline/moudle_vpss/moudle_vpss.cpp` 注释）：`data_map_` 存 `void*`，而 `void*` 既不能安全 `delete`（UB、不调析构）也调不到 `MemSlot<T>::freeObj()` —— `set_ptr()` 覆盖同名即丢旧槽位（实测 32 B/次）、`FreeMem()` 只能按 `imgMap` 点名、`VpssNode` 懒创建的 `vpss_out` 帧整块 6.22 MB 漏收。现 `MemSlot` 继承 `MemSlotBase`（虚析构）+ `~MemSlot(){ freeObj(); }`，`MemMeta` 存 `MemSlotBase*` 并补 `clear()` / 析构 / 删拷贝，`set_ptr` 覆盖前先释放旧槽位（同一指针重复登记则保留在用对象），`slot_free<FrameBuffer*>` 先 `Release()` 再 `delete`，`data<T>` 改 `dynamic_cast` 校验（同修 P1-10）；`FreeMem()` 统一 `clear()`。实测：`MemMeta` 探针 2 槽位 12.52 MB → 覆盖同名不增帧 → `clear() released=2` → 回落 78 kB；`MemInit(2)+FreeMem()` 6 轮恒定 82,080 B（修复前每轮 +128 B）；四路 `testnode` SIGINT 打印 `FreeMem: 释放 50 块 / 100 个槽位`、退出码 0。详见 TESTLOG §5.14 / BUG_CASES §2.11 | 工作树（2026-11-10） |
+
 
 
 

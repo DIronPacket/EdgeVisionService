@@ -26,8 +26,7 @@ EdgeVisionService/
 ├── src/
 │   ├── CMakeLists.txt          # 聚合 common / pipeline / platform / main
 │   ├── common/
-│   │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3] + stride[3]）
-│   │   ├── type_registry.h     # 旧版注册辅助（RegisterAll）
+│   │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3] + stride[3] + owned_mem/Release；析构即归还，拷贝已删）
 │   │   ├── json.hpp            # nlohmann/json 单头库
 │   │   ├── profiler/           # 耗时统计（header-only）
 │   │   │   ├── node_profiler.h # NodeProfiler：节点名 + 开始/结束时间戳、报表

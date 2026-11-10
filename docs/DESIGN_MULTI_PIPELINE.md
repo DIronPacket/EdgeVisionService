@@ -76,7 +76,7 @@
 | 5 | 停止 key 不一致（P0-6） | `zlm_rtsp_stop` 用 `bind_ip + port`，注册时只用 `port` | `zlm_push_server.cpp:104` vs `:167`、`:181` | 找不到流直接 return → `mk_media` 不释放、`ref_cnt` 不归零 → 泄漏 |
 | 6 | 入参校验顺序（P0-7） | 既判断 `!out_code` 又写 `*out_code` | `zlm_push_server.cpp:66-70` | 传 `nullptr` 必崩 |
 | 7 | 编码器实例 | `PushNode::enc`（每节点一个 `MppEncoder`） | `moudle_push.h:56` | 归属正确（每路一个），但 **MPP 实例总数需要全局配额**，否则 4 路以上直接失败 |
-| 8 | 内存池 | `MemManager` 单例 + `MemPool` 单例，块数/规格写死在构造函数 | `MemManager.cpp:5-8`（`ImgConfig{1920,1080,NV12,"nv12"}`）、`:13-43` | 多路不同分辨率无法表达；`FreeMem()` 不删 `FrameBuffer`（P0-9）→ 反复建链路必泄漏 |
+| 8 | 内存池 | `MemManager` 单例 + `MemPool` 单例，块数/规格写死在构造函数 | `MemManager.cpp:5-8`（`ImgConfig{1920,1080,NV12,"nv12"}`）、`:13-48` | 多路不同分辨率无法表达；~~`FreeMem()` 不删 `FrameBuffer`（P0-9）→ 反复建链路必泄漏~~ **P0-9 已修（2026-11-10，`FreeMem()` 逐槽 `Release()` + `delete`，TESTLOG §5.13）**；仍剩 `capacity = w*h*3` 的 2× 过分配（STATUS §4.1 第 10 条） |
 | 9 | 节点耗时 | 每块的 `MemMeta` 挂 `NodeProfiler` | `MemManager.cpp:35` | 一条链路一份报表是合理的；但**多路共用一个池时，块会被多路串用**（取决于 P0-5 引用计数），报表会互相污染 |
 | 10 | 采集设备 | `ViNode::run()` 里硬编码 `/dev/video0:640:480:NV12:30` + `CAPTURE_V4L2` | `moudle_vi.cpp:104-106` | 两路必然抢同一设备（V4L2 独占 open 会 EBUSY）；且 P0-2 明确指出 x86 下工厂返回 `nullptr` |
 | 11 | 采集参数来源 | `ViNode::set_data` **只认 `"push"` 段**，从里面读 `width/height/fps` | `moudle_vi.cpp:61-67`、`:73-75` | vi 与 push 靠"读同一段"隐式耦合；多链路必须让 vi 有自己的段 |
@@ -467,7 +467,7 @@ int main(int argc, char **argv) {
 2. 4 路同时跑 **30 分钟**：4 个 `rtsp://ip:8550/live/chX` 用 `ffplay` 或 `ffprobe -show_frames` 验证持续出帧（无卡死、无 0 帧率）；3 路文件源到 EOF 后**自动重播**（T7b）。
 3. `PrintNode` 4 份报表互不污染（各自 `frame_no`、各自 fps）；`MemPool` 无枯竭、退出后块全部归还。
 4. 停掉 ch0 的 push 节点**不影响** ch1~ch3 的 RTSP 服务（P0-6 回归）。
-5. `Ctrl+C` 后：`stop_all` → `MediaServer::shutdown()` → `FreeMem()` 顺序正确，`valgrind --leak-check=full` 无 definite leak（已知 P0-9/P0-11 记入 M2 例外项）。
+5. `Ctrl+C` 后：`stop_all` → `MediaServer::shutdown()` → `FreeMem()` 顺序正确，`valgrind --leak-check=full` 无 definite leak（P0-9 于 2026-11-10 修复，TESTLOG §5.13；P0-11 `MemMeta` 槽位生命周期同日修复，TESTLOG §5.14 —— 「反复启停」这条 M2 验收已可执行）。
 6. 板端资源实测并记录：4 路时 `top -H` 的 CPU 占用、`free -m` 的 RSS、`cat /sys/class/thermal/*/temp`（阈值见 §11.4）。
 7. 代码里**没有**任何 `while(1)` 与硬编码节点名/设备路径。
 8. 上述每条验收都在 **`docs/TESTLOG.md`** 留有对应记录：每个 Tn 完成时写一条 L2（命令 + 结果摘要 + 结论 + 未做项），M1 收尾写 L3；**没有记录的项不算通过**（记录粒度见该文档 §1）。
@@ -480,7 +480,7 @@ int main(int argc, char **argv) {
 | ID | 任务 | 说明 | 依赖 |
 | --- | --- | --- | --- |
 | T9 | **P0-5 块级引用计数** | 一路源 → 多路输出（主/子码流）的前提；不做这个，多链路只能"每路独立源" | 无 |
-| T10b | 池规格化（原 T10 的后半） | `global.pool.images` 支持多格式 → `MemManager::MemInit(blocks, images)`；顺便修 P0-9/P0-11（`FreeMem` 不删 `FrameBuffer`、`MemMeta` 覆盖泄漏）。块数/队列深度的"可配"已由 M1 的 T10a 解决 | T2 |
+| T10b | 池规格化（原 T10 的后半） | `global.pool.images` 支持多格式 → `MemManager::MemInit(blocks, images)`。块数/队列深度的"可配"已由 M1 的 T10a 解决；P0-9（`FreeMem` 不删 `FrameBuffer`）于 2026-11-10 修掉（TESTLOG §5.13），P0-11（`MemMeta` 覆盖泄漏 + `VpssNode` 自建槽位不回收）同日修掉（TESTLOG §5.14），本任务只剩多格式/配额 | T2 |
 | T11 | `Logger` | 级别 + `[ch0][push1]` 前缀 + 限流；替换 `printf/cout/cerr` | 无 |
 | T12 | `MetricsRegistry` | 每路 fps/丢帧/节点耗时窗口/池水位；`PrintNode` 退化为"某通道的报表视图" | T11 |
 | T13 | `DeviceRegistry` | `/dev/videoX` 独占登记，第二路打开同一设备时明确报错而不是静默花屏 | T7 |
@@ -574,7 +574,7 @@ int main(int argc, char **argv) {
 | 端口 / app 名 | 不行：要重启 RTSP 服务，所有已连接的客户端全断 |
 | 新增/删除一路通道 | 可以，但要完整走"建链/停链 + 释放资源" |
 
-而且热加载会把"反复启停"变成常态，一旦销毁路径有泄漏，就会越改越漏。当前销毁路径恰恰有已知问题（P0-9 `FreeMem` 不 delete `FrameBuffer`、P0-11 停链未 join）。
+而且热加载会把"反复启停"变成常态，一旦销毁路径有泄漏，就会越改越漏。P0-9（`FreeMem` 不 delete `FrameBuffer`）与 P0-11（`MemMeta` 槽位泄漏 + `VpssNode` 自建槽位不回收）均于 2026-11-10 修掉（TESTLOG §5.13 / §5.14），即"反复启停必漏 12 MB/轮"与其残余 128 B/轮都已解除；销毁路径剩下的已知项是**停链未 join**。
 
 **结论**：暂不做（D5）。但 `NodeConfigManager::load()` 仍按"可重复调用、返回不可变快照"设计，将来加 `SIGHUP` 时只需要再写一个"新旧快照 diff → 只重建受影响的链路"的小模块，不必动架构。
 

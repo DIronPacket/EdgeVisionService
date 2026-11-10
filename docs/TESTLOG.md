@@ -75,6 +75,9 @@
 
 | 2026-11-09 | **P0-13** NV12 UV 平面错位（mp4 路 Y 正常、UV 绿斑/花屏） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → `EXIT=0`、`hal_h265e_v580_ret_task` 报错 **0** 次、29.82 / 23.94 / 23.93 / 23.96fps；拉流解码统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源文件 `126.6±11.0 / 128.2±1.7`）；ch0（1920×1080）`U=70.5±66.1 / V=68.7±64.3` 与修复前一致（无回归）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.11） | ✅ 通过（UV 与源吻合，1080p 路零回归） |
 | 2026-11-09 | **P0-14** 池块 `FrameBuffer` 视图被跨链路改写（四路下 1080p 路下半屏全绿） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → 四路照常出帧；拉流解码统计 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**坏帧 0/73**；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.12） | ✅ 通过（下半屏绿关闭，1080p/576p 两路均无坏帧） |
+| 2026-11-10 | **P0-9** `MemInit()`/`FreeMem()` 泄漏（`FrameBuffer` 堆内存从不释放） | `cmake --build build -j"$(nproc)"` → `BUILD_RC=0`；仓库外探针 `/tmp/mem_probe` 连跑 6 轮 `MemInit(2)+FreeMem()`：修复前每轮净增 12,443,648 B 且永不归还，修复后 init 12.52 MB → free 回落 82 kB、6 轮零累积（当时残余 128 B/轮 `MemSlot`，已由 P0-11 收口）；四路 `testnode` SIGINT → `FreeMem 完成` + `exit_code=0`（见 5.13） | ✅ 通过（帧内存逐轮完整回收） |
+| 2026-11-10 | **P0-11** `MemMeta` 槽位从不销毁 + `vpss_out` 槽位漏收 | `cmake --build build -j8` → `BUILD_RC=0`；仓库外探针 `/tmp/meta_probe` → 2 槽位 12.52 MB、覆盖同名不多留帧、`clear() released=2` 回落 78 kB、同一指针重复登记不双删；`/tmp/mem_probe 2 6` → `after free` 6 轮**恒定 82,080 B**（修复前每轮 +128 B）；四路 `testnode` SIGINT → `FreeMem: 释放 50 块 / 100 个槽位` + `exit_code=0`（见 5.14） | ✅ 通过（槽位结构与节点自建帧均随 `FreeMem()` 回收） |
+| 2026-11-10 | **P0-10 收口**：`FrameBuffer` 改 RAII（`~FrameBuffer(){Release();}` + 删拷贝/赋值）+ 删 `slot_free<FrameBuffer*>` 特化 | `cmake --build build -j8` → `BUILD_RC=0`；`/tmp/fb_real_probe`（真实头文件 + ASAN）→ `delete` 即归还、零错误零泄漏 `REAL_RC=0`，栈视图 no-op；`/tmp/fb_copy_forbidden.cpp` → 2 处 `use of deleted function`（`CC_RC=1`，符合预期）；`/tmp/fb_raii_copy_probe`（只加析构不禁拷贝的反例，ASAN）→ `attempting double-free`；`/tmp/meta_probe` → `clear() released=2` 回落 78,112 B；`/tmp/mem_probe 2 6` → 6 轮恒定 82,080 B；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位`、无残留进程、`SMOKE3_RC=0`（见 5.15） | ✅ 通过（P0-10 的 ①② 关闭，仅剩 `capacity` 语义） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -389,6 +392,137 @@
 - 未做 / 受限：
   - `FrameBuffer::BindMemory()` 会把 `capacity` 重算为 `w*h*3`，掩盖了 `Allocate()` 时的真实分配大小；当前池块按 1920×1080 分配、所有链路 ≤1080p，故无越界，但把链路分辨率配到 1080p 以上时会失去保护（属 P0-10 那类 `FrameBuffer` 生命周期问题，未在本次范围）
   - `vi.src` 里写 `YUV420P` 时 `frame->fmt` 仍写 `m_fmt`，而 `sws` 恒输出 NV12 → `MppEncoder` 会以「fmt 非 NV12」拒帧（既有缺陷，与本次无关；配置里实际都写 NV12）
+
+---
+
+### 5.13 L2 · 修 P0-9：`MemInit()`/`FreeMem()` 泄漏（`FrameBuffer` 堆内存从不释放）（2026-11-10）
+
+- 代码基线：工作树（`rk3588`，基于 `114c94d` = P0-14 校准点）
+- 现象：`MemInit()` 里每个池块 `new FrameBuffer` + `Allocate()` 会 `new uint8_t[capacity]`（1920×1080×3 = 6.22 MB/块），但 `FreeMem()` 只 `delete _memData`（`MemMeta`）——**既不删 `FrameBuffer`、也不释放它的数组**。进程"正常退出、退出码 0、日志全绿"，内存却整块沉淀
+- 定位（先造一个**能失败**的量化口径，再动代码）：
+  1. `VmRSS` 看不出：`new[]` 的页没被写过就不计入 RSS → 首版探针 6 轮全平 2364 kB，像是"没漏"
+  2. 换 `mallinfo2().hblkhd`（mmap 在用字节）后立刻看到每轮 +12,443,648 B —— 但**第二轮又"归零"**：glibc 在 free 掉大 mmap 块后把 `mmap_threshold` 抬到该块尺寸，后续同尺寸分配改走 brk 主堆
+  3. 正确口径 = `hblkhd + uordblks`（在用堆总量）。未修时每轮 `MemInit(2)` 净增 12.44 MB、`FreeMem()` 后一分不还（5 轮累计 60,760 kB）
+- 根因（**P0-9**）：`FrameBuffer` 顶部注释写着「仅作为 MediaBlock 的视图，**不拥有内存，不负责释放**」，而 `Allocate()` 的实现是 `new (std::nothrow) uint8_t[capacity]` —— 所有权声明与实现相反，于是 `FreeMem()` 按注释办事、谁都不敢删除那块 6.22 MB。同函数里还有 `new MemBlock` 后未使用（`MemPool::addBuffer()` 内部自己 new）
+- 改动（3 个文件）：
+  - `src/common/frame_buffer.h`：新增 `uint8_t *owned_mem`（`Allocate()` 记基址、`BindMemory()` 不写）、`void *native`（平台句柄占位，仅视图）、`Release()`（`delete[] owned_mem` + 清 `data[0..2]`/`native`）；文件头注释改写成"所有权归谁由 `owned_mem` 决定"。`capacity` 仍为 `w*h*3`（按你的要求**本次不改**）
+  - `src/common/MemManager/MemManager.cpp::MemInit`：只调 `Allocate()`，**删掉**紧跟其后的 `BindMemory(frame->data[0], ...)`（用"绑外部内存"的接口绑自己的堆块 = 所有权说两遍，将来谁给 `BindMemory` 加个清 `owned_mem`，`Release()` 立刻变空操作）；补 `Allocate()` 失败分支（`delete frame` + `continue` + 一行错误日志）
+  - `MemManager.cpp::FreeMem`：按 `imgMap` 逐槽 `frame->Release()` → `delete frame`，再删 `NodeProfiler` / `MemMeta` / `MemBlock`
+  - `src/common/type_registry.h`：**删除**（已无人 `#include`；唯一引用方 `main_testpool.cpp` 是使用旧 `GlobalMemManager`/`TypeRegistry` 的死代码，见 STATUS §4.2 第 17 条）
+- 命令：
+  ```bash
+  cmake --build build -j"$(nproc)"                                   # BUILD_RC=0
+  g++ -O2 -std=c++14 /tmp/mem_probe.cpp -I src/common -I src/common/MemManager \
+      -I src/common/profiler -L build/lib -lcommon_api -Wl,-rpath,$PWD/build/lib -o /tmp/mem_probe
+  /tmp/mem_probe 2 6                                                 # 2 块/轮 × 6 轮
+  ./build/run.sh testnode > /tmp/evs_tn2.log 2>&1 & sleep 12; kill -INT $!; wait $!
+  ```
+- 结果摘要：
+  - 修复前：`in_use` 每轮 +12,443,648 B，free 后不归还（`hblkhd` 12152 → 60760 kB）
+  - 修复后：init 12,524,000 B → free 回落 82,080 B，**6 轮零累积**（82208/82336/82464/82592/82720 → 每轮 +128 B，即 2 块 × 2 个 `MemSlot<T>` ≈ 32 B/个，属 P0-11）
+  - 四路 `testnode`：`[builder] 汇总: 建成 4 条, 失败 0 条`、`print1 frame#480 … 23.93fps`、SIGINT → `[main] FreeMem 完成，进程正常退出`、`exit_code=0`、无残留进程
+- 结论：✅ 通过。P0-9 的帧内存泄漏实测关闭；`MemBlock` / `MemMeta` / `NodeProfiler` 一并释放
+- 排障要点（省下次时间）：
+  1. **RSS 不是泄漏度量**：`malloc` 的大块要写过才进 RSS；测泄漏用 `mallinfo2()` 的 `uordblks + hblkhd`
+  2. 只看 `hblkhd` 会被 glibc **动态 mmap 阈值**骗（第二轮假性归零），两个指标必须相加
+  3. **先让探针在旧代码上稳定复现增长**，再改代码看曲线归零；否则"改完是平的"证明不了任何事
+- 未做 / 受限：
+  - `capacity` 仍是 `w*h*3`（1080p NV12 实需 2.97 MB、实分 6.22 MB，2× 浪费），`BindMemory()` 还会把它重算成 `w*h*3` 掩盖真实分配大小 → 归 STATUS §4.1 第 10 条残余
+  - `VpssNode::ensure_dst_frame()`（`moudle_vpss.cpp:338-382`）会**按块懒创建**自己的输出帧挂在 `out_slot_`（默认 `vpss_out`）上，而 `FreeMem()` 只遍历 `imgMap` 登记的槽位（`nv12`）→ 该帧不随 `FreeMem()` 释放。当时 `config/node.json` 的 vpss 是 `enable: false`，实测路径不触发 —— **已由 P0-11 收口（§5.14：`FreeMem()` 统一 `MemMeta::clear()`）**
+  - `FrameBuffer` 仍可拷贝、无析构（靠调用方记得 `Release()`）；`MppDecoder::decode()` 往栈上 `FrameBuffer` 里 `memcpy`（P0-8）与 MPP DMA-HEAP 零拷贝（`owned_mem`→`native`）按你的要求**本次不动**（其中「可拷贝 / 无析构」两条已于同日晚收口：`~FrameBuffer(){Release();}` + 删拷贝，见 §5.15）
+
+---
+
+### 5.14 L2 · 修 P0-11：`MemMeta` 槽位从不销毁 + 节点自建槽位漏收（2026-11-10）
+
+- 目标：反复 `MemInit`/`FreeMem` 以及节点自己往块上挂的槽位（`VpssNode` 的 `vpss_out`）都能零残留
+- 现象：`MemInit(2)+FreeMem()` 每轮残留 128 B（2 块 × 2 个 `MemSlot`）；`FreeMem()` 只认 `imgMap` 里的 `nv12`，`VpssNode::ensure_dst_frame()` 懒创建后挂在 `vpss_out` 上的帧（6.22 MB/块）永远不会被回收
+- 根因（原理层面）：
+  1. `MemMeta::data_map_` 存 `void*`。`void*` 既不能安全 `delete`（UB，且**不调用析构函数**），也调不到 `MemSlot<T>::freeObj()` —— 类型擦除把「访问」擦通了，顺手把「销毁」也擦掉了
+  2. 于是 `set_ptr()` 只能纯覆盖（旧槽位连同里面的对象一起丢），`MemMeta` 没有析构也没有 `clear()`，`FreeMem()` 只好按名字点名遍历 `imgMap`
+  3. 点名遍历 ⇒ 节点后来挂上去的槽位天然不在名单里（`vpss_out` 整帧漏收）；容器不持有所有权，却拿走了唯一能回收它的指针
+- 改动：
+  - `common/MemManager/MemMeta.h`
+    - `MemSlot<T>` 继承 `MemSlotBase`（虚析构）+ `~MemSlot(){ freeObj(); }`：**槽位死 = 对象一起还回去**（`setObj/freeObj/getObj/getObjPtr` 语义不变）
+    - `data_map_` 改 `unordered_map<string, MemSlotBase*>`；`set_ptr()` 覆盖前先 `delete` 旧槽位；同一指针重复登记则保留在用对象、只丢弃新建槽位（避免双删）
+    - 新增 `clear()`（先 `swap` 出 map，再在锁外逐个 `delete`，返回回收个数）、`~MemMeta()` 兜底调 `clear()`、删拷贝/赋值
+    - 新增 `slot_free<T>()`：默认 `delete`；`slot_free<FrameBuffer*>` 先 `Release()` 再 `delete`（否则 `owned_mem` 的几 MB 又漏回 P0-9）
+    - `data<T>()` 改 `dynamic_cast<MemSlot<T>*>`，类型不符返回空 + 一行日志（同修 P1-10）
+    - `MemSlot()` 默认构造补 `t(T())`：加了析构之后，默认构造的槽位若 `t` 未初始化，析构就会 `delete` 一个野指针
+  - `common/MemManager/MemManager.cpp::FreeMem()`：逐块 `_memData->clear()`，删掉按 `imgMap` 点名的遍历；块取空即 `continue`；退出打印 `释放 N 块 / M 个槽位`
+  - `pipeline/moudle_vpss/moudle_vpss.cpp`：两处注释同步（内存归属 / 同名槽位规矩）
+- 命令与结果：
+  - `cmake -S . -B build && cmake --build build -j8` → `BUILD_RC=0`（10 个 target 全 built）
+  - 仓库外探针 `/tmp/meta_probe`（`MemMeta.h`+`frame_buffer.h` 纯头文件，`g++ -std=c++14 -I src/common`）：
+
+    ```
+    baseline                  in_use=    73,376 B
+    2 slots (nv12+vpss_out)   in_use=12,521,632 B
+    overwrite vpss_out        in_use=12,521,760 B   # 只 +128 B 记账，没有多留一帧
+    same-ptr re-set kept alive: yes                 # 重复登记不双删
+    clear() released=2        → in_use=78,112 B
+    after MemMeta dtor        in_use=78,112 B       # 无二次释放、无增长
+    ```
+
+  - `/tmp/mem_probe 2 6`（链 `libcommon_api`）：6 轮 `after free` **恒定 82,080 B**（修复前 82208 → 82336 → 82464 …，每轮 +128 B）
+  - 四路 `testnode config/node.json`：`[builder] 汇总: 建成 4 条`、`29.63~29.89fps / 23.91 / 23.89 / 23.92fps`、SIGINT → `[MemManager] FreeMem: 释放 50 块 / 100 个槽位` → `[main] FreeMem 完成，进程正常退出`、`exit_code=0`、无残留进程
+  - 泛化确认（仓库外探针 `/tmp/meta_probe_generic`，`g++ -std=c++14 -fsanitize=address` + `detect_leaks=1`）：同一套 `clear()` 对三种 `T` 都成立，ASAN 零报错、零泄漏
+    - `MyTask*`（普通未知结构体，`new` 出来、析构自带 `delete[]`）：主模板 `slot_free` 直接 `delete` → 覆盖时 `dtor=1`，`clear()` 后 `dtor=2`，`~MemMeta` 后再 `+1` → `ctor==dtor==3`
+    - `FrameBuffer*`：走特化（`Release()` + `delete`），6.22 MB `owned_mem` 一并还回（该特化在 §5.15 随 RAII 删除，现走主模板 `delete`，`~FrameBuffer()` 负责 `Release()`）
+    - `CBox*`（`malloc` 出来）：在类型旁边特化 `slot_free<CBox*>` 即可，`MemMeta`/`MemSlot` 一行不改，`free=1`
+    - `/tmp/meta_probe_dtor_only`：**故意不调 `clear()`**、只 `delete memMeta` → `~MemMeta(){clear();}` 兜底把两个槽位对象全还回去（`ctor==dtor==2`、ASAN 零泄漏、`RC=0`）。说明 `FreeMem()` 里显式 `clear()` 是**为了计数 + 固定顺序**，不是"不写就漏"
+    - 反例 `/tmp/meta_probe_bad`（`malloc` 结构体不给特化）：ASAN 直接打出整条析构链 ——
+      `MemMeta::clear() MemMeta.h:172 → ~MemSlot<CBox*>() :54/:53 → freeObj() :61 → slot_free<CBox*>() :25 → operator delete`，`ERROR: alloc-dealloc-mismatch (malloc vs operator delete)`
+      → 既证明 `delete item.second` 确实经虚析构自动分发到 `~MemSlot<T>()`，也说明"分配器不匹配必须特化"
+- 结论：✅ 通过。槽位结构（128 B/轮）与节点自建槽位的整帧（6.22 MB/块）都随 `FreeMem()` 回收；「只有 `imgMap` 里登记过的名字才会被回收」这条限制消失
+- 未做 / 受限：
+  - `config/node.json` 的 vpss 仍是 `enable:false`，`vpss_out` 路径只有 `MemMeta` 探针覆盖（真机未启转码链路）
+  - 新约束：**一个裸指针只能登记在一个槽位名下**，`clear()` 时若同一个指针挂在两个名字上会双删（当前代码无此用法；同名重复登记已有保护）
+  - `FrameBuffer` 仍可拷贝、无析构（P0-10 残余，**同日晚已收口，见 §5.15**）；`MppDecoder` 写栈（P0-8）本次不动
+  - `MemBlock::~MemBlock()` 仍不 `delete _memMeta`（所有权约定归 `MemManager::FreeMem()`）—— 绕过 `FreeMem()` 直接删块仍会漏 `MemMeta`，本次不动
+  - 删 `type_registry.h` 不影响构建（`BUILD_RC=0` 已验证：无 target 引用它）。唯一的文本引用在 `src/main/test/main_testpool.cpp:134`（`TypeRegistry::instance()`），该文件**未进 `src/main/test/CMakeLists.txt`**，且它 include 的 `global_pool_manager.h` 早已不存在 —— 属存量僵尸文件，是否清理另开一笔 `chore:`，本批不动
+
+---
+
+### 5.15 L2 · 收口 P0-10：`FrameBuffer` 改 RAII（析构调 `Release()`）+ 禁拷贝（2026-11-10）
+
+- 目标：`Allocate()` 的堆内存**不需要人记得释放**；把「可拷贝 → 双释放」从语言层面关掉；顺带让 `MemMeta` 不再认识 `FrameBuffer`
+- 起点问题：
+  1. P0-9 加的 `Release()` 只解决"有地方能释放"，实际靠 `MemManager::FreeMem()` 记得调；
+  2. `FrameBuffer` 可隐式拷贝：`FrameBuffer b = *a;` 得到两份 `owned_mem` 指向同一块，谁先析构谁 `delete[]` → 必然双释放（P0-10 ①）；
+  3. `MemMeta` 为它单留一个 `slot_free<FrameBuffer*>` 特化 —— 槽位层被迫知道每个类型的释放细节
+- 改动（2 个文件）：
+  ```cpp
+  // common/frame_buffer.h
+  struct FrameBuffer {
+    FrameBuffer() = default;
+    FrameBuffer(const FrameBuffer &) = delete;
+    FrameBuffer &operator=(const FrameBuffer &) = delete;
+    ~FrameBuffer() { Release(); }   // RAII：Allocate() 的 new[] 随对象归还；BindMemory() 视图 owned_mem 为空 → no-op
+  };
+  ```
+  - `common/MemManager/MemMeta.h`：删 `slot_free<FrameBuffer*>` 特化，主模板 `template <typename T> slot_free(T t){ delete t; }` 一句即归还（`~FrameBuffer()` 负责 `delete[]`）；注释改为"能自己写析构就写析构（首选），槽位侧零知识"
+  - 保留 `MemMeta.h` 的 `#include "frame_buffer.h"`：`moudle_push.cpp` 等经 `moudle_push.h → MemPool.h → MemMeta.h` 拿 `FrameBuffer` 完整定义（`data<FrameBuffer*>` 需要完整类型），删了会编译失败；原因写进注释
+- 前置核查（为什么这样改是安全的）：
+  - 全仓 `new FrameBuffer` 只有 2 处（`MemManager.cpp:25`、`moudle_vpss.cpp:352`），分别由 `MemInit()` 失败分支 `delete` 与 `MemMeta::clear()` 收口
+  - 栈上 `FrameBuffer` 3 处（`ffmpeg_decoder.cpp:62`、`main_encode.cpp:74`、`main_pushStream.cpp:202`）全部走 `BindMemory()`，`owned_mem == nullptr` → 析构 no-op
+  - 无按值传参 / 返回 / 放入容器；`Release()` 本身幂等（`owned_mem` 用完置空），重复调用安全
+- 验证：
+  - `cmake --build build -j8` → `BUILD_RC=0`（无新增告警）
+  - `/tmp/fb_real_probe`（**直接用仓库头文件** + ASAN）：`new FrameBuffer` + `Allocate(1920,1080,NV12)` → `delete`（**全程未显式 `Release()`**）→ 堆内存由 `~FrameBuffer()` 归还，ASAN 零错误零泄漏 `REAL_RC=0`；栈视图 `BindMemory()` 出作用域后外部缓冲仍可写（写入 `0x5A` 读回 `0x5A`）
+  - `/tmp/fb_copy_forbidden.cpp`（编译期反证）：`FrameBuffer copy = *src;` → `error: use of deleted function 'FrameBuffer::FrameBuffer(const FrameBuffer&)'`，`copy2 = *src;` → `error: use of deleted function 'FrameBuffer& FrameBuffer::operator=(const FrameBuffer&)'`，`CC_RC=1`（**预期的失败**）
+  - `/tmp/fb_raii_copy_probe`（反例探针：**只加析构、不禁拷贝**，ASAN）→ `ERROR: AddressSanitizer: attempting double-free`，栈里两次 `FrameBuffer::Release()` → 证明"加析构必须连拷贝一起禁"，否则泄漏升级成必崩
+  - `/tmp/meta_probe`（重编，`-O1`）：2 槽位 12.52 MB → 覆盖同名不增帧 → 同一指针重复登记保留在用对象 → `clear() released=2` 回落 78,112 B、`META_RC=0`
+  - `/tmp/mem_probe 2 6`：`MemInit(2)+FreeMem()` 6 轮 `after free` 恒定 82,080 B（与 P0-11 基线一致，无回归）
+  - 四路 `testnode` + SIGINT（`timeout --preserve-status -s INT 15 ./build/run.sh testnode <绝对路径>/config/node.json`）：29.92 / 23.93 / 23.90 / 23.91 fps → `[MemManager] FreeMem: 释放 50 块 / 100 个槽位` → `[main] FreeMem 完成，进程正常退出`，**退出码 0**，`pgrep testnode` 无残留（同命令不带 `--preserve-status` 时 `timeout` 自身返回 124，属 timeout 语义，不代表进程异常）
+  - 回归：`bash scripts/tests/run_t5_builder.sh` → `passes=64 fails=0 skips=2`；`run_t3_node_json.sh` → `passes=104 fails=0 skips=0`；`run_t2_node_config.sh` → `ALL PASS (fails=0)`；冒烟 `./build/run.sh EdgeVisionService` → `EdgeVisionService start`
+- 结论：✅ 通过。P0-10 的 ① 可拷贝、② 无析构两条关闭；`delete frame` 成为归还内存的唯一入口，`MemMeta` 不再需要按类型特化
+- 未做 / 受限：
+  - ③ `capacity` 仍是 `w*h*3`（1080p NV12 实需 2.97 MB、实分 6.22 MB），`BindMemory()` 仍会把它重算成 `w*h*3` 掩盖真实分配大小 → 归 STATUS §4.1 第 10 条残余
+  - **新增约束**：不能按值拷贝 `FrameBuffer`（编译期拦截）；将来要共享一帧只能传 `FrameBuffer*`，或另加显式 `Clone()` 语义
+  - `~FrameBuffer()` 只 `Release()`，不重置 `width/height/stride/fmt/data_size`（对象已销毁，无意义）；视图字段的重置仍由 `Allocate()`/`BindMemory()` 负责
+  - `Allocate()` 对同一对象**重复调用未加保护**（第二次会直接覆盖 `owned_mem`，旧块漏掉）。当前两个调用点都只调一次（`MemManager.cpp:29` 是全新对象、`moudle_vpss.cpp:344-356` 槽位为空才建），所以没有活路径；将来若支持"分辨率变化重分配"，应在 `Allocate()` 开头补一句 `Release()`
+  - P0-8（`MppDecoder` 往栈上 `FrameBuffer` 里 `memcpy`）与本改动正交，本次不动 —— 栈视图加分片拷贝，本就要在解码侧补分配，不因 RAII 而变
 
 ---
 
