@@ -332,8 +332,9 @@ FrameBuffer *VpssNode::get_src_frame(pool::MemBlock *block)
 // 所以按块挂载：第一次遇到该块时分配，之后每帧复用（零额外分配）。
 //
 // 内存归属：这块内存和 MemManager::MemInit() 里给每个块分配的 "nv12" 帧一样，
-// 随 MemMeta 常驻；MemManager::FreeMem() 目前不回收槽位里的 FrameBuffer
-// （既有行为，不是本节点引入的）。
+// 挂在块自己的 MemMeta 槽位上，随块常驻、随块释放 ——
+// MemManager::FreeMem() 统一调 MemMeta::clear()，把槽位里的对象一起还回去，
+// 包括这里由节点自己挂上去的 out_slot_ 帧，本节点不用另写释放逻辑。
 // ==========================================
 FrameBuffer *VpssNode::ensure_dst_frame(pool::MemBlock *block, const FrameBuffer &src)
 {
@@ -363,8 +364,9 @@ FrameBuffer *VpssNode::ensure_dst_frame(pool::MemBlock *block, const FrameBuffer
   // 时间戳沿用上游：下游要按帧时间戳做同步时不用再找源帧
   frame->timestamp_ms = src.timestamp_ms;
 
-  // 同名槽位会被覆盖（见 MemMeta::set_ptr）：out_slot 配成 "nv12" 就等于
-  // "接管"上游那个槽位，下游按老名字也能取到转码后的帧
+  // 槽位同名时的一套规矩：已在 map 里的槽位会被上面的 data<> 直接取到（复用，
+  // 走不到这里）；只有该槽位此前为空才会登记。MemMeta::set_ptr 覆盖同名旧槽位时
+  // 会先释放旧对象，所以"接管"只对空槽位成立，不会把上游正在用的帧删掉。
   block->_memMeta->set_ptr(out_slot_, frame);
 
   if (frame_no_ == 0)
