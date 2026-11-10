@@ -3,17 +3,17 @@
 > 本文件只是**索引 + 事实卡**，完整内容在 **`docs/HANDOFF.md`**（唯一权威接手文档）。
 > **不要用 `search_codebase` 全仓扫描来"重新了解项目"**：文件清单在 HANDOFF §1.4，现状在 §0/§1.2，限制在 §2，任务→文件在 §1.9。
 
-## 现状卡（2026-11-09 基线；若与 git 实际不符，以 git 为准并回写文档）
+## 现状卡（2026-11-10 基线；若与 git 实际不符，以 git 为准并回写文档）
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 本文**代码**校准点 `114c94d`（P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图，修四路并发下 1080p 路下半屏绿；实际修复提交 `eee3b01`，`114c94d` 仅注释编号对齐；前一校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净（本地领先远程若干提交，未 push）· 本文**代码**校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 走 `owned_mem` + `~FrameBuffer(){Release();}` 且禁拷贝，`MemMeta` 槽位经虚析构自动销毁；前一校准点 `114c94d` = P0-14 采集写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`；再前 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池 → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
-| P0 问题 | 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；P0-5 核实为假阳性；P0-9 / P0-11 于 2026-11-10 修复；剩 3 项：P0-1 / P0-8 / P0-10（部分）），见 `docs/STATUS.md` §4.1 |
+| P0 问题 | 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；P0-5 核实为假阳性；P0-9 / P0-11 于 2026-11-10 修复；P0-10 的「可拷贝 / 无析构」于同日 RAII 收口，**只剩 `capacity` 语义**；剩 3 项：P0-1 / P0-8 / P0-10（部分）），见 `docs/STATUS.md` §4.1 |
 
 ## 跳读表（**不要全文读**：先跑一条命令拿行号，再定向读区间）
 

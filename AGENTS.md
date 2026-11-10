@@ -10,6 +10,6 @@
 - **不要全仓扫描**：文件清单看 §1.4，构建/运行命令看 §0 与附录 A
 - 行号会漂移，读之前先跑 `grep -nE '^#{1,2} ' docs/HANDOFF.md` 一次拿行号，再定向读区间
 
-基线：分支 `rk3588` / 代码校准点 `114c94d`（P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图，修四路并发下 1080p 路下半屏绿；实际修复提交 `eee3b01`，`114c94d` 仅注释编号对齐；前一校准点 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
+基线：分支 `rk3588` / 代码校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 用 `owned_mem` 记基址、`~FrameBuffer(){Release();}` 且拷贝/赋值 `= delete`，`MemMeta` 槽位改为 `MemSlotBase*` + 虚析构自动销毁；前一校准点 `114c94d` = P0-14 采集写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`；再前 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2）/ C++14 / aarch64 板端本机编译 / `cmake -S . -B build && cmake --build build -j8`。
 
 Cline 专用入口（内容一致，自动加载）：`.clinerules/00-handoff.md`。
