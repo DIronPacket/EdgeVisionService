@@ -151,14 +151,14 @@ PrintNode（独立线程）    getBlock → 取 profiler → 按 print.interval 
 | 节点耗时 | 每块一个 `profile::NodeProfiler`（`MemMeta` slot `"profiler"`），节点 `begin/end` 写入；块回收时清空 |
 | 构建接入 | ✅ 被 `src/common/CMakeLists.txt` 和 `pipeline` 使用 |
 
-已知短板：块没有独立的引用计数，多下游分支时会出现“一个分支归还后块被复用，另一个分支仍在读”的问题，详见 [STATUS.md](STATUS.md) 的 4.1 / 5.2。
+已知短板：~~块没有独立的引用计数，多下游分支时会出现"一个分支归还后块被复用，另一个分支仍在读"~~ —— **该结论已于 2026-11-10 核实为过期**（`MemBlock` 的 `user_cnt` 增减链路完整，见 §2.4「引用计数」）；真短板是**扇出拓扑不可达**：`PipelineBuilder` 只连 `i→i+1`，多分支路径从未被真实触发，详见 [STATUS.md](STATUS.md) §4.2 第 24 条。
 
 ### 2.4 线程、队列与背压
 
 - **每个节点一个线程**：`ViNode::run()`、`PushNode::run()`、`PrintNode::run()` 各自 loop，`std::atomic<bool> running_` 控制退出（**必须在构造函数里显式初始化为 `false`**，C++14 的 `std::atomic` 默认构造不写值）。
 - **队列容量**：`MemQueue::InitQueue(name, 20)`，队列满时 `push()` 丢弃最老的一帧并归还池子（drop-oldest）。
 - **取帧超时**：`getBlock(100)` 毫秒，拿不到就回到循环检查 `running_`，停止延迟最多约 100ms。
-- **引用计数**：`acquire()` 时 `addUser(owner)`；每个消费者队列 `pushBlock()` 再 `addUser(queue_name)`；消费者 `release()` 时 `subUser()`，计数归零才 `reset()` 并放回 `free_list_`。当前链路是单消费者，模型可用；多下游分支时会出现“一个分支归还后块被复用，另一个分支仍在读”的问题（见 [STATUS.md](STATUS.md)）。
+- **引用计数**：`acquire()` 时 `addUser(owner)`；每个消费者队列 `pushBlock()` 再 `addUser(queue_name)`；消费者 `release()` 时 `subUser()`，计数归零才 `reset()` 并放回 `free_list_`。计数链路是完整的（P0-5 于 2026-11-10 核实为假阳性）；扇出时仍要注意**下游就地改写同一块会互相污染**，且 `PipelineBuilder` 目前不产生多下游拓扑（见 [STATUS.md](STATUS.md) §4.2 第 24 条）。
 - **无显式背压**：上游不等待下游，队列满即丢帧。对实时预览可接受，但需要把丢帧计数暴露为指标。
 
 ### 2.5 平台抽象接口

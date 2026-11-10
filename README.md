@@ -2,7 +2,7 @@
 
 > 边缘视觉服务原型：**配置驱动装配 → 采集 → 统一内存池 → 节点流水线 → 硬件/软件编码 → RTSP 推流**。
 > 主平台 RK3588（MPP / V4L2 / RGA），x86_64（FFmpeg）作为开发调试目标。
-> 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；详细现状见 [docs/STATUS.md](docs/STATUS.md)。
+> 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；P0 共 14 项、已修 10 项（最近一批 2026-11-10：P0-9 池块泄漏 · P0-11 `MemMeta` 槽位泄漏 · P0-10 `FrameBuffer` RAII），剩 P0-1 / P0-8 / P0-10 残余（`capacity` 语义）。详细现状见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 目录
 
@@ -28,9 +28,10 @@
 
 当前限制（每条都有对应任务，不是"大概不行"）：
 
-- **每路一个独立源**：4 路 = 1 个摄像头 + 3 个 mp4，各读各的源（T7 已打通）；源扇出到多个下游时**块引用计数未实现**（P0-5 / T9）。`vi.width/height` 已作为输出尺寸交给采集层，但 `FfmpegCapture` 只做 sws 转换、不保证严格缩放（**T7b**）。
+- **每路一个独立源**：4 路 = 1 个摄像头 + 3 个 mp4，各读各的源（T7 已打通）。`vi.width/height` 已作为输出尺寸交给采集层，但 `FfmpegCapture` 只做 sws 转换、不保证严格缩放（**T7b**）。
 - `FfmpegCapture` 不循环、不缩放（**T7b**），mp4 播完即停。
-- 一个源扇出到多个下游时**块引用计数未实现**（P0-5 / T9），故当前是"每路独立源"，不是一源多流。
+- 一源多下游（扇出）**拓扑当前不可达**：`PipelineBuilder` 只连 `i→i+1`（**T9** / STATUS §4.2 第 24 条）。块级引用计数本身是完整的（`acquire` / `pushBlock` 加，`release` 减，`userCnt()==0` 才回池 —— P0-5 于 2026-11-10 核实为**假阳性**）；真要做扇出还得解决"下游就地改写同一块会互相污染"。
+- 池块按 `width*height*3` 分配（1080p NV12 实需 2.97 MB、实给 6.22 MB，约 2× 过分配，P0-10 残余），且池块数 / 队列深度仍硬编码为 `MemInit(50)` / 队列 20（**T10a**）。
 - RGA 预处理、OSD、录像、统一日志 / 指标 / 健康检查均未落地；媒体服务仍由 `PushNode` 内部启停（**T4** 才上提到 `MediaServer`）。
 - x86 本机构建仍会失败（`install/x86_64` 为空，P0-1）；FFmpeg 软编/软解未完成。
 
@@ -63,7 +64,7 @@ PipelineBuilder ──── 拓扑校验(R1–R5) → NodeFactory 造节点 →
 
 > 顺序是硬约定：`stop_all` 之后必须 `sets.clear()`（析构节点、释放队列）再 `FreeMem`（销毁池）；反过来会用到已销毁的块。详见 [docs/HANDOFF.md](docs/HANDOFF.md) §1.7。
 
-当前每条链是**独立源**（一链一个 `ViNode`）；一源多下游（主/子码流、算法、录像）依赖块级引用计数（P0-5 / T9）。分层、内存模型、线程/背压与平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；多链路方案取舍见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md)。
+当前每条链是**独立源**（一链一个 `ViNode`）；一源多下游（主/子码流、算法、录像）还要补**扇出拓扑**（T9：`PipelineBuilder` 目前只连 `i→i+1`；块级引用计数本身已完整，P0-5 核实为假阳性）。分层、内存模型、线程/背压与平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；多链路方案取舍见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md)。
 
 ## 3. 快速开始
 
@@ -197,14 +198,14 @@ timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json;
 | --- | --- | --- |
 | 配置管理与装配 | 🟢 85% | T2/T5：v1 解析 + 字段级校验（带字段路径）+ `${global.*}` 展开 + `NodeFactory` + 拓扑校验 + 批量启停；`global.pool.*` 尚未接线（T10a） |
 | 进程编排 / 主程序 | 🟢 75% | T6：`testnode` = 配置 → builder → SIGINT 优雅退出 → `FreeMem`，退出码 0（实测）；`src/main/main.cpp` 仍是空壳；媒体服务未上提（T4） |
-| 内存池 / 流水线 | 🟡 65–80% | 单消费者链路可跑；块级引用计数未做（P0-5 / T9）；池块数与队列深度硬编码 50/20（T10a） |
+| 内存池 / 流水线 | 🟡 70–80% | 单消费者链路可跑；块级引用计数完整（P0-5 假阳性）、块内存与 `MemMeta` 槽位已 RAII 化（P0-9 / P0-11 / P0-10，2026-11-10）；扇出拓扑不可达（T9）；`capacity = w*h*3` 过分配（P0-10 残余）；池块数与队列深度硬编码 50/20（T10a） |
 | 采集 | 🟢 75% | T7：`vi.src` 前缀选后端（`dev:` → V4L2；`file:` / 网络流 → FFmpeg），4 路同时出帧已实测；`FfmpegCapture` 仍不循环、不保证缩放（T7b） |
-| 编码 | 🟡 70% | MPP H.264/H.265 可跑；x86 软编未完成；每帧 `memcpy`，无 EOS flush |
+| 编码 | 🟡 70% | MPP H.264/H.265 可跑，NV12 **按平面拷贝**（P0-13 已修，不再把 UV 当成 Y 的尾巴）；x86 软编未完成；无 EOS flush |
 | RTSP 推流 | 🟡 65% | 单路可演示；P0-6 / P0-7 已修（T1）；多路并存与"停一路不影响其他路"待 T4 |
 | 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
 | 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
 
-> P0 共 13 项，已修 7 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13），剩 6 项。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
+> P0 共 14 项：**已修 10 项**（P0-2 / 3 / 4 / 6 / 7 / 9 / 11 / 12 / 13 / 14）、**核实假阳性 1 项**（P0-5 引用计数）、**剩 3 项**（P0-1 x86 缺依赖 · P0-8 解码器往栈上 `FrameBuffer` 写 · P0-10 残余 `capacity` 语义）。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 5. 路线图
 
@@ -213,7 +214,7 @@ timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json;
 | 里程碑 | 目标 | 任务与进度 |
 | --- | --- | --- |
 | **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ · T7 ✅ → **下一个 T7b**（循环 + 缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
-| **M2**（P1） | 多路真正稳定 | T9 块级引用计数 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
+| **M2**（P1） | 多路真正稳定 | T9 扇出拓扑 / 多下游用例 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
 | **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进评估 |
 
 M1 的三条硬验收（当前**未**全部满足）：
@@ -234,6 +235,7 @@ M1 的三条硬验收（当前**未**全部满足）：
 | 模块完成度、已实现/占位、P0–P2、优化建议 | [docs/STATUS.md](docs/STATUS.md) |
 | 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md) |
 | **测试怎么做、某条"已通过"当初怎么验的** | **[docs/TESTLOG.md](docs/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
+| **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/BUG_CASES.md](docs/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
 | 长期 WBS、排期、技术方案、风险与待确认项 | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | 源码入口 | `src/`；真实主链路在 `src/main/test/main_node.cpp`，节点在 `src/pipeline/` |
 | 配置 | `config/node.json`（v1，4 路，当前主用）、`config/push.json`（v0 单链路，T8 删除） |
@@ -245,8 +247,9 @@ M1 的三条硬验收（当前**未**全部满足）：
 1. **C++14**：`set(CMAKE_CXX_STANDARD 14)`。不用 `std::any` / `if constexpr` / 结构化绑定等 C++17+ 特性。
 2. **不引入 `install/` 里没有的新第三方库**；不重命名既有目录（`moudle_vi` / `moudle_push` / `moudle_print` 是历史拼写，改名属独立任务）。
 3. **取块必有释放**：`acquire()` / `getBlock()` 之后，所有失败分支都必须 `release()`，否则池子会被几帧内耗干。
-4. **改了代码/配置必须留测试记录**：按 [docs/TESTLOG.md](docs/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
-5. **不提交** `build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
+4. **`FrameBuffer` 不可拷贝**：它已改为 RAII（`owned_mem` + 析构 `Release()`，拷贝/赋值 `= delete`）——要共享块只能传指针，别写按值传参或赋值（P0-10，[docs/TESTLOG.md](docs/TESTLOG.md) §5.15）。
+5. **改了代码/配置必须留测试记录**：按 [docs/TESTLOG.md](docs/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
+6. **不提交** `build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
 
 **写法约定**
 
@@ -260,4 +263,4 @@ M1 的三条硬验收（当前**未**全部满足）：
 
 ---
 
-最后更新：2026-11-09；适用分支：`rk3588`；代码校准点：`29ab58b`（T6 重写真实入口）。
+最后更新：2026-11-10；适用分支：`rk3588`；代码校准点：`15cf975`（P0-9 / P0-11 修复 + P0-10 `FrameBuffer` RAII 收口）。

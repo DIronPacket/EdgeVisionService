@@ -69,7 +69,7 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`；工作树干净，**已与远程同步（无未推送提交）** |
-| HEAD | `15cf975 common: 修 P0-9/P0-11 并收口 P0-10 —— FrameBuffer 改 RAII、MemMeta 槽位自动销毁`（**当前代码校准点**）；前置 `ea7d31c`（`docs:` 记录）/ `114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）/ `c557d89`（P0-13）/ `eac4bb0`（T7）/ `29ab58b`（T6）。此后的 `docs:`、`config:` 提交不改变代码校准点 |
+| 代码校准点 / 最近提交 | **代码校准点 = `15cf975`**（`common: 修 P0-9/P0-11 并收口 P0-10`）；其后均为 `docs:`（`ea7d31c` 记录 / `ce674f3` 坐标回写 / `0898de6` 远程状态 / 本次 README + P0-5 说法纠偏），**不改变代码校准点**；再前 `114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）、`c557d89`（P0-13）、`eac4bb0`（T7）、`29ab58b`（T6） |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
@@ -336,7 +336,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 1. **取块必有归还**：`acquire()` / `getBlock()` 之后的所有失败分支（读帧失败、编码打开失败、队列满、异常返回）都必须 `release()`。P0-3、P0-4 都是漏了这一步（均已修复）；`push_input_pipe()` 队列满丢块那条路径仍未处理（P0-5 一起修）。
 2. `push_input_pipe()` **只入队**，不做耗时处理；耗时逻辑放节点自己的 `run()` 线程。
 3. 链路的**终点节点负责 `m_queue.release(block)`**；中间节点处理后继续 `push_input_pipe()`。
-4. **接多下游之前，先把块级引用计数补对**（P0-5）。当前一源多下游会读到被复用的脏块——不要"先接上再说"。
+4. **接多下游之前先补两件事**：① 扇出拓扑当前不可达（`PipelineBuilder` 只连 `i→i+1`，T9 / STATUS §4.2 第 24 条），要先让 builder 支持 `next: []` 并补一条多分支用例；② 引用计数已完整（P0-5 于 2026-11-10 核实为假阳性：`MemQueue::push` → `MemPool::pushBlock` 加、`release` 减），但下游若**就地改写**同一块仍会互相污染，必须约定"只读"或先拷贝。
 5. `FrameBuffer` 有两个身份：`Allocate()` 出来的**拥有内存**（`owned_mem`，析构 `Release()` 归还），`BindMemory()` 出来的**纯视图**（`owned_mem == nullptr`，析构 no-op）。业务代码**不得**绕过这两个接口自己 `new/delete` `data[]`；也**不得**按值拷贝 `FrameBuffer`（拷贝已删，要共享就传指针）。
 6. 不要绕过 `MemPool` 单例自行管理 `free_list_`；不要新增第二个全局池。
 7. **写入块之前必须重绑视图**：`FrameBuffer` 的 `width/height/stride/data[1]` 挂在块上、被所有链路共享，别的链路用完会把视图改成自己的分辨率。任何采集 / 生成帧的后端在写块前都要 `BindMemory(frame->data[0], 本链路输出宽, 高, 格式[, 对齐])`（`data[0]` 恒为块首地址，可安全复用；格式按**实际写入的字节布局**取，不按配置期望）。违反即 P0-14 那种「多路并发时某一路下半屏绿」（TESTLOG §5.12）。
@@ -418,7 +418,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 5. 装配：**不要手写装配**。要验证一条新链路，改 `config/node.json` 让 `PipelineBuilder` 建（节点类型需先在 `NodeFactory::RegisterBuiltins()` 注册）；临时验证也可以在测试程序里手写 `MemInit` → `create` → `link_to` → `start`，但**不要往 `main_node.cpp` 里加节点名**——入口只剩编排。
 6. 若引入新的数据类型，用 `MemMeta::set_ptr<T>()` 挂 slot，并在初始化处声明。
 7. 节点自身耗时统计：`profile::NodeProfiler *p = profile::get_profiler(block); p->begin(m_name); ... p->end(m_name);`（判空；`end` 要放在等待下一帧的 sleep 之前）。
-8. 多下游扇出前必须完成引用计数改造（见 §2.4 第 4 条）。
+8. 多下游扇出前先补多分支拓扑与用例（`PipelineBuilder` 目前只连 `i→i+1`；引用计数已完整，详见 §2.4 第 4 条 / STATUS §4.2 第 24 条）。
 
 ## R3 新增平台后端（例如 RGA 预处理）
 
@@ -434,8 +434,8 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | --- | --- |
 | `cmake -S . -B build` 配置失败 | P0-1：`install/x86_64` 缺失；确认是不是在本机（aarch64）构建 |
 | 一启动就段错误（无摄像头 / x86） | P0-2 **已修（T7）**：采集后端不可用或设备/文件打不开时只打印 `[viN] open failed` 并退出该节点线程（不崩、其余链路照跑）；仍崩则查 P0-8（MPP 解码未分配 `FrameBuffer`） |
-| 跑几秒后链路停摆、拿不到块 | 失败分支漏 `release` 导致池子耗尽（P0-3、P0-4 已修）；剩余检查 `push_input_pipe()` 队列满丢块（P0-5） |
-| 画面撕裂 / 花屏 / 脏数据 | P0-5：多下游共用块被提前复用；**若 Y 正常、只有 UV 大块绿斑/花屏** → P0-13（`MppEncoder` 一次性拷贝，已修 `c557d89`，TESTLOG §5.11）；**若某一路上半屏正常、下半屏全绿（多路并发才出现，单路正常）** → P0-14（池块 `FrameBuffer` 视图被别的链路改写，采集层未重绑，已修 `eee3b01`，TESTLOG §5.12） |
+| 跑几秒后链路停摆、拿不到块 | 失败分支漏 `release` 导致池子耗尽（P0-3、P0-4 已修）；再查各节点 `release` 是否与 `acquire`/`getBlock` 成对（队列满丢最老帧是设计行为，`MemQueue::push` 里已 `release`） |
+| 画面撕裂 / 花屏 / 脏数据 | 多下游共用块且被就地改写（扇出尚未启用，T9）；**若 Y 正常、只有 UV 大块绿斑/花屏** → P0-13（`MppEncoder` 一次性拷贝，已修 `c557d89`，TESTLOG §5.11）；**若某一路上半屏正常、下半屏全绿（多路并发才出现，单路正常）** → P0-14（池块 `FrameBuffer` 视图被别的链路改写，采集层未重绑，已修 `eee3b01`，TESTLOG §5.12） |
 | `rtsp://` 打开 404、服务关不掉 | P0-6（stop 的 key 与注册不一致）、P0-7（参数校验崩溃） |
 | 进程 `Ctrl+C` 无反应 / 停不下来 | 已非 P1-16（T6 已把 `while(1)` 换成 `while (g_run)`）：检查 `main_node.cpp` 里 `signal(SIGINT/SIGTERM)` 是否在 `start_all` 之前装上；停止卡住通常是 `stop()` 在 `join()` 等某个节点线程不退出 |
 | 进程退出慢 / `stop_all` 之后还打日志 | 正常：`stop_all` 正序（源头先停），下游要把队列里已到的块处理完；`PushNode::stop()` 里还有 `zlm_rtsp_stop`（媒体注销 + 关 8550 端口） |
