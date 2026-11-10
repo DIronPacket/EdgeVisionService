@@ -34,6 +34,7 @@
 | 修某个 P0/P1 | §1.9 索引表 + §1.5 构建坑 + R1 + R4 + STATUS 对应行 | ~2k |
 | 加一个新节点 | §2.4 内存规定 + R2 + §1.7 | ~1.5k |
 | **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在本文：用 **`docs/BUG_CASES.md`**（原理剖析 + 函数级位置 + 定位手法 + 面试说法；修 bug 后必须追加） | ~1k |
+| **某条命令怎么敲 / 怎么看内存 / 怎么写临时探针** | 不在本文：用 **`docs/COMMANDS.md`**（分类命令手册：构建 · 运行 · 看内存 · 临时探针 · 进程端口 · git · 坑表） | ~1.5k |
 | 首次全量接手 / 换人 | 全文（约 450 行） | ~10k |
 
 > 章节行号自查（编辑后行号会漂移）：`grep -nE '^#{1,2} ' docs/HANDOFF.md`
@@ -100,7 +101,7 @@ EdgeVisionService/
 ├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
 ├── config/                     # push.json：v0 单链路（推流宽高 / 编码 / 协议 / 端口 / print 间隔，T8 删除）；node.json：v1 多链路配置（4 路，T6 起由 testnode 直接消费，T7 起 `ViNode` 按 `vi.src` 前缀选采集实现）
 ├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh（RTSP key / ref_cnt / 入参校验，18 项断言）· run_t2_node_config.sh + fixtures/（NodeConfigManager 解析/校验/v0 适配，53 项断言）
-├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录) · BUG_CASES(bug 原理剖析 + 面试要点存档)
+├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录) · BUG_CASES(bug 原理剖析 + 面试要点存档) · COMMANDS(常用命令行手册：构建/运行/看内存/探针/git)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
 ├── build/                      # 构建产物（不入库，见 §1.5）
@@ -443,7 +444,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 ## R5 文档更新规则
 
-四份文档分工固定，不要混写：
+各文档分工固定，不要混写（新增文档必须在本表登记）：
 
 | 文档 | 只写 | 不写 |
 | --- | --- | --- |
@@ -453,6 +454,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | [ROADMAP.md](ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
 | [TESTLOG.md](TESTLOG.md) | **只有测试证据**：命令、结果摘要、结论、未做项（L1 冒烟 / L2 任务 / L3 版本三级） | 方案、现状盘点、规矩 |
 | [BUG_CASES.md](BUG_CASES.md) | **已定案 bug 的原理剖析**：现象 / 函数级位置 / 根因 / 修复 / 定位手法 / 面试说法，附 §1 索引表 | 未修问题的跟踪（在 STATUS）、测试命令与结果（在 TESTLOG） |
+| [COMMANDS.md](COMMANDS.md) | **常用操作手法**：分类命令 + 作用 + 为什么这么写 + 实测输出（构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 坑表） | 结论（在 STATUS）、测试证据（在 TESTLOG）、规矩（在本文） |
 | **HANDOFF.md（本文）** | **接手所需的事实快照 + 红线规定 + 操作规程** | 重复上面四份的内容 |
 | `.clinerules/00-handoff.md` / `AGENTS.md` | 入口索引：现状卡（与本文 §0 一致）、跳读表、硬约束 7 条 | 任何细节展开 |
 
@@ -525,6 +527,9 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-10 | **修 P0-9：`MemInit()`/`FreeMem()` 每轮净漏 12.44 MB**（`common/frame_buffer.h`、`common/MemManager/MemManager.cpp`，并删除已无引用的 `common/type_registry.h`）：`FrameBuffer` 头注释写「只是视图、不负责释放」，`Allocate()` 却 `new[]` 了一块，`FreeMem()` 只 `delete` `MemMeta`/`MemBlock` → 每块 6.22 MB 像素缓冲无人认领。现 `FrameBuffer` 增 `owned_mem`（`Allocate()` 记录的基址）+ `Release()`（`delete[]` 后清 `data[]`/`native`），`BindMemory()` 视图的 `owned_mem` 恒为 `nullptr`、`Release()` 不碰别人的内存；`MemInit()` 删掉残留的 `new MemBlock`、`Allocate()` 失败时 `delete` + 继续；`FreeMem()` 逐槽 `Release()` → `delete`。实测（`mallinfo2().uordblks + hblkhd` 口径）：修复前每轮 +12,443,648 B，修复后 init 12.52 MB → free 82 kB、6 轮零增长；四路 29.9/23.9fps → SIGINT → `FreeMem 完成`、退出码 0。详见 TESTLOG §5.13 / BUG_CASES §2.10 | 工作树（2026-11-10） |
 | 2026-11-10 | **P0-10 收口：`FrameBuffer` 改 RAII + 禁拷贝**（`common/frame_buffer.h` +15/−3、`common/MemManager/MemMeta.h` −12）：P0-9 加的 `Release()` 仍"靠调用方记得调"，且结构体可拷贝（`Allocate()` 来的两份 `owned_mem` → 双释放）。现 `~FrameBuffer()` 调 `Release()`、拷贝构造/赋值 `= delete`，`MemMeta` 里 `slot_free<FrameBuffer*>` 特化随之删除（主模板 `delete t` 一句即归还），槽位侧不再需要认识 `FrameBuffer`。**加了析构必须连拷贝一起禁**——ASAN 反证：只加析构不禁拷贝＝隐式拷贝必双释放（`attempting double-free`，两次 `Release()`）。栈上视图（`BindMemory()`）`owned_mem == nullptr`，析构 no-op，实测外部缓冲不受影响。验证：`BUILD_RC=0`；`/tmp/meta_probe` 与 `/tmp/mem_probe 2 6` 数值与 P0-11 一致（6 轮恒定 82,080 B）；`/tmp/fb_real_probe`（真实头文件 + ASAN）零错误零泄漏；拷贝探针 2 处 `use of deleted function`；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位` + 退出码 0。详见 TESTLOG §5.15 / BUG_CASES §2.10 后续段 | 工作树（2026-11-10） |
 | 2026-11-10 | **修 P0-11：`MemMeta` 槽位从不销毁 + 节点自建槽位漏收**（`common/MemManager/MemMeta.h`、`MemManager.cpp::FreeMem`、`pipeline/moudle_vpss/moudle_vpss.cpp` 注释）：`data_map_` 存 `void*`，而 `void*` 既不能安全 `delete`（UB、不调析构）也调不到 `MemSlot<T>::freeObj()` —— `set_ptr()` 覆盖同名即丢旧槽位（实测 32 B/次）、`FreeMem()` 只能按 `imgMap` 点名、`VpssNode` 懒创建的 `vpss_out` 帧整块 6.22 MB 漏收。现 `MemSlot` 继承 `MemSlotBase`（虚析构）+ `~MemSlot(){ freeObj(); }`，`MemMeta` 存 `MemSlotBase*` 并补 `clear()` / 析构 / 删拷贝，`set_ptr` 覆盖前先释放旧槽位（同一指针重复登记则保留在用对象），`slot_free<FrameBuffer*>` 先 `Release()` 再 `delete`，`data<T>` 改 `dynamic_cast` 校验（同修 P1-10）；`FreeMem()` 统一 `clear()`。实测：`MemMeta` 探针 2 槽位 12.52 MB → 覆盖同名不增帧 → `clear() released=2` → 回落 78 kB；`MemInit(2)+FreeMem()` 6 轮恒定 82,080 B（修复前每轮 +128 B）；四路 `testnode` SIGINT 打印 `FreeMem: 释放 50 块 / 100 个槽位`、退出码 0。详见 TESTLOG §5.14 / BUG_CASES §2.11 | 工作树（2026-11-10） |
+| 2026-11-10 | **README 按 2026-11-10 状态重写 + P0-5「引用计数未实现」假阳性全仓纠正**（`README.md` 10 处、`docs/HANDOFF.md` §1.2/§2.4/R2/R4、`docs/ARCHITECTURE.md` §2.3/§2.4、`docs/DESIGN_MULTI_PIPELINE.md` 6 处、`docs/ROADMAP.md` 5 处）：阶段卡 P0 计数改为「14 项 / 已修 10 项 / 剩 3 项」；限制段改为真实缺口（扇出拓扑不可达 `pipeline_builder.cpp:156-159` 只连 `i→i+1`、下游就地改写）；补池块过分配（`capacity = w*h*3`：1080p NV12 实需 2.97 MB / 实分 6.22 MB）与编码器按平面拷贝（P0-13）；文档导航补 `BUG_CASES.md`；红线补「`FrameBuffer` 不可拷贝」。**P0-5 经代码核实为假阳性**：`acquire→addUser`、`MemQueue::push→MemPool::pushBlock→addUser`、`release→subUser`、`userCnt()==0→reset` 整链完整，与 STATUS §4.1 第 5 条一致 | `bd2077f` |
+| 2026-11-10 | **新增 `docs/COMMANDS.md`（常用命令手册）**：按「构建 / 运行与优雅退出 / 看内存 / 临时探针 / 进程·端口·线程·设备 / 自检脚本 / Git / 文档一致性体检 / 踩坑表 / 一屏自检」10 类归档本机实操命令，每条给**作用 + 为什么这么写 + 实测输出**，并标注 ✅ 实测项与日期；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 目录行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 跳读表与 `AGENTS.md` 入口清单）。实测依据：ASAN 探针 `CC_RC=0/RUN_RC=0`、`mem_probe 2 3` 每轮回落 82,080 B、`meta_probe clear() released=2`、禁拷贝反证 `CC_RC=1`、`timeout --preserve-status -s INT 10 testnode` → `EXIT=0` + `ss` 见 `*:8550` + `VmRSS=172708 kB`、`git check-ignore` 命中 `build/`；另记环境事实「`ffplay` / `valgrind` 未安装，`ffprobe` 在 `3rdparty/rk3588/ffmpeg/bin/`」 | 本次提交（纯文档，不改变代码校准点） |
+
 
 
 

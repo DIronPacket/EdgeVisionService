@@ -236,6 +236,7 @@ M1 的三条硬验收（当前**未**全部满足）：
 | 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md) |
 | **测试怎么做、某条"已通过"当初怎么验的** | **[docs/TESTLOG.md](docs/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
 | **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/BUG_CASES.md](docs/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
+| **某条命令怎么敲、怎么看内存、怎么写一次性探针** | **[docs/COMMANDS.md](docs/COMMANDS.md)**（分类命令手册：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 踩坑表，均带实测输出） |
 | 长期 WBS、排期、技术方案、风险与待确认项 | [docs/ROADMAP.md](docs/ROADMAP.md) |
 | 源码入口 | `src/`；真实主链路在 `src/main/test/main_node.cpp`，节点在 `src/pipeline/` |
 | 配置 | `config/node.json`（v1，4 路，当前主用）、`config/push.json`（v0 单链路，T8 删除） |
