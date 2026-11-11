@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-10；适用分支：`rk3588`；校准点：`15cf975`。
+> 最后更新：2026-11-11；适用分支：`rk3588`；校准点：`12f5480`。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -17,7 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与 `origin/rk3588` 同步（无未推送提交）· 本文**代码**校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 所有权、`MemMeta` 槽位自动销毁）· 前一代码校准点 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`）、再前 `c557d89`（P0-13 `MppEncoder` 按平面拷贝 NV12）、`eac4bb0`（T7）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与 `origin/rk3588` 同步（无未推送提交）· 本文**代码**校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）· 前一代码校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 所有权、`MemMeta` 槽位自动销毁）、再前 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`）、`c557d89`（P0-13 `MppEncoder` 按平面拷贝 NV12）、`eac4bb0`（T7）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
@@ -71,7 +71,7 @@
 | 项 | 值 |
 | --- | --- |
 | 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`；工作树干净，**已与远程同步（无未推送提交）** |
-| 代码校准点 / 最近提交 | **代码校准点 = `15cf975`**（`common: 修 P0-9/P0-11 并收口 P0-10`）；其后均为 `docs:`（`ea7d31c` 记录 / `ce674f3` 坐标回写 / `0898de6` 远程状态 / 本次 README + P0-5 说法纠偏），**不改变代码校准点**；再前 `114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）、`c557d89`（P0-13）、`eac4bb0`（T7）、`29ab58b`（T6） |
+| 代码校准点 / 最近提交 | **代码校准点 = `12f5480`**（`feat(common): 帧内存改由 MPP DRM 缓冲提供（新增 frame_mem 分配边界）`）；其后均为 `docs:`（坐标回写），**不改变代码校准点**；再前 `15cf975`（`common: 修 P0-9/P0-11 并收口 P0-10`）、`114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）、`c557d89`（P0-13）、`eac4bb0`（T7）、`29ab58b`（T6） |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
