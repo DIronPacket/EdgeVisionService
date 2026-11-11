@@ -1,5 +1,6 @@
 #include "MemManager.h"
 #include "MemMeta.h"
+#include "frame_mem.h"
 #include "node_profiler.h"
 
 MemManager::MemManager()
@@ -76,4 +77,9 @@ void MemManager::FreeMem()
     std::cout << "[MemManager] FreeMem: 释放 " << freed_blocks << " 块 / "
               << freed_slots << " 个槽位" << std::endl;
   }
+
+  // 帧内存后端收尾：MPP 模式下 mpp_buffer_put 只把缓冲挂回组的 unused 链表，
+  // DMA 内存仍被组占着，clear+put 才是真正还系统的那一步（堆模式下这个函数是空实现）。
+  // 必须放在所有块都还完之后——本函数返回后池里已无块，满足这个前提。
+  pool::FrameMemDeinit();
 }

@@ -80,6 +80,7 @@
 | 2026-11-10 | 新增 `docs/COMMANDS.md`（命令手册）+ 5 处入口同步 | 文档里每条命令逐条复跑：`g++ -fsanitize=address -I src/common /tmp/fb_real_probe.cpp` → `CC_RC=0`、`RUN_RC=0`（ASAN 无报错）；`-L build/lib -lcommon_api` 版 `mem_probe 2 3` → 每轮 `after free` 恒定 82,080 B；`meta_probe`（`-O1`）→ `clear() released=2` 回落 78,112 B；禁拷贝反证 `CC_RC=1`（2 处 `use of deleted function`）；反例探针（只加析构不禁拷贝，ASAN）→ `RUN_RC=1` + `attempting double-free`；`timeout --preserve-status -s INT 10 ./build/run.sh testnode $PWD/config/push.json` → `EXIT=0` + `ss -ltnp` 见 `*:8550` + `VmRSS=172708 kB`/`Threads=11` + 无残留；`git check-ignore -v build/bin/testnode` → `.gitignore:2:build/`；`3rdparty/rk3588/ffmpeg/bin/ffprobe -version` → 5.0.3；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 文档内命令均可复现；另记环境事实：`ffplay`、`valgrind` 未安装 |
 | 2026-11-10 | **P0-10 收口**：`FrameBuffer` 改 RAII（`~FrameBuffer(){Release();}` + 删拷贝/赋值）+ 删 `slot_free<FrameBuffer*>` 特化 | `cmake --build build -j8` → `BUILD_RC=0`；`/tmp/fb_real_probe`（真实头文件 + ASAN）→ `delete` 即归还、零错误零泄漏 `REAL_RC=0`，栈视图 no-op；`/tmp/fb_copy_forbidden.cpp` → 2 处 `use of deleted function`（`CC_RC=1`，符合预期）；`/tmp/fb_raii_copy_probe`（只加析构不禁拷贝的反例，ASAN）→ `attempting double-free`；`/tmp/meta_probe` → `clear() released=2` 回落 78,112 B；`/tmp/mem_probe 2 6` → 6 轮恒定 82,080 B；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位`、无残留进程、`SMOKE3_RC=0`（见 5.15） | ✅ 通过（P0-10 的 ①② 关闭，仅剩 `capacity` 语义） |
 | 2026-11-11 | 新增 `docs/INTERVIEW.md`（面试问答手册）+ 5 处入口同步 | 文档自检脚本：`lines=581`、代码围栏 `4`（成对闭合）、TOC `17` 条锚点全部可解析（`bad=[]`）、`58` 处 `文件:行` 引用全部落在真实文件行号范围内（`bad=[]`）、相对链接 `BUG_CASES.md` / `TESTLOG.md` 均存在；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 纯文档（无代码变更） |
+| 2026-11-11 | 帧内存分配切到 MPP DRM 缓冲（`FrameBuffer::Allocate()` 不再 `new[]`） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` → `CONFIG_RC=0` / `BUILD_RC=0`、warning 0、configure 打印 `frame mem: MPP DRM buffer (...)`；仓库外探针 `/tmp/mpp_pool_probe 2 2` → `[FrameMem] backend: MPP DRM buffer group`、组内记账 `12441600 B`（=2×6220800）、`data[1]-data[0]=2073600`（=`stride*h`）、写满 3,110,400 B 首/末字节回读正确、`FreeMem` 后记账归零、`fds 11→11`（两轮 delta 0）；`/tmp/mpp_rss_probe 50` → 记账 296 MB → `FreeMem` 后归零、`mallinfo2.uordblks=241 kB`；四路 `testnode` 拉流解码统计 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 `126.6±10.9 / 128.2±1.7`，与 §5.11 基线一致）、ch0 `U=127.3±7.1 / V=129.8±6.7`、`hal_h265e` 报错 **0** 次、29.18 / 23.94 / 23.94 / 23.78fps、`FreeMem: 释放 50 块 / 100 个槽位`、`EXIT=0`；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.16） | ✅ 通过（帧内存改走 DMA 缓冲，画面与 fps 零回归；编码前 `memcpy` 未动） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -525,6 +526,45 @@
   - `~FrameBuffer()` 只 `Release()`，不重置 `width/height/stride/fmt/data_size`（对象已销毁，无意义）；视图字段的重置仍由 `Allocate()`/`BindMemory()` 负责
   - `Allocate()` 对同一对象**重复调用未加保护**（第二次会直接覆盖 `owned_mem`，旧块漏掉）。当前两个调用点都只调一次（`MemManager.cpp:29` 是全新对象、`moudle_vpss.cpp:344-356` 槽位为空才建），所以没有活路径；将来若支持"分辨率变化重分配"，应在 `Allocate()` 开头补一句 `Release()`
   - P0-8（`MppDecoder` 往栈上 `FrameBuffer` 里 `memcpy`）与本改动正交，本次不动 —— 栈视图加分片拷贝，本就要在解码侧补分配，不因 RAII 而变
+
+### 5.16 L2 · 帧内存改由 MPP DRM 缓冲提供（`FrameBuffer::Allocate()` 不再 `new[]`）（2026-11-11）
+
+- 目标：把「池块像素内存从哪来」从 `new uint8_t[]` 换成 **MPP 的 DMA 缓冲**（`mpp_buffer_get` + `mpp_buffer_get_ptr`），`FrameBuffer` 的 API、字段语义、节点侧写法**一律不动**；非 rk3588 平台继续走堆
+- 起点问题：
+  1. 池块内存是普通堆内存，VPU / RGA 拿不到物理地址 → 编码前必须 `memcpy` 整帧进 `mpp_buffer`（1080p NV12 每帧 3 MB 拷贝，四路 30fps ≈ 360 MB/s 纯 CPU 搬运）
+  2. 分配点散落在 `frame_buffer.h` 里（`new[]/delete[]` 直接写在 `Allocate()`），将来要换后端就得改所有 include 它的层
+  3. 直接让 `frame_buffer.h` 去 include MPP 头不可行：`platform` / `pipeline` / `main` / 测试都 include 它，**x86 构建与离线探针会立刻编不过**
+- 改动（**4 个文件改动 + 2 个新文件，其余零改动**）：
+  - 新增 `src/common/frame_mem.{h,cpp}`：`namespace pool` 的**唯一分配边界**
+    - `FrameMemAlloc(bytes, &native)`：懒建一个 `MppBufferGroup`（`mpp_buffer_group_get_internal(&g, MPP_BUFFER_TYPE_DRM)`）→ `mpp_buffer_get(group, &buf, bytes)` → `mpp_buffer_get_ptr(buf)` 拿 CPU 可写 VA；返回 VA，并把 `MppBuffer` 写进 `native`
+    - `FrameMemFree(cpu_ptr, native)`：MPP 模式 `mpp_buffer_put(native)`；堆模式 `delete[] cpu_ptr`
+    - `FrameMemIsMpp()` / `FrameMemUsage()`（组内记账字节数）/ `FrameMemDeinit()`（`mpp_buffer_group_clear` + `mpp_buffer_group_put`）
+    - MPP 头**只出现在 `frame_mem.cpp`**，由 `EVS_FRAME_MEM_MPP` 宏隔离；`std::mutex` 串起「懒建组 + get/put」（`VpssNode` 运行期会懒建输出帧，与 `FreeMem()` 收尾可能并行）
+  - `src/common/frame_buffer.h`：加一个字段 `void *native = nullptr`（平台句柄，与 `owned_mem` 同生共死）；`Allocate()` 的 `new[]` → `pool::FrameMemAlloc(capacity, &native)`；`Release()` 的 `delete[]` → `pool::FrameMemFree(owned_mem, native)`（`owned_mem || native` 任一非空才动手）。**其余结构、字段、`BindMemory()`、RAII 析构、禁拷贝全部保持原样**
+  - `src/common/MemManager/MemManager.cpp`：`FreeMem()` 末尾加一行 `pool::FrameMemDeinit();`（原因见「坑 1」）。`FreeMem()` 原有的遍历 / 打印 / 释放顺序**未动**
+  - `src/common/CMakeLists.txt`：源文件列表加 `frame_mem.cpp`；`TARGET_PLATFORM STREQUAL "rk3588"` 分支 `find_package(MPP REQUIRED)` + `target_compile_definitions(common_api PRIVATE EVS_FRAME_MEM_MPP=1)` + `target_link_libraries(common_api PUBLIC ${MPP_LIBRARIES})`，configure 打印 `frame mem: MPP DRM buffer (...)`（非 rk3588 打印 `frame mem: heap new[]/delete[]`）
+  - 依赖面变化：**`libcommon_api.so` 从此 `NEEDED librockchip_mpp.so`**（链接写成 `PUBLIC`：`common_api` 的 `frame_mem.cpp` 自己调 MPP，`pipeline` / `main` 经它间接依赖，不再靠可执行文件层补链）；MPP 头不进任何 `INTERFACE_INCLUDE_DIRECTORIES`，只在 `common_api` 内部用
+- 坑（都是实测踩到的）
+  1. **`mpp_buffer_put` 不还系统**：它只把缓冲挂回组的 `unused` 链表（MPP 的池化语义），DMA 内存仍被组占着。所以必须有 `FrameMemDeinit()`（`group_clear` + `group_put`），否则进程退出前账面上一直占着 311 MB；`FreeMem()` 是唯一「池里已无块」的时点，就放在那里
+  2. **组默认 80 MB 上限**：`BUFFER_GROUP_SIZE_DEFAULT` 是 80 MB，50 块 1080p NV12 ≈ 311 MB，不显式 `mpp_buffer_group_limit_config(group, 0, 0)` 会从第 13 块起 `mpp_buffer_get` 失败
+  3. **DRM 缓冲非 cacheable**：`mpp_buffer_get_ptr` 的映射不走 page cache（实测写满 311 MB 后 `VmRSS` 仍 4 MB，属 `VM_PFNMAP`），CPU 写完 VPU 直接可见，不需要 `cache flush`；代价是 CPU 读写这段内存比堆内存慢（本改动不碰编码路径，先吃这个成本）
+  4. `mpp[xxxx]: mpp_platform: client 12 driver is not ready!` 是 MPP 探测无关平台客户端时打的噪音（只在探针首行出现），不代表分配失败
+- 验证：
+  - `cmake -S . -B build` → `CONFIG_RC=0`（打印 `frame mem: MPP DRM buffer (...)`）；`cmake --build build -j"$(nproc)"` → `BUILD_RC=0`、`warning` **0** 条
+  - `/tmp/mpp_pool_probe`（仓库外，`-I src/common -I src/common/MemManager` + `-L build/lib -lcommon_api`，脚本 `MemInit(2) + 取块 + FreeMem` × 2 轮）：
+    - `FrameMemIsMpp=1`、`[FrameMem] backend: MPP DRM buffer group (mpp_buffer_get + mmap)`
+    - 记账 `12,441,600 B` = 2 × 6,220,800（与堆版 `capacity` 完全等价）；`native != nullptr`
+    - `data[1] - data[0] = 2,073,600 = 1920×1080`（NV12 平面布局不变）；写满 3,110,400 B 后首字节 `0x40` / 末字节 `0x80` 回读一致
+    - `FreeMem` 后记账 **0 B**；`/proc/self/fd` `11 → 11`（两轮 `delta=0`，无 DMA-buf fd 泄漏）；第二轮重新建组、重新分配全部成功
+  - `/tmp/mpp_rss_probe 50`（按真实池规模 50 块）：记账 `296 MB` → 50 块全部写满后 `VmRSS` 仍 4 MB（印证坑 3）→ `FreeMem` 后记账 `0 MB`、`mallinfo2.uordblks = 241 kB`（堆侧无残留）
+  - 四路 `testnode ../config/node.json` + 拉流解码统计（判据同 §5.11）：ch1 `U=128.1±10.9 / V=128.0±1.6`（源 `126.6±10.9 / 128.2±1.7` —— 与 P0-13 修复后基线逐位一致）、ch0 `U=127.3±7.1 / V=129.8±6.7`（摄像头静态画面，方差低即无花屏）；`hal_h265e` 报错 **0** 次；fps `29.18 / 23.94 / 23.94 / 23.78`；SIGINT → `[MemManager] FreeMem: 释放 50 块 / 100 个槽位` → `[main] FreeMem 完成，进程正常退出` → `EXIT=0`，`pgrep testnode` 无残留
+  - 回归：`run_t5_builder.sh` → `passes=64 fails=0 skips=2`；`run_t3_node_json.sh` → `passes=104 fails=0 skips=0`；`run_t2_node_config.sh` → `ALL PASS (fails=0)`
+- 结论：✅ 通过。帧内存改为设备 DMA 缓冲，`FrameBuffer` 对外行为未变（四路画面 / fps / 优雅退出全等价），非 rk3588 仍走 `new[]`
+- 未做 / 受限（**明确不在本次范围**）：
+  - **编码前的整帧 `memcpy` 仍在**（`rk_mpp_encoder.cpp` 拷贝进 encoder 自己的 `mpp_buffer`）：池内存已是 DMA 缓冲，下一步可以 `mpp_buffer_import` 直接交给编码器（或让编码器直接用池块的 `native` 句柄），那属于编码器改造，本次不动
+  - 采集侧仍是 CPU 写（V4L2/FFmpeg 解码后 `sws_scale`/`memcpy` 进 DMA 缓冲），未做零拷贝 DMA-BUF 导入
+  - 与本改动无关的既有遗留一律不动：`capacity = w*h*3` 的 P0-10 残余、`VpssNode::process_frame()` 仍为透传、mp4 不 loop（T7b）
+  - 非 rk3588 平台路径**只做了代码分支，未在 x86 上实际编译**（本机是板端；分支里只有 `new[] / delete[]`，与改造前的代码逐字相同）
 
 ---
 

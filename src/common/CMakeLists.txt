@@ -2,6 +2,7 @@
 add_library(common_api SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemPool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/frame_mem.cpp   # 帧内存分配边界（rk3588: MPP DRM 缓冲；其他平台 new[]/delete[]）
     ${CMAKE_CURRENT_SOURCE_DIR}/configmgr/node_config_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/frame_converter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/frame_drawer.cpp
@@ -45,4 +46,19 @@ if(BUILD_FREETYPE_OSD)
     message(STATUS "preprocess OSD: FreeType enabled (${FREETYPE_INCLUDE_DIRS})")
 else()
     message(STATUS "preprocess OSD: FreeType disabled (built-in bitmap font only)")
+endif()
+
+# 8. 帧内存分配后端（MemManager/frame_mem.cpp）：
+#    rk3588 → 打开 EVS_FRAME_MEM_MPP，FrameBuffer::Allocate() 拿到的是 MPP DRM 缓冲
+#             （mpp_buffer_group_get_internal + mpp_buffer_get + mpp_buffer_get_ptr），
+#             Release() 走 mpp_buffer_put；因此 common_api 从此依赖 librockchip_mpp。
+#    其他平台 → 不开这个宏，frame_mem.cpp 退化成 new[]/delete[]，行为与改造前一致。
+if(TARGET_PLATFORM STREQUAL "rk3588")
+    find_package(MPP REQUIRED)
+    target_compile_definitions(common_api PRIVATE EVS_FRAME_MEM_MPP=1)
+    target_include_directories(common_api PRIVATE ${MPP_INCLUDE_DIRS})
+    target_link_libraries(common_api PUBLIC ${MPP_LIBRARIES})
+    message(STATUS "frame mem: MPP DRM buffer (${MPP_LIBRARY})")
+else()
+    message(STATUS "frame mem: heap new[]/delete[] (EVS_FRAME_MEM_MPP off)")
 endif()

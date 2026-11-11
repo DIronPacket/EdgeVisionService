@@ -15,7 +15,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock` → `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
+| 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与 `origin/rk3588` 同步（无未推送提交）· 本文**代码**校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 所有权、`MemMeta` 槽位自动销毁）· 前一代码校准点 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`）、再前 `c557d89`（P0-13 `MppEncoder` 按平面拷贝 NV12）、`eac4bb0`（T7）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
@@ -109,7 +109,8 @@ EdgeVisionService/
 └── src/
     ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
     ├── common/                 #                      → libcommon_api.so
-    │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size + owned_mem；~FrameBuffer() 调 Release 归还，拷贝已删）
+    │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size + owned_mem + native；~FrameBuffer() 调 Release 归还，拷贝已删）
+    │   ├── frame_mem.{h,cpp}   # ★ 帧内存的唯一分配边界：rk3588 走 MPP DRM 缓冲（mpp_buffer_get + mmap），其他平台 new[]；MPP 头只在本 cpp 里
     │   ├── json.hpp            # nlohmann/json 单头库
     │   ├── configmgr/          # 节点配置管理：node_config.h（数据模型 ImgSpec/NodeDesc/PipelineDesc/GlobalDesc…）· node_config_manager.{h,cpp}（v1 node.json 解析 + 校验 + ${global.*} 展开 + v0 push.json 适配）
     │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
@@ -532,6 +533,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-10 | **README 按 2026-11-10 状态重写 + P0-5「引用计数未实现」假阳性全仓纠正**（`README.md` 10 处、`docs/HANDOFF.md` §1.2/§2.4/R2/R4、`docs/ARCHITECTURE.md` §2.3/§2.4、`docs/DESIGN_MULTI_PIPELINE.md` 6 处、`docs/ROADMAP.md` 5 处）：阶段卡 P0 计数改为「14 项 / 已修 10 项 / 剩 3 项」；限制段改为真实缺口（扇出拓扑不可达 `pipeline_builder.cpp:156-159` 只连 `i→i+1`、下游就地改写）；补池块过分配（`capacity = w*h*3`：1080p NV12 实需 2.97 MB / 实分 6.22 MB）与编码器按平面拷贝（P0-13）；文档导航补 `BUG_CASES.md`；红线补「`FrameBuffer` 不可拷贝」。**P0-5 经代码核实为假阳性**：`acquire→addUser`、`MemQueue::push→MemPool::pushBlock→addUser`、`release→subUser`、`userCnt()==0→reset` 整链完整，与 STATUS §4.1 第 5 条一致 | `bd2077f` |
 | 2026-11-10 | **新增 `docs/COMMANDS.md`（常用命令手册）**：按「构建 / 运行与优雅退出 / 看内存 / 临时探针 / 进程·端口·线程·设备 / 自检脚本 / Git / 文档一致性体检 / 踩坑表 / 一屏自检」10 类归档本机实操命令，每条给**作用 + 为什么这么写 + 实测输出**，并标注 ✅ 实测项与日期；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 目录行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 跳读表与 `AGENTS.md` 入口清单）。实测依据：ASAN 探针 `CC_RC=0/RUN_RC=0`、`mem_probe 2 3` 每轮回落 82,080 B、`meta_probe clear() released=2`、禁拷贝反证 `CC_RC=1`、`timeout --preserve-status -s INT 10 testnode` → `EXIT=0` + `ss` 见 `*:8550` + `VmRSS=172708 kB`、`git check-ignore` 命中 `build/`；另记环境事实「`ffplay` / `valgrind` 未安装，`ffprobe` 在 `3rdparty/rk3588/ffmpeg/bin/`」 | 本次提交（纯文档，不改变代码校准点） |
 | 2026-11-11 | **新增 `docs/INTERVIEW.md`（面试问答手册）**：三档问答（高频 20 题 / 核心 15 题 / 深入 12 题）+ **§5 内核接触面**（直接：V4L2 `ioctl`+`mmap` 全时序；间接：MPP `/dev/mpp_service`、DMA 堆、ZLM epoll、procfs；并给出"不能吹的边界"对照表）+ **§6 C 语言 8 个落点**（每个给文件/行号、C 概念、练法与面试问法）+ §7 4 周准备路线 + §8 诚实清单/简历 bullet + §9 问题→代码位置速查。全部结论对齐 STATUS §4.1/§4.2、DESIGN §11、TESTLOG §5 与 BUG_CASES B1–B11；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 与 `AGENTS.md`） | 本次提交（纯文档，不改变代码校准点） |
+| 2026-11-11 | **帧内存改由 MPP DRM 缓冲提供**（新增 `common/frame_mem.{h,cpp}`；改 `common/frame_buffer.h`、`common/MemManager/MemManager.cpp`、`common/CMakeLists.txt`，其余零改动）：`FrameBuffer::Allocate()` 不再 `new[]`，改为 `pool::FrameMemAlloc()`（懒建 `MppBufferGroup(MPP_BUFFER_TYPE_DRM)` → `mpp_buffer_get` → `mpp_buffer_get_ptr`），句柄存新字段 `FrameBuffer::native`，`Release()` 对称走 `pool::FrameMemFree()`（`mpp_buffer_put`）；`MemManager::FreeMem()` 末尾加一行 `pool::FrameMemDeinit()`（`group_clear` + `group_put`），因为 `mpp_buffer_put` 只把缓冲挂回组的 unused 链表、不还系统。MPP 头只在 `frame_mem.cpp` 里（`EVS_FRAME_MEM_MPP` 宏隔离），**x86 / 离线探针仍走 `new[]`，`FrameBuffer` 的字段、`BindMemory()`、RAII、禁拷贝全未动**。依赖面：`common_api` 从此 `find_package(MPP REQUIRED)` 并 `PUBLIC` 链 `librockchip_mpp`（仅 rk3588 分支）。验证：`BUILD_RC=0` / warning 0；探针 `/tmp/mpp_pool_probe 2 2` → 记账 12,441,600 B、`data[1]-data[0]=2073600`、`FreeMem` 后归零、fd `11→11`（delta 0）；`/tmp/mpp_rss_probe 50` → 296 MB → 归零；四路 `testnode` 拉流 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 126.6±10.9 / 128.2±1.7）、`hal_h265e` 0 报错、29.18/23.94/23.94/23.78fps、`EXIT=0`；T5/T3/T2 全通过。详见 TESTLOG §5.16 | 本次提交 |
 
 
 

@@ -11,7 +11,7 @@
 | 模块 | 主要文件 | 完成度 | 说明 |
 | --- | --- | --- | --- |
 | 构建/平台探测 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | 🟡 60% | 平台探测与查找模块齐全；x86 缺依赖即失败；RTSP 未接入构建；工具链路径待确认 |
-| 内存池 | `common/MemManager/*` | 🟡 65% | `MemPool`/`MemBlock`/`MemQueue` 可跑通单消费者链路；存在泄漏、无锁读取、类型不安全等问题 |
+| 内存池 | `common/MemManager/*` + `common/frame_mem.*` | 🟡 70% | `MemPool`/`MemBlock`/`MemQueue` 可跑通单消费者链路；2026-11-11 起块内像素内存由 `frame_mem.{h,cpp}` 统一分配（rk3588 = MPP DRM 缓冲，其他平台退回 `new[]`），编码前整帧 `memcpy` 仍在；仍存在无锁读取、类型不安全等问题 |
 | 平台接口 | `platform/include/*` | 🟢 85% | 采集/编码/解码/预处理接口定义清晰；x86 编解码实现未对齐接口 |
 | FFmpeg 采集 | `capture/ffmpeg_source/*` | 🟡 75% | 支持本地文件/摄像头/RTSP 输入，软解后 `sws_scale` 转 NV12 写入池；`AVDictionary` 构造后未实际传入 |
 | V4L2 采集 | `capture/v4l2_source/*` | 🟡 65% | RK 专用；固定 YUYV 输入、缩放输出尺寸可由 `set_output_size()` 配置（默认 1920×1080）；无 `poll`、无缓冲区校验、失败路径未清理 |
@@ -34,6 +34,7 @@
    - `V4l2Capture`：解析 `设备:宽:高:格式:fps`（如 `/dev/video0:640:480:NV12:30`），`VIDIOC_S_FMT` 强制 YUYV，MMAP 4 个缓冲，`sws_scale` 转 NV12。
 2. **内存池**
    - `MemManager::MemInit(50)` 预建 50 个 `MemBlock`，每个块挂一个 1920×1080 NV12 `FrameBuffer`，由 `MemPool` 单例统一管理 `free_list_`。
+   - 块内像素内存由 `FrameBuffer::Allocate()` → `pool::FrameMemAlloc()` 分配：**rk3588 上是 MPP DRM 缓冲**（`mpp_buffer_group_get_internal(MPP_BUFFER_TYPE_DRM)` + `mpp_buffer_get` + `mpp_buffer_get_ptr`，句柄存在 `FrameBuffer::native`），其他平台退回 `new[]`；`Release()` 对称走 `pool::FrameMemFree()`，`MemManager::FreeMem()` 末尾调 `FrameMemDeinit()` 释放整个缓冲组（`mpp_buffer_put` 只回组的 unused 链表，不还系统）。非 rk3588 构建因此不引入 MPP 依赖。
    - 源头节点通过 `MemQueue(OWNER)` 取块；下游节点通过 `MemQueue(USER)` 收块；队列深度 20，满则丢弃最老帧。
 3. **编码**
    - `MppEncoder` 支持 H.264/H.265；`prep:hor_stride` 128 对齐、`MPP_FMT_YUV420SP`；固定 QP 33、GOP 150；编码结果通过 `EncodeCallback` 交给上层。
@@ -130,8 +131,8 @@
 
 ### 5.2 内存与零拷贝
 
-- **让 FrameBuffer 成为“视图 + 元数据”**：`data[3]` 指向池块 `MemBlock` 的 slot，禁止在 `FrameBuffer` 内 `new/delete`；由 `MemBlock` 的引用计数决定归还时机。
-- **消除 MPP 编码前的 `memcpy`**：优先使用 `mpp_buffer` 导入外部 DMA-BUF（`mpp_buffer_import` / `MPP_BUFFER_TYPE_EXT_DMA`），或让采集直接写入 MPP 可用的 DMA 缓冲；至少应避免“池内存 → 新 MppBuffer”的整帧拷贝。
+- **让 FrameBuffer 成为“视图 + 元数据”**：`data[3]` 指向池块 `MemBlock` 的 slot，禁止在 `FrameBuffer` 内 `new/delete`；由 `MemBlock` 的引用计数决定归还时机。（**已部分落地 2026-11-11**：`new/delete` 已收敛到 `common/frame_mem.{h,cpp}` 单一分配边界，rk3588 上拿的是 MPP DRM 缓冲；`FrameBuffer` 仍持有 `owned_mem/native`，尚未完全退化为纯视图。）
+- **消除 MPP 编码前的 `memcpy`**：池块在 rk3588 上已经是 MPP DRM 缓冲（`mpp_buffer_get`），下一步用 `mpp_buffer_import`（`MPP_BUFFER_TYPE_EXT_DMA`）把池块句柄直接交给编码器，或让采集直接写 DMA 缓冲；至少要避免“池内存 → 新 MppBuffer”的整帧拷贝（当前仍是 `memcpy`，见 STATUS §4.2 / TESTLOG §5.16「未做」）。
 - **RGA 预处理**：V4L2/MPP 输出后直接用 RGA 做缩放/格式转换（NV12↔RGB、裁剪、旋转），替代 `sws_scale`，降低 CPU。
 - **池容量与水位**：按 `帧率 × 最大处理延迟 × 下游分支数` 估算块数；提供 `acquired/free/dropped` 计数与高水位告警。
 - **生命周期 RAII**：为 `MemBlock` 设计 `BlockRef`（类似 `shared_ptr` 的轻量句柄），在析构时自动 `release`；所有 `continue`/异常路径都不会漏归还。
