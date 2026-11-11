@@ -17,6 +17,7 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
+| 最新进展（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](TESTLOG.md) |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与 `origin/rk3588` 同步（无未推送提交）· 本文**代码**校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）· 前一代码校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 所有权、`MemMeta` 槽位自动销毁）、再前 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`）、`c557d89`（P0-13 `MppEncoder` 按平面拷贝 NV12）、`eac4bb0`（T7）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
 | 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |

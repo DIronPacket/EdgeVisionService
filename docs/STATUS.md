@@ -52,7 +52,7 @@
 
 ## 3. 占位与未完成
 
-- `ProcessorInterface` / RGA 预处理没有实现文件。
+- `ProcessorInterface` / RGA 预处理没有实现文件（**RGA 的可行性已于 2026-11-11 实测通过，实现要点与落地顺序见 §5.2「RGA 预处理」，实测证据见 [TESTLOG §5.17](TESTLOG.md)**）。
 - `main.cpp` 未组装任何流水线，也没有命令行参数、配置文件加载、信号处理。
 - `config/push.json` 已驱动推流分辨率/编码/协议/端口/fps/码率；`scripts/` 为空，采集源路径与编码 QP 仍写在代码里；`docs/` 已建立架构/现状/路线图文档。
 - 没有统一日志（`printf`/`std::cout` 混用）、没有指标、没有健康检查。
@@ -132,8 +132,18 @@
 ### 5.2 内存与零拷贝
 
 - **让 FrameBuffer 成为“视图 + 元数据”**：`data[3]` 指向池块 `MemBlock` 的 slot，禁止在 `FrameBuffer` 内 `new/delete`；由 `MemBlock` 的引用计数决定归还时机。（**已部分落地 2026-11-11**：`new/delete` 已收敛到 `common/frame_mem.{h,cpp}` 单一分配边界，rk3588 上拿的是 MPP DRM 缓冲；`FrameBuffer` 仍持有 `owned_mem/native`，尚未完全退化为纯视图。）
-- **消除 MPP 编码前的 `memcpy`**：池块在 rk3588 上已经是 MPP DRM 缓冲（`mpp_buffer_get`），下一步用 `mpp_buffer_import`（`MPP_BUFFER_TYPE_EXT_DMA`）把池块句柄直接交给编码器，或让采集直接写 DMA 缓冲；至少要避免“池内存 → 新 MppBuffer”的整帧拷贝（当前仍是 `memcpy`，见 STATUS §4.2 / TESTLOG §5.16「未做」）。
+- **消除 MPP 编码前的 `memcpy`**：池块在 rk3588 上已经是 MPP DRM 缓冲（`mpp_buffer_get`），下一步用 `mpp_buffer_import`（`MPP_BUFFER_TYPE_EXT_DMA`）把池块句柄直接交给编码器，或让采集直接写 DMA 缓冲；至少要避免“池内存 → 新 MppBuffer”的整帧拷贝（当前仍是 `memcpy`，见 STATUS §4.2 / TESTLOG §5.16「未做」）。**RGA 侧已实测证明「拿 fd 直传硬件」这条路走得通（`mpp_buffer_get_fd` → `importbuffer_fd`，TESTLOG §5.17），编码器侧同理可省掉这次整帧拷贝。**
 - **RGA 预处理**：V4L2/MPP 输出后直接用 RGA 做缩放/格式转换（NV12↔RGB、裁剪、旋转），替代 `sws_scale`，降低 CPU。
+  **可行性已于 2026-11-11 实测通过（[TESTLOG §5.17](TESTLOG.md)，纯文档提交 `6d3f985`），代码尚未落地**；下次实现照下面几条做（探针源码 `/tmp/rga_probe{,2,3,4,5}.cpp`）：
+
+  - **内存直传（零拷贝）**：池块是 MPP DRM 缓冲，直接 `mpp_buffer_get_fd(fb->native)` → `importbuffer_fd()`（`im_handle_param_t{w,h,format}`）→ `wrapbuffer_handle()`；**不要**找物理地址、**不要** memcpy、**不要** flush cache（DRM 映射非 cacheable，CPU 写完硬件立即可见）。用完必须 `releasebuffer_handle()`；**fd 归 MPP 管，不许 `close()`**。
+  - **格式映射**：`FMT_NV12` → `RK_FORMAT_YCbCr_420_SP`、`FMT_YUV420P` → `RK_FORMAT_YCbCr_420_P`、`FMT_BGR888` → `RK_FORMAT_BGR_888`。NV12→RGB888 走 BT.601 limited（纯 Y=64 得到 `(55,55,56)`），**不要按 `Y==64` 写断言**。
+  - **已实测可用的调用**：`imcopy`（两帧逐字节不一致 0）、`imcvtcolor`、`imresize`（1080p→720p，纯色 Y 保持 64）、`imcrop(src,dst,rect)`（裁剪位置精确到像素）、`improcess()`（`src_rect`+`dst_rect` 一步裁剪+缩放；`dst_rect` 的 x/y 就是贴图位置）。
+  - **必须内置回退（不写一定踩）**：矩形**宽度 < 68** 驱动直接拒，只回一句 `RGA_BLIT fail: Invalid argument`（实测 64/66 失败、68 起通过；**高度无此下限**，16 高也能过；面积无关；宽度须偶数，否则报 `src, Error yuv not aligned`）→ 窄条 / 小图标走 CPU。`imblend()` **没有 rect 参数**、按整块 dst 算缩放比（64×32 贴 720p 直接 `scaling more than 1/16 ~ 16 times`），**不要用**，一律 `improcess(..., IM_SYNC | IM_ALPHA_BLEND_SRC_OVER)`。
+  - **叠字暂不走 RGA**：alpha 混合能提交，但输出值不符预期（`Y(0,0)=205` 期望 ~70、`UV(0,0)=(110,25)` 期望 ~(109,184)），通道序 / alpha 语义未标定；要用就先做「逐通道纯色 + 不同 alpha 回读」标定，或改试 `imosd()` / `imcolorkey()`。当前 CPU 叠字（`OsdRenderer` → `FrameDrawer::blit` 直接写 `data[]`，即同一块 DRM VA）**零改动可用**。
+  - **前置改造**：`FrameMemFd()` / `FrameBuffer::fd` 尚未暴露（封装前先加）；注意 `BindMemory()` 出来的视图帧 `native == nullptr`，取 fd 前必须判空。
+  - **构建注意**：板端 `/usr/local/include/rockchip/` 下 17 个 RGA 头是 **0 字节空壳**（MPP 头正常），`cmake/FindRGA.cmake` 的 `find_path` 会误判 `RGA_FOUND`；编译显式用 `3rdparty/rk3588/librga-1.9.1/include`，并给 CMake 加「头文件非空」校验（命令与判读见 [COMMANDS §4.6 / §9](COMMANDS.md)）。
+  - **建议落地顺序**：① 编码器零拷贝（`mpp_frame_set_buffer`，去掉 `rk_mpp_encoder.cpp` 两段 `memcpy`，4 路 1080p ≈ 360 MB/s）→ ② `FrameMemFd()` + `FrameBuffer::fd` → ③ `src/platform/processor/rk_rga_processor.*`（cvt/resize/crop/paste，内置「宽 < 68 回退 CPU」）→ ④ 需要 RGA 叠字时再做 blend 标定或 `imosd()`。
 - **池容量与水位**：按 `帧率 × 最大处理延迟 × 下游分支数` 估算块数；提供 `acquired/free/dropped` 计数与高水位告警。
 - **生命周期 RAII**：为 `MemBlock` 设计 `BlockRef`（类似 `shared_ptr` 的轻量句柄），在析构时自动 `release`；所有 `continue`/异常路径都不会漏归还。
 - **零拷贝边界清晰**：跨线程只传 `MemBlock*`（带引用计数）；跨进程/网络再序列化；不要在回调里保存裸 `FrameBuffer*`。
