@@ -311,6 +311,29 @@ ls -la /tmp/*probe*            # 看今晚留下了什么
 rm -f /tmp/probe_* /tmp/doc_probe_*   # 删二进制，保留 .cpp 便于复现（.cpp 也可删）
 ```
 
+### 4.6 RGA 探针（验证 DMA 缓冲直传硬件加速器）
+
+```bash
+g++ -std=c++14 -O2 -I/usr/local/include \
+    -I/mnt/nvme/workspace/EdgeVisionService/3rdparty/rk3588/librga-1.9.1/include \
+    /tmp/rga_probe.cpp -o /tmp/rga_probe \
+    -L/usr/local/lib -lrockchip_mpp -lrga -lpthread
+LD_LIBRARY_PATH=/usr/local/lib:/usr/lib timeout 30 /tmp/rga_probe; echo "EXIT=$?"
+```
+
+**作用**：验证 `mpp_buffer_get` 拿到的 DRM 缓冲能否**不经 CPU 拷贝**直接交给 RGA —— `mpp_buffer_get_fd(native)` → `importbuffer_fd()` → `wrapbuffer_handle()`，之后就能 `imcopy` / `imresize` / `imcvtcolor` / `imcrop` / `improcess`。
+**为什么这么写**：
+
+- **RGA 头必须显式用 `3rdparty/rk3588/librga-1.9.1/include`**：`/usr/local/include/rockchip/` 下 17 个 RGA 头全是 **0 字节空壳**（`rga.h` / `im2d*.h` / `Rga*.h`），只有 MPP 头正常。写 `#include "im2d.h"` 时命中的是 3rdparty 那份（空壳在 `rockchip/` 子目录里，不会被顶层 `im2d.h` 查找命中），但一旦写成 `#include "rockchip/im2d.h"` 就会命中空壳，报一堆看不到的符号。
+- `-lrockchip_mpp -lrga` 放源文件之后（`--as-needed`）。
+- 运行期要 `LD_LIBRARY_PATH=/usr/local/lib`，否则 `error while loading shared libraries: librga.so`。
+**判读**：`imStrError()` 打印 `Run successfully` / `No errors during operation` 即成功。失败时先看 `rect[x,y,w,h]` 与格式，三种高频原因（都已实测）：
+1. `RGA_BLIT fail: Invalid argument` + 矩形宽 < 68 → **RGA3 的宽度下限**，不是内存/cache 问题（宽 64、66 失败，68 起成功；高度无此下限）
+2. `Unsupported to scaling more than 1/16 ~ 16 times` → 用了无 rect 参数的 `imblend`，它按**整块 dst** 算缩放比（64×32 → 1280×720 = 20 倍）；改用 `improcess(..., src_rect, dst_rect, ...)`
+3. `src, Error yuv not aligned` → 矩形宽为奇数（NV12 要求偶数宽）
+
+**注意**：`mpp_buffer_get_fd` 的 fd **不要 `close()`**（归 MPP 管），但 RGA 侧的 `releasebuffer_handle()` 必须调；`mpp_buffer_put` / `FrameMemDeinit()` 之前所有 RGA job 必须已完成（**`sync=1`，即 `IM_SYNC` 或不显式 `imasync`**），否则驱动的 job 会握着已 `munmap` 的缓冲。
+
 ---
 
 ## 5. 进程 / 端口 / 线程 / 设备
@@ -513,6 +536,11 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 | 反例探针退出码 1 | ASAN 检测到 double-free 后主动 abort | 反例探针**就要**非 0；`RC=0` 说明反例没生效 |
 | 查「泄漏」查到假象 | 之前用过 `kill -9`，`FreeMem()` 没跑 | 只用 `kill -INT` / `Ctrl+C` |
 | 找不到 `t4` 测试 | 编号历史跳号，本就没有 | 实际四套：t1 / t2 / t3 / t5 |
+| `/usr/local/include/rockchip/im2d.h` 存在，但 `cat` 出来是空的 | 该目录下 **17 个 RGA 头全是 0 字节空壳**（`rga.h` / `im2d*.h` / `Rga*.h`），只有 MPP 头正常；`find_path` 只要文件存在就成功，于是 `FindRGA.cmake` 误判 `RGA_FOUND` | 显式用 `-I 3rdparty/rk3588/librga-1.9.1/include`；CMake 里补内容校验（`file(SIZE)` > 0 或试编一个 `#include "im2d.h"`） |
+| RGA 报 `Unsupported to scaling more than 1/16 ~ 16 times, src[w,h]=[64,32], dst[w,h]=[1280,720]` | `imblend()` **没有 rect 参数**，按整块 dst 算缩放比（64×32 → 1280×720 = 20 倍） | 改用 `improcess(src, dst, pat, srect, drect, prect, -1, nullptr, nullptr, IM_SYNC\|IM_ALPHA_BLEND_SRC_OVER)` 显式指定区域 |
+| RGA 只回 `RGA_BLIT fail: Invalid argument`，dump 里参数看着都对 | RGA3 不接受**矩形宽 < 68**（实测宽 64 / 66 失败、68 成功；高度无此下限，16 高可过；面积无关） | 窄条 / 小图标走 CPU 实现；别去查 cache / 物理地址 / 格式，方向错了 |
+| RGA 报 `src, Error yuv not aligned` | 矩形宽为奇数（实测 127×64），NV12 要求偶数宽 | 宽高取偶数（4 对齐更稳） |
+| `imblend` / `improcess` 返回 success，但画面颜色明显不对 | 混合的通道顺序 / alpha 语义与"ARGB8888 = A<<24\|R<<16"的假设不一致（实测 `Y(0,0)=205` 期望 ~70、`UV=(110,25)` 期望 ~(109,184)） | 先用单通道纯色逐通道标定再上 blend；未标定就不要用，叠字走 CPU |
 
 ---
 

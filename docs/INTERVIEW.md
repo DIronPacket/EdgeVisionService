@@ -413,7 +413,9 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 
 ### 5.6 能主动说的加分点（面试官会眼前一亮）
 
-- "我们的池块是**普通堆内存**，所以编码前必须 `memcpy` 进 MPP 的 DMA 缓冲；如果改成 V4L2 `VIDIOC_EXPBUF` 导出的 **DMA-BUF**，RGA/MPP 都能直接 import，能省掉这次拷贝——这是 ROADMAP 里明确的优化项，不是我没想过。"
+- "我们的池块**本身就是 MPP 的 DMA 缓冲**（`mpp_buffer_get` 从 DRM 堆分配，`common/frame_mem.*` 是唯一分配边界），所以硬件模块能直接 import：`mpp_buffer_get_fd()` → RGA `importbuffer_fd()` → `wrapbuffer_handle()`，缩放 / 格式转换 / 裁剪 / 粘贴都实测通过，**既不需要物理地址，也不需要 memcpy**。剩下的零拷贝两处还没做：编码器侧 `mpp_frame_set_buffer` 直接吃池块（省掉 4 路 1080p 约 360 MB/s 的整帧拷贝），采集侧 `VIDIOC_EXPBUF` 导出的 DMA-BUF 直接灌池——这是 ROADMAP 明确项。"
+- "踩过 RGA 的硬坑：**RGA3 不接受宽度 < 68 的矩形**（64、66 都被驱动拒成 `RGA_BLIT fail: Invalid argument`，68 起才过，高度没这限制）；另外 `imblend()` 没有 rect 参数，会按整块 dst 算缩放比，64×32 贴到 720p 上直接报 `scaling more than 1/16 ~ 16 times`，必须用 `improcess()` 显式给 `dst_rect`。"
+- "板端 `/usr/local/include/rockchip/` 下那 17 个 RGA 头是 **0 字节空壳**（只有 MPP 头正常），`find_path` 照样命中并误判 `RGA_FOUND`——所以我们的 CMake 必须校验头文件非空或试编。"
 - "V4L2 的非阻塞 `DQBUF` 失败我只做了 `usleep(2ms)` 退避，**这是已知缺陷**（STATUS P1-3）；正确的是 `poll()`，因为它能区分超时与错误，也不会有固定延迟。"
 - "`VIDIOC_S_FMT` 之后我没有回读 `fmt.fmt.pix.width/height`——驱动可能协商成别的分辨率（P1-4）。这在 UVC 摄像头上很常见，是典型的'用户态假设 ≠ 硬件实际'。"
 

@@ -81,6 +81,7 @@
 | 2026-11-10 | **P0-10 收口**：`FrameBuffer` 改 RAII（`~FrameBuffer(){Release();}` + 删拷贝/赋值）+ 删 `slot_free<FrameBuffer*>` 特化 | `cmake --build build -j8` → `BUILD_RC=0`；`/tmp/fb_real_probe`（真实头文件 + ASAN）→ `delete` 即归还、零错误零泄漏 `REAL_RC=0`，栈视图 no-op；`/tmp/fb_copy_forbidden.cpp` → 2 处 `use of deleted function`（`CC_RC=1`，符合预期）；`/tmp/fb_raii_copy_probe`（只加析构不禁拷贝的反例，ASAN）→ `attempting double-free`；`/tmp/meta_probe` → `clear() released=2` 回落 78,112 B；`/tmp/mem_probe 2 6` → 6 轮恒定 82,080 B；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位`、无残留进程、`SMOKE3_RC=0`（见 5.15） | ✅ 通过（P0-10 的 ①② 关闭，仅剩 `capacity` 语义） |
 | 2026-11-11 | 新增 `docs/INTERVIEW.md`（面试问答手册）+ 5 处入口同步 | 文档自检脚本：`lines=581`、代码围栏 `4`（成对闭合）、TOC `17` 条锚点全部可解析（`bad=[]`）、`58` 处 `文件:行` 引用全部落在真实文件行号范围内（`bad=[]`）、相对链接 `BUG_CASES.md` / `TESTLOG.md` 均存在；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 纯文档（无代码变更） |
 | 2026-11-11 | 帧内存分配切到 MPP DRM 缓冲（`FrameBuffer::Allocate()` 不再 `new[]`） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` → `CONFIG_RC=0` / `BUILD_RC=0`、warning 0、configure 打印 `frame mem: MPP DRM buffer (...)`；仓库外探针 `/tmp/mpp_pool_probe 2 2` → `[FrameMem] backend: MPP DRM buffer group`、组内记账 `12441600 B`（=2×6220800）、`data[1]-data[0]=2073600`（=`stride*h`）、写满 3,110,400 B 首/末字节回读正确、`FreeMem` 后记账归零、`fds 11→11`（两轮 delta 0）；`/tmp/mpp_rss_probe 50` → 记账 296 MB → `FreeMem` 后归零、`mallinfo2.uordblks=241 kB`；四路 `testnode` 拉流解码统计 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 `126.6±10.9 / 128.2±1.7`，与 §5.11 基线一致）、ch0 `U=127.3±7.1 / V=129.8±6.7`、`hal_h265e` 报错 **0** 次、29.18 / 23.94 / 23.94 / 23.78fps、`FreeMem: 释放 50 块 / 100 个槽位`、`EXIT=0`；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.16） | ✅ 通过（帧内存改走 DMA 缓冲，画面与 fps 零回归；编码前 `memcpy` 未动） |
+| 2026-11-11 | 探针实测：池块 MPP DRM 缓冲能否直传 RGA（缩放 / 格式转换 / 裁剪 / 粘贴 / 叠字） | 5 个仓库外探针（`/tmp/rga_probe{,2,3,4,5}.cpp`）`g++ -std=c++14 -O2 -I 3rdparty/rk3588/librga-1.9.1/include ... -lrockchip_mpp -lrga` → 全部 `EXIT=0`；`mpp_buffer_get_fd` + `importbuffer_fd` 通；`imcopy` 两帧 3,110,400 B **不一致数 0**；`imcvtcolor` NV12→RGB888 首/末像素 `(55,55,56)`（BT.601 limited）；`imresize` 1080p→720p 后 Y `min=max=64`；`imcrop`(100,50,640,480) 首/末点 `150/150`、`244/244`；crop+scale 640×360→320×180 通过；paste 64×32 **被拒**，阈值扫描：宽 `64`/`66` 失败、`68` 起成功（高度无下限，16 高可过）；`imblend`/`improcess` 混合可提交但像素语义不符（`Y(0,0)=205` 期望 ~70、`UV=(110,25)` 期望 ~(109,184)）；每轮 `group usage after put` 记账与申请字节一致 + `group cleared` + 无 fd 泄漏（见 5.17） | ⚠️ 部分通过：cvt / resize / crop / crop+scale / paste（宽 ≥ 68）可用；blend 需标定，叠字暂走 CPU |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -565,6 +566,74 @@
   - 采集侧仍是 CPU 写（V4L2/FFmpeg 解码后 `sws_scale`/`memcpy` 进 DMA 缓冲），未做零拷贝 DMA-BUF 导入
   - 与本改动无关的既有遗留一律不动：`capacity = w*h*3` 的 P0-10 残余、`VpssNode::process_frame()` 仍为透传、mp4 不 loop（T7b）
   - 非 rk3588 平台路径**只做了代码分支，未在 x86 上实际编译**（本机是板端；分支里只有 `new[] / delete[]`，与改造前的代码逐字相同）
+
+### 5.17 L2 · 探针实测：MPP DRM 缓冲直传 RGA（缩放 / 格式转换 / 裁剪 / 粘贴 / 叠字）（2026-11-11）
+
+- 目标：为后续 `src/platform` RGA 封装做可行性判定，回答五问：
+  1. 池块内存（`FrameMem` 分配的 MPP DRM 缓冲）能否**不经 CPU 拷贝**直接交给 RGA？
+  2. 预处理要用的**缩放**（1080p→720p）与**格式转换**（NV12→RGB888）能否做？
+  3. **裁剪**（crop）能否做？裁剪 + 缩放能否一步完成？
+  4. **粘贴**（把小块贴到帧的任意位置）能否做？有没有尺寸下限？
+  5. **叠字**（ARGB 小块按 alpha 混合进 NV12 帧）能否做？
+- 基线：`12f5480`（工作树干净）；设备：RK3588，`/usr/local/lib/librga.so` 1.9.1（运行期打印 `rga_api version 1.9.1_[4]`）
+- 关键环境事实：**RGA 头必须用仓库内 `3rdparty/rk3588/librga-1.9.1/include`** —— `/usr/local/include/rockchip/` 下 17 个 RGA 头全是 **0 字节空壳**（`rga.h` / `im2d*.h` / `Rga*.h`），只有 MPP 头正常；`cmake/FindRGA.cmake` 的 `find_path` 会命中空壳从而误判 `RGA_FOUND`（坑见 COMMANDS §9）
+- 探针（全部在仓库外，均 `EXIT=0`）：
+  - `/tmp/rga_probe.cpp` —— `imcopy` / `imcvtcolor`
+  - `/tmp/rga_probe2.cpp` —— `imresize` + 混合
+  - `/tmp/rga_probe3.cpp` —— 混合失败因素拆解（A 组 RGB 目标 / B 组全屏 NV12 目标）
+  - `/tmp/rga_probe4.cpp` —— `imcrop` / paste / crop+scale
+  - `/tmp/rga_probe5.cpp` —— 小矩形阈值扫描
+- 统一编译与运行命令：
+  ```bash
+  g++ -std=c++14 -O2 -I/usr/local/include \
+      -I/mnt/nvme/workspace/EdgeVisionService/3rdparty/rk3588/librga-1.9.1/include \
+      /tmp/rga_probeN.cpp -o /tmp/rga_probeN \
+      -L/usr/local/lib -lrockchip_mpp -lrga -lpthread
+  LD_LIBRARY_PATH=/usr/local/lib:/usr/lib timeout 30 /tmp/rga_probeN; echo "EXIT=$?"
+  ```
+- 结论矩阵（每项都有 CPU 侧数值校验，不靠肉眼看图）：
+
+| 能力 | API | 结果 | 实测校验 |
+| --- | --- | --- | --- |
+| 同格式整帧拷贝 NV12→NV12 | `imcopy` | ✅ | 两帧 3,110,400 B 逐字节比对，**不一致数 0** |
+| 格式转换 NV12→RGB888 | `imcvtcolor` | ✅ | 首/末像素均 `(55,55,56)`（纯 Y=64 经 BT.601 limited，**不是 64**，符合色彩学预期） |
+| 缩放 1080p→720p | `imresize` | ✅ | 纯色输入缩放后 Y 平面 `min=max=64`（stride/尺寸处理正确） |
+| 裁剪 640×480 @ (100,50) | `imcrop` | ✅ | `dst[0]=150` = `src(100,50)`、`dst(639,479)=244` = `src(739,529)`，位置精确 |
+| 裁剪 + 缩放 640×360→320×180 | `improcess`（`src_rect`+`dst_rect`） | ✅ | 首/末点 `1` / `229` 对源 `0` / `230`（双线性插值 ±1） |
+| 粘贴 128×64 → dst (600,400) | `improcess`（无 blend，`IM_SYNC`） | ✅ | 落点像素变为源色 `200`，区外保持 `10`（偏移位置生效） |
+| 粘贴 64×32 / 64×64 | 同上 | ❌ | `RGA_BLIT fail: Invalid argument` |
+| alpha 混合 ARGB→NV12（全屏 1280×720） | `improcess` + `IM_ALPHA_BLEND_SRC_OVER` | ⚠️ 提交成功但值不符 | `Y(0,0)=205`（期望 ~70）、`UV(0,0)=(110,25)`（期望 ~(109,184)）；透明区 `Y(64,0)=64`、`Y(640,360)=64` 正确 |
+| alpha 混合 ARGB→RGB888 64×32 | 同上 | ❌ | `Invalid argument`（与贴图同因：矩形过小，非格式问题） |
+
+- 尺寸阈值扫描（src / dst 同为 1280×720 NV12，只改 rect 尺寸做同尺寸拷贝，**排除缓冲大小因素**）：
+
+| 矩形尺寸 | 结果 |
+| --- | --- |
+| 16×16 / 32×32 / 32×64 / 64×32 / 64×64 | ❌ 失败 |
+| 64×96 / 64×128 / 64×256 | ❌ 失败（宽仍是 64，加高无效） |
+| 66×64 | ❌ 失败 |
+| **68×64** / 70×64 / 96×64 / 104×64 | ✅ 成功 |
+| 128×16 / 128×32 / 128×48 / 160×32 / 256×16 | ✅ 成功（高 16 也能过） |
+| 127×64 | ❌ 但错误不同：`src, Error yuv not aligned`（奇数宽） |
+
+→ 判据：**矩形宽度 ≥ 68 且偶数对齐，高度无此下限**；**面积不是判据**（`256×16` 面积 4096 成功，`64×64` 面积同为 4096 却失败）。
+
+- 记账与资源（每轮末尾）：
+  - `group usage after put` 恒等于本轮申请字节总量（`4,500,992` / `5,043,072` / `5,083,136`），`group cleared` 正常返回
+  - fd 不泄漏：RGA 侧只 import 不 close（fd 归 MPP），`mpp_buffer_put` 后随缓冲回收；RGA 句柄必须 `releasebuffer_handle`
+  - 前提是所有 RGA 调用同步完成（`imresize` / `imcopy` 默认 `sync=1`；`improcess` 传 `IM_SYNC`），因此 `mpp_buffer_put` / `FrameMemDeinit()` 之前 job 一定已结束
+- 结论：
+  - ✅ **MPP DRM 缓冲可直传 RGA**，路径固定为 `mpp_buffer_get_fd(native)` → `importbuffer_fd()` → `wrapbuffer_handle()`，**不需要物理地址、不需要 CPU VA、不需要 cache flush**（DRM 映射非 cacheable，CPU 写完硬件立即可见）
+  - ✅ 可落到 `src/platform` 的能力：格式转换、缩放、裁剪、裁剪 + 缩放、纯拷贝粘贴（宽 ≥ 68 且偶数）
+  - ⚠️ **叠字暂不走 RGA**：混合能提交但输出值不符 alpha 语义（上表），未标定不能上产品；现有 CPU 叠字（`OsdRenderer` → `FrameDrawer::blit` 直接写 `data[]`，即 DRM 映射的 VA）**零改动可用**
+  - 封装必须内置回退：矩形宽 < 68 就走 CPU。否则驱动只回一句笼统的 `Invalid argument`，极易被误判成"内存 / cache 问题"而白查半天
+  - 同一块缓冲可串行复用（CPU 叠字 → RGA 缩放 → VPU 编码），每步同步返回后再交接
+- 未做 / 受限（明确不在本次范围）：
+  - 混合的通道顺序与 alpha 语义**未标定**（需系统写单通道纯色再回读）；`imosd()` / `imcolorkey()` 未测
+  - 未测性能：单次耗时、带宽占用、与 VPU/CPU 的争用
+  - 非 rk3588 未验证（`FrameMem` 在那条分支仍走 `new[]`，RGA 无从 import）
+  - 编码器零拷贝（`mpp_frame_set_buffer`，去掉 `rk_mpp_encoder.cpp` 的两段 `memcpy`）属后续任务，本次**未改一行仓库代码**
+  - 探针文件留在 `/tmp`，不进 git
 
 ---
 
