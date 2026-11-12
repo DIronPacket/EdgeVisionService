@@ -109,14 +109,18 @@ run-sh:
 	fi
 
 # ------------------------------------------------------------------ 测试
-# scripts/tests 下的 T1/T2/T3/T5 验收脚本逐个跑，任一失败即停
+# ⚠ 已知不一致：scripts/tests/run_t*.sh 内部写死 build/（-B build、--build build、
+#   -L build/lib、./build/bin/xxx），与默认 BUILD=out 不同；统一路径属待办
+#   （见 docs/TESTLOG.md §5.18「未做/受限」）。因此 test 会操作 build/。
 test: build
+	@echo "⚠ 验收脚本写死 build/（非 $(BUILD)/），见 docs/TESTLOG.md §5.18 未做项"
 	@set -e; for s in scripts/tests/run_t*.sh; do \
 		echo "=== $$s ==="; \
 		bash "$$s"; \
 	done
 
 test-t5: build
+	@echo "⚠ 同上：run_t5_builder.sh 写死 build/，且需先取消 add_subdirectory(test) 注释"
 	@./scripts/tests/run_t5_builder.sh config/node.json
 
 # ------------------------------------------------------------------ 信息

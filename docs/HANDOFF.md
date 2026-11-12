@@ -159,6 +159,7 @@ EdgeVisionService/
 | ✅ 冒烟 | `make run` → `EdgeVisionService start`；等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService` |
 | ⚠️ 历史 `build/` | 缓存 `CMAKE_HOME_DIRECTORY` 仍指向本机（可复用但不再默认）；`build/bin/testnode`、`test_builder` 等是旧产物，`src/main/CMakeLists.txt` 的 `add_subdirectory(test)` 当前为注释状态 |
 | ❗ `run.sh` 不再必需 | 它做的就是「`cd` 到构建目录 + 导出 `LD_LIBRARY_PATH` + `exec bin/$@`」；`make run` / `make run-node` 已内联同样逻辑，**删掉构建目录也不会失效** |
+| ⚠️ 验收脚本仍写死 `build/` | `scripts/tests/run_t*.sh` 里是 `-B build` / `--build build` / `-L build/lib` / `./build/bin/test_builder`，与默认 `out/` 不一致；`make test` / `make test-t5` 会先打印提醒。统一路径属待办（TESTLOG §5.18） |
 
 `out/run.sh`（可选，等价 `make run`；想手写时照此建）：
 

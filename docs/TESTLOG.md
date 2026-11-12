@@ -666,6 +666,7 @@
   - 清理后核对 `pgrep -af bin/EdgeVisionService` 为空 + `ss -ltnp | grep 8550` 为空
 - 未做 / 受限：
   - `testnode` / `test_builder` 未构建：`src/main/CMakeLists.txt:20` 的 `# add_subdirectory(test)` 当前为注释（用户有意关闭）；`make run-node` 会给出提示并退出 1
+  - **验收脚本路径未统一**：`scripts/tests/run_t{1,2,3,5}*.sh` 内写死 `build/`（`-B build` / `--build build` / `-L build/lib` / `./build/bin/test_builder`），与默认 `out/` 不一致；本次**未改脚本**（超出本任务范围，且 `test/` 目录已按用户要求注释），`make test` / `make test-t5` 只打印提醒。统一路径待后续任务
   - x86 未验证（P0-1 既有失败）
 
 ---
