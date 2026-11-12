@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与远程同步（无未推送提交）· 本文**代码**校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；前一校准点 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 走 `owned_mem` + `~FrameBuffer(){Release();}` 且禁拷贝，`MemMeta` 槽位经虚析构自动销毁；再前 `114c94d` = P0-14 采集写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`；再前 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 与远程同步（`45a070c`）· 工作树有用户未提交改动（`src/main/*`、`config/*`）· 本文**代码**校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）；前一校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；再前 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口；再前 `114c94d` = P0-14；`c557d89` = P0-13；`eac4bb0` = T7 + P0-2；`29ab58b` = T6） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录） |
 | 冒烟运行 | `make run` → 期望 `EdgeVisionService start`（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`） |
