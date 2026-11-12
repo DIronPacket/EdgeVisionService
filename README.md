@@ -3,6 +3,7 @@
 > 边缘视觉服务原型：**配置驱动装配 → 采集 → 统一内存池 → 节点流水线 → 硬件/软件编码 → RTSP 推流**。
 > 主平台 RK3588（MPP / V4L2 / RGA），x86_64（FFmpeg）作为开发调试目标。
 > 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；P0 共 14 项、已修 10 项（最近一批 2026-11-10：P0-9 池块泄漏 · P0-11 `MemMeta` 槽位泄漏 · P0-10 `FrameBuffer` RAII），剩 P0-1 / P0-8 / P0-10 残余（`capacity` 语义）。详细现状见 [docs/STATUS.md](docs/STATUS.md)。
+> **下一步演进（规划，未落地）**：单进程 → **媒体 / 通信 / 升级 三进程 + 共享通信对象 `libcomm_api`**，设计见 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)。
 
 ## 目录
 
@@ -34,6 +35,7 @@
 - 池块按 `width*height*3` 分配（1080p NV12 实需 2.97 MB、实给 6.22 MB，约 2× 过分配，P0-10 残余），且池块数 / 队列深度仍硬编码为 `MemInit(50)` / 队列 20（**T10a**）。
 - RGA 预处理、OSD、录像、统一日志 / 指标 / 健康检查均未落地；媒体服务仍由 `PushNode` 内部启停（**T4** 才上提到 `MediaServer`）。
 - x86 本机构建仍会失败（`install/x86_64` 为空，P0-1）；FFmpeg 软编/软解未完成。
+- **仍是单进程**：媒体 / 通信 / 升级尚未拆分，进程间也没有消息总线。三进程 + 共享 MQTT 通信对象（`libcomm_api`）的目录结构、分层决策、接口草案与 4 步落地顺序已写成 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)，**代码未动**。
 
 > 模块完成度、P0–P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)；多链路的决策与任务清单见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md)。
 
@@ -77,6 +79,8 @@ PipelineBuilder ──── 拓扑校验(R1–R5) → NodeFactory 造节点 →
 | ZLMediaKit（`libmk_api.so`） | 同上 | 同上 |
 | RGA | 同上 | 同上（代码尚未使用） |
 | FreeType（**可选**，OSD 矢量字体） | 系统库或 `install/<platform>` | 未提供。默认 `BUILD_FREETYPE_OSD=OFF`，OSD 只用内置点阵字体（`.evsfont`） |
+| OpenSSL 3.5.4（**规划中**，通信/升级的 TLS） | `install/<platform>/{include/openssl,lib}` | 已就地源码构建安装：`libssl.so.3`、`libcrypto.so.3`、`libssl.a`、`libcrypto.a`、`lib/cmake/OpenSSL`、`lib/ossl-modules`、142 个 `include/openssl/*.h`。**无 `openssl.pc`**（集成只能用 `find_package(OpenSSL)` + `OPENSSL_ROOT_DIR`）。不入库 |
+| mosquitto 2.0.22（**规划中**，进程间消息总线） | 同上（`sbin/mosquitto` = broker，`lib/libmosquitto.so.1` = 客户端） | 已源码构建安装（`WITH_TLS=ON`、`DOCUMENTATION=OFF`）：`bin/{mosquitto_pub,sub,rr,passwd}`、`lib/pkgconfig/libmosquitto.pc`、`etc/mosquitto`。不入库；**当前媒体链路不链接它** |
 | 交叉工具链（**可选**） | `cmake/rk3588.toolchain.cmake` | 路径需按本机实际安装修改 |
 
 > ⚠️ `install/`、`3rdparty/`、`out/`（构建产物）、`build/`（历史构建目录）全在 `.gitignore` 里且**从未提交过**（`git ls-files install` 输出为空）。clone 下来是纯源码，必须自己把依赖树放到 `install/rk3588/`，否则 `cmake -S . -B out` 会在 `find_package(FFMPEG)` 处直接失败。
@@ -96,6 +100,7 @@ make                       # 首次自动 configure，之后增量；= cmake -S 
 | `EdgeVisionService` | `src/main/main.cpp` | 空壳，只打印一行（冒烟用，`make run`） |
 | `testnode` | `src/main/test/main_node.cpp` | **真实主链路**：配置 → builder → SIGINT 优雅退出；⚠ **当前未启用**——`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 处于注释状态 |
 | `test_builder` | `scripts/tests/t5_builder.cpp` | T5 装配自检（只 build 不 start，不碰硬件）；与 `testnode` 同属被注释的 `test/` 子目录 |
+| `evs_media` / `evs_comm` / `evs_upgrade` | `src/media/` · `src/comm/` · `src/upgrade/` | **规划中，尚未创建**：三进程拆分的产物名（见 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md) §2 / §7） |
 
 `out/bin/` 只会出现上面启用的目标。历史 `build/bin/` 里的 `testnode` / `test_builder` / `test_encoder` / `test_pushStream` / `test_decoder` / `testpool` 都是旧产物（`add_subdirectory(test)` 现已注释），**别用、别当基线**。
 
@@ -202,6 +207,7 @@ timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EX
 | RTSP 推流 | 🟡 65% | 单路可演示；P0-6 / P0-7 已修（T1）；多路并存与"停一路不影响其他路"待 T4 |
 | 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
 | 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
+| 进程模型（三进程） | 🔴 规划中 | 当前单进程（`testnode`）。媒体 / 通信 / 升级拆分 + 共享 `libcomm_api` 已出设计，**代码未落地**（[docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)） |
 
 > P0 共 14 项：**已修 10 项**（P0-2 / 3 / 4 / 6 / 7 / 9 / 11 / 12 / 13 / 14）、**核实假阳性 1 项**（P0-5 引用计数）、**剩 3 项**（P0-1 x86 缺依赖 · P0-8 解码器往栈上 `FrameBuffer` 写 · P0-10 残余 `capacity` 语义）。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
 
@@ -213,7 +219,7 @@ timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EX
 | --- | --- | --- |
 | **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ · T7 ✅ → **下一个 T7b**（循环 + 缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
 | **M2**（P1） | 多路真正稳定 | T9 扇出拓扑 / 多下游用例 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
-| **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进评估 |
+| **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进 → **设计已出**：[docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)（媒体 / 通信 / 升级 + `libcomm_api`，分 4 步落地） |
 
 M1 的三条硬验收（当前**未**全部满足）：
 
@@ -232,6 +238,7 @@ M1 的三条硬验收（当前**未**全部满足）：
 | 当前架构、目录、数据流、内存/线程模型、平台接口 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 模块完成度、已实现/占位、P0–P2、优化建议 | [docs/STATUS.md](docs/STATUS.md) |
 | 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md) |
+| **三进程拆分（媒体 / 通信 / 升级）+ 进程间通信对象 `libcomm_api` 的设计与落地顺序** | [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)（状态：**规划**；含目录结构、分层决策、`MqttClient` 接口草案、topic 命名、依赖现状、4 步落地） |
 | **测试怎么做、某条"已通过"当初怎么验的** | **[docs/TESTLOG.md](docs/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
 | **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/BUG_CASES.md](docs/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
 | **某条命令怎么敲、怎么看内存、怎么写一次性探针** | **[docs/COMMANDS.md](docs/COMMANDS.md)**（分类命令手册：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 踩坑表，均带实测输出） |
@@ -263,4 +270,4 @@ M1 的三条硬验收（当前**未**全部满足）：
 
 ---
 
-最后更新：2026-11-10；适用分支：`rk3588`；代码校准点：`15cf975`（P0-9 / P0-11 修复 + P0-10 `FrameBuffer` RAII 收口）。
+最后更新：2026-11-12；适用分支：`rk3588`；代码校准点：`ee046a3`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + P1-2 提示）；文档校准点：`af4b0b3`（新增三进程拆分设计）。
