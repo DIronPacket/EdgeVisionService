@@ -79,28 +79,27 @@ PipelineBuilder ──── 拓扑校验(R1–R5) → NodeFactory 造节点 →
 | FreeType（**可选**，OSD 矢量字体） | 系统库或 `install/<platform>` | 未提供。默认 `BUILD_FREETYPE_OSD=OFF`，OSD 只用内置点阵字体（`.evsfont`） |
 | 交叉工具链（**可选**） | `cmake/rk3588.toolchain.cmake` | 路径需按本机实际安装修改 |
 
-> ⚠️ `install/`、`3rdparty/`、`build/` 全在 `.gitignore` 里且**从未提交过**（`git ls-files install` 输出为空）。clone 下来是纯源码，必须自己把依赖树放到 `install/rk3588/`，否则 `cmake -S . -B build` 会在 `find_package(FFMPEG)` 处直接失败。
+> ⚠️ `install/`、`3rdparty/`、`out/`（构建产物）、`build/`（历史构建目录）全在 `.gitignore` 里且**从未提交过**（`git ls-files install` 输出为空）。clone 下来是纯源码，必须自己把依赖树放到 `install/rk3588/`，否则 `cmake -S . -B out` 会在 `find_package(FFMPEG)` 处直接失败。
 
 ### 3.2 板端本机构建（aarch64，当前默认路径 · 已实测）
 
 在 RK3588 板子上直接编——这是本项目的日常路径：`aarch64` 会被自动识别成 `TARGET_PLATFORM=rk3588`，不需要工具链文件。
 
 ```bash
-cmake -S . -B build
-cmake --build build -j"$(nproc)"
+make                       # 首次自动 configure，之后增量；= cmake -S . -B out && cmake --build out -j"$(nproc)"
 ```
 
-产物在 `build/lib/*.so` 与 `build/bin/`。当前**启用**的可执行目标只有三个：
+顶层 `Makefile` 只是**薄包装**（不含源码/依赖规则，全部规则仍在 CMake）；默认构建目录 **`out/`**（`make BUILD=xxx` 可覆盖，`JOBS`/`CMAKE_FLAGS` 亦可）。产物在 `out/lib/*.so` 与 `out/bin/`。当前**启用**的可执行目标：
 
 | 目标 | 源码 | 说明 |
 | --- | --- | --- |
-| `EdgeVisionService` | `src/main/main.cpp` | 空壳，只打印一行（冒烟用） |
-| `testnode` | `src/main/test/main_node.cpp` | **真实主链路**：配置 → builder → SIGINT 优雅退出 |
-| `test_builder` | `scripts/tests/t5_builder.cpp` | T5 装配自检（只 build 不 start，不碰硬件） |
+| `EdgeVisionService` | `src/main/main.cpp` | 空壳，只打印一行（冒烟用，`make run`） |
+| `testnode` | `src/main/test/main_node.cpp` | **真实主链路**：配置 → builder → SIGINT 优雅退出；⚠ **当前未启用**——`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 处于注释状态 |
+| `test_builder` | `scripts/tests/t5_builder.cpp` | T5 装配自检（只 build 不 start，不碰硬件）；与 `testnode` 同属被注释的 `test/` 子目录 |
 
-`build/bin/` 里若还有 `test_encoder` / `test_pushStream` / `test_decoder` / `testpool`，那是旧产物：对应源码在 `src/main/test/CMakeLists.txt` 中已注释或与当前 API 不符，**别用**。
+`out/bin/` 只会出现上面启用的目标。历史 `build/bin/` 里的 `testnode` / `test_builder` / `test_encoder` / `test_pushStream` / `test_decoder` / `testpool` 都是旧产物（`add_subdirectory(test)` 现已注释），**别用、别当基线**。
 
-> 是否要 `rm -rf build`：先看 `build/CMakeCache.txt` 里的 `CMAKE_HOME_DIRECTORY` 是否等于本机源码路径；一致就可以直接复用。
+> 清理方式：`make clean`（只清编译目标，保留手写 `run.sh`）/ `make distclean FORCE=1`（删整个 `out/`）。若想复用历史 `build/`，先看 `build/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 是否等于本机源码路径。
 
 ### 3.3 RK3588 交叉编译（可选，非当前路径）
 
@@ -127,23 +126,22 @@ cmake -S . -B build-x86
 ### 3.5 运行与优雅退出
 
 ```bash
-# 方式一：板端自带的便利脚本（build/run.sh 不入库，删掉 build/ 后需自建，见 docs/HANDOFF.md §1.5）
-./build/run.sh testnode
+# 冒烟（最快的一条）
+make run                        # = cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService
 
-# 方式二：不依赖 run.sh 的等价写法
-export LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
-./build/bin/testnode "$PWD/config/node.json"
+# 真实主链路（⚠ testnode 当前未启用：src/main/CMakeLists.txt 的 # add_subdirectory(test) 为注释）
+make run-node                   # 需要先取消上面那行注释 → make reconfigure && make
 ```
 
-`run.sh` 会 `cd` 到 `build/`、导出 `LD_LIBRARY_PATH`，然后 `exec bin/<name> "$@"`——因为用了 `exec`，终端的 `Ctrl+C` 直接送到二进制。
+`make run` / `make run-node` 做的就是 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 运行 `bin/<目标>`；历史 `build/run.sh` 是同一套路（`exec` 让 `Ctrl+C` 直达二进制），已不再必需（见 docs/HANDOFF.md §1.5）。
 
-**读哪份配置**（`NodeConfigManager::load_with_fallback`；候选路径相对当前工作目录，而 `run.sh` 的 cwd 是 `build/`）：
+**读哪份配置**（`NodeConfigManager::load_with_fallback`；候选路径相对当前工作目录，而 `make run-node` 的 cwd 是 `out/`）：
 
 | 命令 | 实际读到 | 跑几条链 |
 | --- | --- | --- |
-| `./build/run.sh testnode` | 依次试 `config/node.json`、`../config/node.json` → 命中后者 | **4 条**（v1 `config/node.json`） |
-| `./build/run.sh testnode ../config/push.json` | `argv[1]` 显式指定，只认它 | **1 条**（v0 单链路） |
-| `./build/run.sh testnode /abs/path/node.json` | 绝对路径 | 按该配置 |
+| `make run-node`（默认 `CFG=../config/node.json`） | `argv[1]` 显式传入的 `../config/node.json` | **4 条**（v1 `config/node.json`） |
+| `make run-node CFG=config/push.json` | 同上（相对 `out/` 解析） | **1 条**（v0 单链路） |
+| `make run-node CFG=/abs/path/node.json` | 绝对路径 | 按该配置 |
 
 **期望输出**（4 路配置，实测）：
 
@@ -171,7 +169,7 @@ export LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
 自动化 / 长跑验证用 `timeout` 代替手按 Ctrl+C：
 
 ```bash
-timeout --preserve-status -s INT 12 ./build/run.sh testnode ../config/push.json; echo "EXIT=$?"
+timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EXIT=$?"
 ```
 
 播放：`ffplay rtsp://<板端IP>:8550/live/ch0`（`stream` 每路不同：`ch0`~`ch3`）。只调采集不推流时，把配置里的 `push.enable` 设为 `false`。
@@ -251,7 +249,7 @@ M1 的三条硬验收（当前**未**全部满足）：
 3. **取块必有释放**：`acquire()` / `getBlock()` 之后，所有失败分支都必须 `release()`，否则池子会被几帧内耗干。
 4. **`FrameBuffer` 不可拷贝**：它已改为 RAII（`owned_mem` + 析构 `Release()`，拷贝/赋值 `= delete`）——要共享块只能传指针，别写按值传参或赋值（P0-10，[docs/TESTLOG.md](docs/TESTLOG.md) §5.15）。
 5. **改了代码/配置必须留测试记录**：按 [docs/TESTLOG.md](docs/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
-6. **不提交** `build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
+6. **不提交** `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
 
 **写法约定**
 

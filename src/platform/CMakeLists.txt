@@ -11,6 +11,11 @@ INTERFACE
 option(BUILD_SOURCE_MODULE "Build platform 采集模块" ON)
 option(BUILD_DECODER_MODULE "Build platform 解码模块" ON)
 option(BUILD_ENCODER_MODULE "Build platform 编码模块" ON)
+# 推流模块：必须声明，否则新建构建目录时该开关默认假 → rtsp target 不加入 →
+# pipeline 的 moudle_push / moudle_vi 拿不到 ZLM/FFmpeg 头路径而编译失败。
+# 历史坑：旧 build/ 的 CMakeCache.txt 里手工设过 BUILD_RTSP_MODULE=ON，
+# 把这个问题掩盖了很久；换构建目录（如 out/）必现。详见 docs/TESTLOG.md §5.18。
+option(BUILD_RTSP_MODULE "Build platform 推流模块（ZLMediaKit）" ON)
 
 # ========== 采集模块：直接 add_subdirectory(capture)，不再套source层 ==========
 if(BUILD_SOURCE_MODULE)

@@ -82,6 +82,7 @@
 | 2026-11-11 | 新增 `docs/INTERVIEW.md`（面试问答手册）+ 5 处入口同步 | 文档自检脚本：`lines=581`、代码围栏 `4`（成对闭合）、TOC `17` 条锚点全部可解析（`bad=[]`）、`58` 处 `文件:行` 引用全部落在真实文件行号范围内（`bad=[]`）、相对链接 `BUG_CASES.md` / `TESTLOG.md` 均存在；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 纯文档（无代码变更） |
 | 2026-11-11 | 帧内存分配切到 MPP DRM 缓冲（`FrameBuffer::Allocate()` 不再 `new[]`） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` → `CONFIG_RC=0` / `BUILD_RC=0`、warning 0、configure 打印 `frame mem: MPP DRM buffer (...)`；仓库外探针 `/tmp/mpp_pool_probe 2 2` → `[FrameMem] backend: MPP DRM buffer group`、组内记账 `12441600 B`（=2×6220800）、`data[1]-data[0]=2073600`（=`stride*h`）、写满 3,110,400 B 首/末字节回读正确、`FreeMem` 后记账归零、`fds 11→11`（两轮 delta 0）；`/tmp/mpp_rss_probe 50` → 记账 296 MB → `FreeMem` 后归零、`mallinfo2.uordblks=241 kB`；四路 `testnode` 拉流解码统计 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 `126.6±10.9 / 128.2±1.7`，与 §5.11 基线一致）、ch0 `U=127.3±7.1 / V=129.8±6.7`、`hal_h265e` 报错 **0** 次、29.18 / 23.94 / 23.94 / 23.78fps、`FreeMem: 释放 50 块 / 100 个槽位`、`EXIT=0`；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.16） | ✅ 通过（帧内存改走 DMA 缓冲，画面与 fps 零回归；编码前 `memcpy` 未动） |
 | 2026-11-11 | 探针实测：池块 MPP DRM 缓冲能否直传 RGA（缩放 / 格式转换 / 裁剪 / 粘贴 / 叠字） | 5 个仓库外探针（`/tmp/rga_probe{,2,3,4,5}.cpp`）`g++ -std=c++14 -O2 -I 3rdparty/rk3588/librga-1.9.1/include ... -lrockchip_mpp -lrga` → 全部 `EXIT=0`；`mpp_buffer_get_fd` + `importbuffer_fd` 通；`imcopy` 两帧 3,110,400 B **不一致数 0**；`imcvtcolor` NV12→RGB888 首/末像素 `(55,55,56)`（BT.601 limited）；`imresize` 1080p→720p 后 Y `min=max=64`；`imcrop`(100,50,640,480) 首/末点 `150/150`、`244/244`；crop+scale 640×360→320×180 通过；paste 64×32 **被拒**，阈值扫描：宽 `64`/`66` 失败、`68` 起成功（高度无下限，16 高可过）；`imblend`/`improcess` 混合可提交但像素语义不符（`Y(0,0)=205` 期望 ~70、`UV=(110,25)` 期望 ~(109,184)）；每轮 `group usage after put` 记账与申请字节一致 + `group cleared` + 无 fd 泄漏（见 5.17） | ⚠️ 部分通过：cvt / resize / crop / crop+scale / paste（宽 ≥ 68）可用；blend 需标定，叠字暂走 CPU |
+| 2026-11-12 | 顶层 `Makefile` + 默认构建目录 `build/` → `out/`（并修 P1-2） | `make` → `[100%] Built target EdgeVisionService`、`grep -cE 'error:|Error [0-9]'` = **0**；`out/lib` 6 个 `.so`（含 `librtsp.so`）+ `out/bin/EdgeVisionService`；`make help` / `make info` `RC=0`；`make distclean`（无 `FORCE=1`）`RC=1` 拒绝执行；`make run` → 4 条链路启动、3 路 mp4 出帧 23.7–24.0fps、`*:8550` 监听（见 5.18） | ✅ 构建 + 运行通过（`testnode` 未参与构建，属用户有意关闭） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -634,6 +635,38 @@
   - 非 rk3588 未验证（`FrameMem` 在那条分支仍走 `new[]`，RGA 无从 import）
   - 编码器零拷贝（`mpp_frame_set_buffer`，去掉 `rk_mpp_encoder.cpp` 的两段 `memcpy`）属后续任务，本次**未改一行仓库代码**
   - 探针文件留在 `/tmp`，不进 git
+
+---
+
+### 5.18 L2 · 顶层 `Makefile` 薄包装 + 默认构建目录 `build/` → `out/`（2026-11-12）
+
+- 代码基线：`rk3588 @ 12f5480` + 工作树（`Makefile` / `.gitignore` / `src/platform/CMakeLists.txt` 未提交；`src/main/*` 另有用户改动，未纳入本次提交）
+- 目标：给 CMake 加一层薄包装（**规则仍全在 CMake**，Makefile 只转发），默认构建目录从 `build/` 换成 `out/`
+- 命令：
+  ```bash
+  make help          # 列出 target 与可覆盖变量
+  make info          # BUILD/JOBS/CMAKE/PLATFORM + 是否已 configure + out/{bin,lib} 内容
+  make distclean     # 未加 FORCE=1 → 期望拒绝
+  make reconfigure && make
+  make run
+  ```
+- 结果摘要：
+  - `make` 首次全量 → `[100%] Built target EdgeVisionService`，`grep -cE 'error:|Error [0-9]'` = **0**
+  - `out/lib`：`libcapture.so` `libcommon_api.so` `libdecoder.so` `libencoder.so` `libpipeline_api.so` **`librtsp.so`**；`out/bin/EdgeVisionService`
+  - `make help` / `make info` → `RC=0`；`make distclean`（无 `FORCE=1`）→ `RC=1` 拒绝，`out/` 未被创建
+  - `make run` → 加载 `../config/node.json`（4 条链）、`*:8550` 监听、3 路 mp4 实测 23.72–24.04fps；`vi0`（`/dev/video0`）打不开但**其余链照常出帧**（P0-2 已修的既有行为），进程需 `SIGINT` 退出
+- **踩坑（P1-2 被换目录当场触发）**：
+  - 现象：`out/` 首次编译在 `src/pipeline/moudle_push/moudle_push.cpp` 报 `zlm_push_server.h: No such file or directory`，`moudle_vi.h` 报 `libavformat/avformat.h: No such file or directory`；而同一份源码在 `build/` 下一直编得过
+  - 定位：比较新旧 `src/pipeline/CMakeFiles/pipeline_api.dir/flags.make` 的 `-I` 列表 → 旧 `build/` 多 `-Iinstall/rk3588/include` 与 `-Isrc/platform/rtsp`；再比 `CMakeCache.txt` → 旧缓存有 `BUILD_RTSP_MODULE:BOOL=ON`，新目录**完全没有这个键**
+  - 根因：`BUILD_RTSP_MODULE` 只在 `src/platform/CMakeLists.txt:34` 被读，**从未 `option()` 声明**（同文件另外三个开关都声明了，属遗漏）→ 新目录里它是空值 → `rtsp` target 不加入 → `platform_api` 少 `INTERFACE` 链 `rtsp` → pipeline 丢掉 `rtsp` 的 `PUBLIC ${ZLM_INCLUDE_DIRS}`（= `install/rk3588/include`，而它同时是 FFmpeg 与 ZLM 头的唯一来源）
+  - 修复：`src/platform/CMakeLists.txt` 补 `option(BUILD_RTSP_MODULE "..." ON)`；HANDOFF §1.4 第 3 条与 STATUS §4.2 P1-2 同步标已修
+  - 为什么难发现：旧 `build/CMakeCache.txt` 里那条手工缓存值把缺陷掩盖了；文档甚至把"新目录不编 rtsp"写成旁注，没当成**必现故障**
+- 操作注意（非交互验证）：
+  - `make run` 内部是 `sh -c 'cd out && ...'`，外部用 `pkill -INT -f bin/EdgeVisionService` 只命中 `sh`，**不会转发给子进程**；要给真实 PID 发 `kill -INT <pid>`（交互式终端按 `Ctrl+C` 是发给整个前台进程组，没有这个问题）
+  - 清理后核对 `pgrep -af bin/EdgeVisionService` 为空 + `ss -ltnp | grep 8550` 为空
+- 未做 / 受限：
+  - `testnode` / `test_builder` 未构建：`src/main/CMakeLists.txt:20` 的 `# add_subdirectory(test)` 当前为注释（用户有意关闭）；`make run-node` 会给出提示并退出 1
+  - x86 未验证（P0-1 既有失败）
 
 ---
 

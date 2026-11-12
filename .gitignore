@@ -1,4 +1,5 @@
-# 编译产物
+# 编译产物（CMake 构建目录：默认 out/，历史遗留 build/ 也仍忽略）
+out/
 build/
 install/
 bin/

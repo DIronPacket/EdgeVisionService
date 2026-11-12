@@ -60,22 +60,25 @@ cmd; echo "RC=$?"
 ## 1. 构建
 
 ```bash
-cmake -S . -B build                                  # 只配置（首次 / 改了 CMakeLists 后）
-cmake --build build -j"$(nproc)"                     # 增量全量编译，8 核约 1 分钟
-cmake --build build -j8 2>&1 | tail -2               # 只看结果尾（✅ 实测：[100%] Built target testnode）
-cmake --build build --target testnode                # 只编主链路可执行
+make                                   # ✅ 首选：= cmake -S . -B out + cmake --build out -j"$(nproc)"
+make -j8 2>&1 | tail -2                # 只看结果尾（✅ 实测 2026-11-12：[100%] Built target EdgeVisionService）
+make configure                         # 只配置（首次 / 改了 CMakeLists 后）
+make reconfigure                       # 强制重跑 configure（新增 option / 清了缓存后）
+make rebuild                           # clean 后全量重编（保留手写 run.sh）
+cmake --build out --target EdgeVisionService   # 只编某个目标（规则仍由 CMake 定义）
 ```
 
-**作用**：配置 → 编译。
-**为什么**：`-S . -B build` 是现代写法，等价旧 `mkdir build && cd build && cmake ..`；产物在 `build/bin`、`build/lib`。
+**作用**：`make` → configure（首次自动）→ 编译。
+**为什么**：顶层 `Makefile` 是**薄包装**，源码/依赖规则全在 CMake；默认构建目录 **`out/`**（`BUILD=` 可覆盖）。等价手写 `cmake -S . -B out && cmake --build out -j"$(nproc)"`；产物在 `out/bin`、`out/lib`。
 
 **清干净重建（慎用）**
 
 ```bash
-rm -rf build && cmake -S . -B build && cmake --build build -j8
+make clean                             # 只清编译目标（CMake --target clean），保留手写 run.sh
+make distclean FORCE=1                 # 删整个 out/（未加 FORCE=1 时直接拒绝，防误删）
 ```
 
-⚠️ 会连 `build/run.sh` 一起删 —— 该脚本**不入库**，重建步骤见 [HANDOFF.md](HANDOFF.md) §1.5（`cd build` + 导出 `LD_LIBRARY_PATH` + `exec bin/$@`）。
+⚠️ `clean` 之所以不 `rm -rf`：构建目录里的 `run.sh` 是手写、不入库的脚本（HANDOFF §1.5），`rm -rf` 会连它一起删。彻底重来才用 `distclean FORCE=1`。
 
 **编译期反证（验证「该编不过的确实编不过」）**
 
@@ -98,35 +101,37 @@ error: use of deleted function 'FrameBuffer& FrameBuffer::operator=(const FrameB
 ### 2.1 冒烟（最快的一条）
 
 ```bash
-./build/run.sh EdgeVisionService        # ✅ 实测：EdgeVisionService start
+make run                                # ✅ 实测：EdgeVisionService start
 ```
 
 **作用**：验证「能跑起来」，不碰硬件、不起流水线。
-**为什么**：`run.sh` 会 `cd build/` + 导出 `LD_LIBRARY_PATH` + `exec bin/$@`；`exec` 保证 `Ctrl+C` 直达二进制。
+**为什么**：`make run` 会 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 运行 `bin/EdgeVisionService`，不依赖未入库的 `run.sh`。
 
 ### 2.2 真实主链路（4 路 / 单路）
 
 ```bash
-./build/run.sh testnode                                   # 自动 fallback 到 ../config/node.json（4 路）
-./build/run.sh testnode "$PWD/config/push.json"           # 显式绝对路径（1 路，避免 cwd 歧义）
+make run-node                                          # 默认 CFG=../config/node.json（4 路）
+make run-node CFG=/abs/path/config/push.json           # 显式绝对路径（1 路，避免 cwd 歧义）
 ```
 
-**为什么用绝对路径**：`run.sh` 把 cwd 改成 `build/`，相对路径会相对 `build/` 解析 —— 这是「配置读不到」的头号原因。
+⚠️ `testnode` **当前未参与构建**（`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 为注释）；`make run-node` 会提示这一点。需要时取消注释 → `make reconfigure && make`。
+
+**为什么用绝对路径**：构建目录被设为 cwd（`out/`），相对路径会相对 `out/` 解析 —— 这是「配置读不到」的头号原因。
 
 ### 2.3 定时跑 + 模拟 Ctrl+C（自动化验证用这个）
 
 ```bash
-timeout --preserve-status -s INT 10 ./build/run.sh testnode "$PWD/config/push.json"; echo "EXIT=$?"
+timeout --preserve-status -s INT 10 make run-node CFG=/abs/path/config/push.json; echo "EXIT=$?"
 ```
 
 ✅ 实测：`EXIT=0`，日志尾部有 `[main] FreeMem 完成，进程正常退出`，`pgrep testnode` 无残留。
 ⚠️ 不加 `--preserve-status` 时 `timeout` 自身返回 **124**，别当成崩溃（TESTLOG §5.15 有此备注）。
 
-### 2.4 不用 run.sh 的等价写法（排「是不是脚本的问题」）
+### 2.4 不用 make 的等价写法（排「是不是 Makefile / 脚本的问题」）
 
 ```bash
-export LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
-./build/bin/testnode "$PWD/config/node.json"
+export LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
+./out/bin/testnode "$PWD/config/node.json"
 ```
 
 
@@ -188,7 +193,7 @@ g++ -std=c++14 -g -fsanitize=address -I src/common /tmp/fb_real_probe.cpp -o /tm
 /tmp/probe_fb; echo "RC=$?"        # RC=0 且无 AddressSanitizer 输出 = 干净
 
 # valgrind（本机未安装：需要时先 sudo apt install valgrind；被调程序要带 -g 编）
-valgrind --leak-check=full --error-exitcode=1 ./build/bin/testnode "$PWD/config/push.json"
+valgrind --leak-check=full --error-exitcode=1 ./out/bin/testnode "$PWD/config/push.json"
 ```
 
 **为什么 ASAN 优先**：零配置，直接给「double-free / use-after-free / leak」的调用栈；板端也**不需要额外安装**（g++ 自带）。
@@ -212,7 +217,7 @@ grep -A6 -E 'mpp|heap' /proc/$PID/smaps | head -40      # 带 Rss/Pss 的明细
 
 ## 4. 临时探针：写文件、编译、运行（不污染仓库）
 
-**原则**：一次性验证代码放在 `/tmp`，**不进 `src/`、不进 `build/`、不进 git**。文件名要说明它证明什么，验证完把结论写进 `docs/TESTLOG.md` 并附探针路径。
+**原则**：一次性验证代码放在 `/tmp`，**不进 `src/`、不进 `out/`、不进 git**。文件名要说明它证明什么，验证完把结论写进 `docs/TESTLOG.md` 并附探针路径。
 
 ### 4.1 写一个临时源文件（heredoc，防变量展开）
 
@@ -263,13 +268,13 @@ RUN_RC=0
 
 **为什么这样能编**：`frame_buffer.h` 是纯头文件（只依赖 `<cstdint>/<iostream>/<cstddef>`）；`MemMeta.h` 也是纯头（额外 `-I src/common/MemManager`）。
 
-### 4.3 需要实现文件的探针：`-L build/lib -l<库>`
+### 4.3 需要实现文件的探针：`-L out/lib -l<库>`
 
 ```bash
 g++ -std=c++14 -g -I src/common -I src/common/MemManager \
-    /tmp/mem_probe.cpp -o /tmp/probe_mem -L build/lib -lcommon_api
+    /tmp/mem_probe.cpp -o /tmp/probe_mem -L out/lib -lcommon_api
 echo "CC_RC=$?"
-LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib" /tmp/probe_mem 2 3; echo "RUN_RC=$?"
+LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib" /tmp/probe_mem 2 3; echo "RUN_RC=$?"
 ```
 
 ✅ 实测输出（节选，证明 `MemInit/FreeMem` 无泄漏）：
@@ -281,9 +286,9 @@ RUN_RC=0
 ```
 
 **三条要点**：
-1. `-L build/lib -lcommon_api` 是**编译期**找库；`LD_LIBRARY_PATH` 是**运行期**找 `.so` —— 只做前者会 `error while loading shared libraries: libcommon_api.so`。
+1. `-L out/lib -lcommon_api` 是**编译期**找库；`LD_LIBRARY_PATH` 是**运行期**找 `.so` —— 只做前者会 `error while loading shared libraries: libcommon_api.so`。
 2. 链接顺序：源文件在前、`-l` 在后（`--as-needed` 下反了会 `undefined reference`）。
-3. 用 `$PWD` 拼绝对路径，避免 `LD_LIBRARY_PATH` 里的相对路径被解释成相对 `build/`。
+3. 用 `$PWD` 拼绝对路径，避免 `LD_LIBRARY_PATH` 里的相对路径被解释成相对 `out/`。
 
 ### 4.4 反例探针（证明「不加某约束就会崩」）
 
@@ -488,8 +493,8 @@ git --no-pager show --name-only --format='' HEAD | grep -E '^(src|cmake|config|s
 ### 7.5 红线（来自 HANDOFF §2.1，命令层面）
 
 ```bash
-# ✗ git push --force   ✗ git reset --hard   ✗ 提交 build/ install/ 3rdparty/ .vscode/
-git check-ignore -v build/bin/testnode     # 确认忽略规则生效
+# ✗ git push --force   ✗ git reset --hard   ✗ 提交 out/ build/ install/ 3rdparty/ .vscode/
+git check-ignore -v out/bin/testnode     # 确认忽略规则生效
 ```
 
 ---
@@ -524,8 +529,8 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 | `cat: /tmp/x.txt: input file is output file` | 同一个文件既当 `>` 重定向目标又当 `cat` 参数 | 先 `{ ... } > /tmp/x.txt` 落盘，**另一条命令**再 `cat` |
 | 命令退出码 1，但明明成功了 | 管道最后一环（`grep`/`tail`）的退出码 | 看 `${PIPESTATUS[0]}`，或先落盘再判 RC |
 | `timeout` 返回 124 | 没加 `--preserve-status`，`timeout` 自己超时退出 | `timeout --preserve-status -s INT 10 ...`，看程序自身 RC |
-| 配置文件读不到 | `build/run.sh` 把 cwd 改成了 `build/` | 传**绝对路径**：`"$PWD/config/node.json"` |
-| `error while loading shared libraries` | 只有 `-L`（编译期），没设运行期搜索路径 | `LD_LIBRARY_PATH="$PWD/build/lib:$PWD/install/rk3588/lib"` |
+| 配置文件读不到 | 构建目录被设为 cwd（`make run*` 与 `run.sh` 都是 `cd out/`） | 传**绝对路径**：`make run-node CFG="$PWD/config/node.json"` |
+| `error while loading shared libraries` | 只有 `-L`（编译期），没设运行期搜索路径 | `LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib"` |
 | `undefined reference to ...` | `-l` 写在源文件前面（`--as-needed`） | 源文件在前、`-lcommon_api` 在后 |
 | heredoc 里的 `$` 被吃掉 | `<<EOF` 没加引号 | 用 `<<'EOF'` |
 | `git add` 报 `pathspec ... did not match` | 路径不存在 / 已删除 | 只 add 存在的路径；删除用 `git rm` |
@@ -549,18 +554,18 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 ```bash
 cd /mnt/nvme/workspace/EdgeVisionService && \
   git status -sb && \
-  cmake --build build -j"$(nproc)" 2>&1 | tail -2 && \
-  ./build/run.sh EdgeVisionService && \
+  make -j"$(nproc)" 2>&1 | tail -2 && \
+  make run && \
   bash scripts/tests/run_t5_builder.sh | tail -1 && \
   echo "=== 全部自检结束 ==="
 ```
 
 期望：分支行无 `[ahead/behind]`、`[100%] Built target ...`、`EdgeVisionService start`、`passes=64 fails=0`。
 
-带硬件的主链路（有 `/dev/video0` 时）：
+带硬件的主链路（有 `/dev/video0` 时；`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）：
 
 ```bash
-timeout --preserve-status -s INT 20 ./build/run.sh testnode "$PWD/config/node.json"; echo "EXIT=$?"
+timeout --preserve-status -s INT 20 make run-node CFG="$PWD/config/node.json"; echo "EXIT=$?"
 pgrep testnode || echo '无残留'
 ```
 

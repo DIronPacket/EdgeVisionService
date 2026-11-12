@@ -17,10 +17,11 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
-| 最新进展（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](TESTLOG.md) |
+| 最新进展（2026-11-12，构建入口） | **新增顶层 `Makefile`（薄包装）+ 默认构建目录 `build/` → `out/`**：`make` / `make run` / `make clean`（保留手写 `run.sh`）/ `make distclean FORCE=1`；`.gitignore` 增 `out/`。换目录当场暴露 **P1-2**（`BUILD_RTSP_MODULE` 从未 `option()`，靠旧缓存掩盖）并已修 → `out/lib` 首次全量编译 0 error、含 `librtsp.so`。详见 [TESTLOG.md §5.18](TESTLOG.md)、本文附录 B |
+| RGA 实测（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](TESTLOG.md) |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与 `origin/rk3588` 同步（无未推送提交）· 本文**代码**校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）· 前一代码校准点 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 所有权、`MemMeta` 槽位自动销毁）、再前 `114c94d`（P0-14：两个采集后端写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`）、`c557d89`（P0-13 `MppEncoder` 按平面拷贝 NV12）、`eac4bb0`（T7）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
-| 构建（已实测通过） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
-| 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望输出 `EdgeVisionService start` |
+| 构建（已实测通过 2026-11-12） | **`make`**（顶层薄包装 → `cmake -S . -B out` + `cmake --build out -j"$(nproc)"`；默认构建目录 **`out/`**，`build/` 为历史目录）。等价手写：`cmake -S . -B out && cmake --build out -j"$(nproc)"` |
+| 冒烟运行 | **`make run`**（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`）→ 期望输出 `EdgeVisionService start` |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
 | 最大问题 | P0 共 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；**P0-5 于 2026-11-10 核实为非缺陷**；**P0-9 / P0-11 于 2026-11-10 修复**，同日 `FrameBuffer` 补 RAII 收口 P0-10 的 ①②；剩 3 项 = P0-1 x86 FFmpeg 路径 / P0-8 解码器写栈 / P0-10 残余（仅 `capacity` 语义）），见 [STATUS.md §4.1](STATUS.md) |
@@ -88,10 +89,10 @@
 | CMake | 3.22.1 | 顶层要求 ≥ 3.16 |
 | 编译器 | g++ 11.4.0（Ubuntu 22.04） | `CMAKE_CXX_COMPILER=/usr/bin/c++` |
 | **C++ 标准** | **C++14**（`CMakeLists.txt:4`） | **禁止**使用 C++17+ 特性（`std::any`、`if constexpr`、结构化绑定等） |
-| 库类型 | `BUILD_SHARED_MODULE=ON` → 自研模块编 `.so` | 产物统一输出到 `build/lib` 与 `build/bin` |
+| 库类型 | `BUILD_SHARED_MODULE=ON` → 自研模块编 `.so` | 产物统一输出到 `out/lib` 与 `out/bin` |
 | 依赖位置 | `install/rk3588/{include,lib}` | FFmpeg 5.x、Rockchip MPP、ZLMediaKit(`libmk_api.so`)、RGA(`librga.so`) |
 | 交叉工具链 | `cmake/rk3588.toolchain.cmake` | 路径写死 `/usr/aarch64-linux-gnu/bin/aarch64-linux-gnu-g++`，**本机不存在，当前不可用** |
-| 被忽略目录 | `build/` `install/` `3rdparty/` `bin/` `lib/` `.vscode/` `*.zip` | 见 `.gitignore`；**这些目录里的文件不属于仓库内容** |
+| 被忽略目录 | `out/` `build/`（历史） `install/` `3rdparty/` `bin/` `lib/` `.vscode/` `*.zip` | 见 `.gitignore`；**这些目录里的文件不属于仓库内容** |
 
 ## 1.4 目录与模块地图（只列真实存在的东西）
 
@@ -106,7 +107,9 @@ EdgeVisionService/
 ├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录) · BUG_CASES(bug 原理剖析 + 面试要点存档) · COMMANDS(常用命令行手册：构建/运行/看内存/探针/git) · INTERVIEW(面试问答手册：高频 20 题 / 核心 15 题 / 深入 12 题 + 内核边界 + C 语言 8 个落点)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
-├── build/                      # 构建产物（不入库，见 §1.5）
+├── out/                        # 构建产物（默认，不入库；由 make 生成）
+├── build/                      # 历史构建目录（不入库，可删；见 §1.5）
+├── Makefile                    # 顶层薄包装：只转发给 CMake，规则不由它定义
 └── src/
     ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
     ├── common/                 #                      → libcommon_api.so
@@ -140,28 +143,24 @@ EdgeVisionService/
 
 1. **`moudle_vi` / `moudle_push` / `moudle_print` 是历史拼写错误**（正确为 `module`）。重命名会牵动 CMake 与 `#include`，属于独立任务，**不要顺手改**（`moudle_print` 是后加的，为与既有目录保持一致沿用了同样的拼写）。
 2. `src/pipeline/moudle_vpss/`、`src/platform/capture/desktop_source/` 是**空目录**，git 不跟踪，重 clone 不存在。
-3. `BUILD_RTSP_MODULE` 在 `src/platform/CMakeLists.txt:34` 被使用，但**源码里从未 `option()` 定义**（P1-2）。因此：
-   - **干净配置（新 build 目录）不会编译 `rtsp`**，`zlm_push_server.cpp` 不参与构建（已实测：`/tmp` 下全新配置的目标只有 `common_api`/`capture`/`encoder`/`decoder`/`pipeline_api`/`EdgeVisionService`/`testnode`）；
-   - **但现有 `build/CMakeCache.txt` 里恰好缓存了 `BUILD_RTSP_MODULE:BOOL=ON`**，所以在 `build/` 下 `cmake --build` 会编出 `librtsp.so`。
-   → 判断"rtsp 到底编没编"要看配置来源，别被两种现象搞混；修 P1-2 时应把它改成正式的 `option(BUILD_RTSP_MODULE "..." ON)`。
+3. ✅ **P1-2 已修（2026-11-12）**：`BUILD_RTSP_MODULE` 原先在 `src/platform/CMakeLists.txt:34` 被使用却**从未 `option()` 定义**，于是新构建目录里该开关默认关 → `rtsp` 不加入 → `pipeline` 随后因缺两条 include 路径而编译失败（`rtsp` 的 `PUBLIC ${ZLM_INCLUDE_DIRS}` 是 `avformat.h` 与 `zlm_push_server.h` 唯一的传播来源）。现已补上 `option(BUILD_RTSP_MODULE "..." ON)`。
+   → 教训：**旧 `build/CMakeCache.txt` 里手工设过的值会长期掩盖这类缺陷**（`BUILD_RTSP_MODULE:BOOL=ON` 就这么来的），换构建目录（`out/`）立刻暴露。改动构建目录或新增开关后，必须重新 configure + 全量编译验证（TESTLOG §5.18）。
 4. `pipeline_api` **T5 起 `PUBLIC` 链 `common_api` + `platform_api`**（`PipelineBuilder` 要读 `NodeConfigManager`，同时拿到 `configmgr` 头路径）。2026-11-08 之前它只链 `platform_api`，`common_api` 靠可执行文件层补链（`testnode` 里手写）——那段隐式依赖已随 T5 消除，但**其它新增 target 仍应显式链 `common_api`**，别指望传递依赖。
 
 ## 1.5 构建产物现状（最容易踩坑的地方）
 
-`build/` 目录存在且**在部分情况下可直接复用**，但里面混着陈旧产物：
+`out/` 是**默认构建目录**（顶层 `Makefile` 的 `BUILD ?= out` 决定）；`build/` 是 2026-11-12 之前的历史目录，里面混着陈旧产物，**可整目录删除**（`make distclean BUILD=build FORCE=1`）。
 
 | 事实 | 说明 |
 | --- | --- |
-| `build/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` | `/mnt/nvme/workspace/EdgeVisionService`，**与本机一致，缓存仍有效**（不必盲目 `rm -rf build`） |
-| 产物架构 | `build/bin/*`、`build/lib/*` 都是 ARM aarch64 ELF，本机可直接运行 |
-| ✅ 真实可跑 | `./build/run.sh EdgeVisionService` → 输出 `EdgeVisionService start`（已实测） |
-| ✅ 构建已实测 | `cmake -S . -B build && cmake --build build -j8` 全量通过（2026-11-05，含 `rtsp` 目标，原因见 §1.4 第 3 条） |
-| ✅ 真实主链路 | `./build/run.sh testnode`（来自 `src/main/test/main_node.cpp`） |
-| ⚠️ 陈旧产物 | `build/lib/libmoudleRtsp.a`、`libmoudleRtsp.so`（10 月产物，**对应源码已删除**，勿再引用） |
-| ⚠️ 陈旧可执行 | `build/bin/test_decoder`、`test_encoder`、`test_pushStream`、`testpool`（对应源码在 `test/CMakeLists.txt` 中已注释或与当前 API 不符） |
-| ❗ `build/run.sh` 未入库 | 属于 `build/` 被忽略的内容；**删除 `build/` 后需重新创建**，否则 §2.2 的运行验证方式失效 |
+| 构建入口 | `make`（薄包装：首次自动 `cmake -S . -B out`，之后 `cmake --build out -j`）；等价手写 `cmake -S . -B out && cmake --build out -j"$(nproc)"` |
+| 产物位置 | `out/lib/*.so`、`out/bin/*`（`out/` 已在 `.gitignore`） |
+| ✅ 全量构建已实测 | `make` → `[100%] Built target EdgeVisionService`，0 error（2026-11-12，TESTLOG §5.18）；产物含 `librtsp.so`（P1-2 修好后才成立，见 §1.4 第 3 条） |
+| ✅ 冒烟 | `make run` → `EdgeVisionService start`；等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService` |
+| ⚠️ 历史 `build/` | 缓存 `CMAKE_HOME_DIRECTORY` 仍指向本机（可复用但不再默认）；`build/bin/testnode`、`test_builder` 等是旧产物，`src/main/CMakeLists.txt` 的 `add_subdirectory(test)` 当前为注释状态 |
+| ❗ `run.sh` 不再必需 | 它做的就是「`cd` 到构建目录 + 导出 `LD_LIBRARY_PATH` + `exec bin/$@`」；`make run` / `make run-node` 已内联同样逻辑，**删掉构建目录也不会失效** |
 
-`build/run.sh` 做的事（重建时照此写）：
+`out/run.sh`（可选，等价 `make run`；想手写时照此建）：
 
 ```bash
 #!/bin/bash
@@ -296,9 +295,9 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 1 | 未经任务明确要求**重命名目录 / 重构结构**（尤其 `moudle_*` → `module`） | 会牵动 CMake 与全部 `#include`，必须作为独立任务做 |
 | 2 | 使用 **C++17 及以上**特性（`std::any`、`if constexpr`、结构化绑定、`std::string_view`） | 工程标准是 C++14（`CMakeLists.txt:4`） |
 | 3 | 引入 `install/` 中**不存在**的新第三方库（OpenCV、gtest、spdlog、fmt…） | 板端依赖固定，加库等于加不可控风险；需要时先提方案 |
-| 4 | 修改 `install/`、`3rdparty/`、`build/` 里的第三方文件或旧产物 | 非仓库内容，改了下游无人知晓 |
+| 4 | 修改 `install/`、`3rdparty/`、`out/`、`build/` 里的第三方文件或旧产物 | 非仓库内容，改了下游无人知晓 |
 | 5 | `git push --force` 到 `rk3588` / `main`，或 `git reset --hard`、`git clean -xfd` | 主干历史已重写过一次，二次改写代价极高 |
-| 6 | 提交 `build/`、`install/`、`3rdparty/`、`.vscode/`（包括 `git add -f`） | 已在 `.gitignore`，属于本机资产 |
+| 6 | 提交 `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`（包括 `git add -f`） | 已在 `.gitignore`，属于本机资产 |
 | 7 | 重新引入 `src/common/media/` 一类**第二套内存池/框架** | 该试验框架已于 `e30ccb3` 彻底移除，不要再建"新框架" |
 | 8 | 做任务范围之外的"顺手修"（批量格式化、调整无关代码风格、改注释排版） | 污染 diff，让 review 与回滚失效 |
 | 9 | 在**没有实际执行构建/运行**的情况下声称"已修复/已通过" | 必须给出真实命令与输出 |
@@ -306,17 +305,18 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 ## 2.2 构建与验证规定
 
-1. **默认原生构建**（本机是 aarch64 板端，不需要交叉编译）：
+1. **默认原生构建**（本机是 aarch64 板端，不需要交叉编译），首选顶层 Makefile：
    ```bash
-   cmake -S . -B build && cmake --build build -j"$(nproc)"
+   make                                   # = cmake -S . -B out + cmake --build out -j$(nproc)
    ```
-2. **不要盲目 `rm -rf build`**：`CMakeCache` 的 `CMAKE_HOME_DIRECTORY` 与本机一致，缓存有效。只有缓存报路径错误或 CMakeLists 结构大改时才清。
-3. 改了 `CMakeLists.txt` / `cmake/Find*.cmake` 后，必须**重新执行一次 `cmake -S . -B build`**，不能只 `cmake --build`。
-4. **新建 build 目录时 `rtsp` 不会被编译**（源码没有 `option(BUILD_RTSP_MODULE)`，见 §1.4 第 3 条）。若需要编 RTSP 模块，显式传 `-DBUILD_RTSP_MODULE=ON`；修 P1-2 时要把它补成正式 option。
-5. 验证顺序固定为：**编译通过 → `./build/run.sh EdgeVisionService` → 相关 `testnode`**。
+   等价手写：`cmake -S . -B out && cmake --build out -j"$(nproc)"`。默认构建目录 **`out/`**（`build/` 是历史目录，不再使用）。
+2. **不要盲目 `rm -rf out` / `rm -rf build`**：两者缓存里的 `CMAKE_HOME_DIRECTORY` 都指向本机，未必失效。要清就 `make distclean FORCE=1`（⚠ 会删该目录下手写的 `run.sh`）。
+3. 改了 `CMakeLists.txt` / `cmake/Find*.cmake` 后，必须**重新 configure**（`make reconfigure` 或 `cmake -S . -B out`），不能只 `cmake --build`。
+4. ✅ **P1-2 已修（2026-11-12）**：`BUILD_RTSP_MODULE` 已补成正式 `option(... ON)`，新构建目录也会编 `rtsp`。若有人显式 `-DBUILD_RTSP_MODULE=OFF`，`pipeline` 会因缺 `avformat.h` / `zlm_push_server.h` 而编译失败 —— 那不是环境问题，见 §1.4 第 3 条。
+5. 验证顺序固定为：**编译通过 → `make run`（冒烟）→ 相关可执行**（`testnode` 当前未参与构建，见 §1.5）。
 6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
-8. 长跑类验证（`testnode` 现在会一直跑到收信号）一律用 `timeout -s INT 20 ./build/run.sh testnode`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）。
+8. 长跑类验证一律套 `timeout`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）：`timeout --preserve-status -s INT 20 make run-node`（`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）。
 9. **每次验证都要留痕**：跑完按 [TESTLOG.md](TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
 10. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug —— ① 现象与根因不在同一层 ② 只在特定并发/时序/内存残留下复现 ③ 涉及资源所有权、生命周期、跨组件共享状态 ④ 曾被误判过方向 —— 修完必须在 **[BUG_CASES.md](BUG_CASES.md)** 追加案例（固定顺序：现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误 / 单行空指针且无连带语义的，只在 [STATUS.md](STATUS.md) 标注。
 
@@ -349,7 +349,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 
 1. 新增源文件必须显式加入对应 `target_sources` / `add_library`。
 2. 新模块使用 `MODULE_LIB_TYPE` 变量，跟随顶层 `BUILD_SHARED_MODULE`（`common_api` 写死 `SHARED` 属于历史例外，不要扩散）。
-3. 输出目录统一走顶层全局设置（`build/lib`、`build/bin`），不要自定 `LIBRARY_OUTPUT_DIRECTORY`。
+3. 输出目录统一走顶层全局设置（`out/lib`、`out/bin`），不要自定 `LIBRARY_OUTPUT_DIRECTORY`。
 4. 新开关必须 `option(... "描述" ON/OFF)` 给默认值并写注释；**改开关要同步 README §3 与 ARCHITECTURE §3**。
 5. 依赖查找只放在 `cmake/Find*.cmake`，不在 `CMakeLists.txt` 里硬编码绝对路径。
 6. 链接关系尽量用 `PUBLIC`/`PRIVATE` 表达真实依赖，避免依赖可执行文件层"补链"（P1-1 就是这类问题，修复时一次改到位）。
@@ -360,7 +360,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 2. **提交信息格式**：`<模块>: <动词> <对象>`，模块取 `build|capture|encoder|decoder|rtsp|mem|pipeline|docs|test`，例：
    - `pipeline: 修正 read_frame 失败未归还 MemBlock`
    - `docs: 补充 HANDOFF 接手流程`
-3. **提交前必查** `git status --short`：不得出现 `build/`、`install/`、`3rdparty/`、`.vscode/` 下的文件。
+3. **提交前必查** `git status --short`：不得出现 `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/` 下的文件。
 4. **一次提交只做一件事**：代码与文档分开提交（现有两次提交就是这个粒度）。
 5. **推送前先 `git fetch origin`** 确认远程未被他人改动；本仓库 `origin` 是 SSH（`git@github.com:DIronPacket/EdgeVisionService.git`），已配 `~/.ssh/id_ed25519`。
 6. **禁止 force 推送**。历史已重写过一次；若确实必须重写，前置条件：用户明确同意 + 在本地先打备份 tag。
@@ -493,13 +493,13 @@ ls install/rk3588/lib | grep -E 'libmk_api|librockchip_mpp|libavcodec'
 ls install/rk3588/include | grep -E 'zlmediakit|ZLMediaKit|libavcodec'
 
 # 4) 构建（约 1 分钟；失败先对照 §2.2 与 STATUS P0-1）
-cmake -S . -B build >/dev/null && cmake --build build -j"$(nproc)" 2>&1 | tail -20
+make 2>&1 | tail -20
 
 # 5) 冒烟运行：期望输出 "EdgeVisionService start"
-./build/run.sh EdgeVisionService
+make run
 
-# 6) 真实主链路（有 /dev/video0 时；无设备会按 P0-2 崩溃，属已知）
-timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P0-2/P1-16）"
+# 6) 真实主链路：testnode 当前未参与构建（add_subdirectory(test) 为注释状态）；
+#    需要时取消注释 → make reconfigure && make → timeout 20 make run-node
 ```
 
 # 附录 B　变更记录
@@ -535,6 +535,7 @@ timeout 20 ./build/run.sh testnode || echo "testnode 退出码 $?（见 STATUS P
 | 2026-11-10 | **新增 `docs/COMMANDS.md`（常用命令手册）**：按「构建 / 运行与优雅退出 / 看内存 / 临时探针 / 进程·端口·线程·设备 / 自检脚本 / Git / 文档一致性体检 / 踩坑表 / 一屏自检」10 类归档本机实操命令，每条给**作用 + 为什么这么写 + 实测输出**，并标注 ✅ 实测项与日期；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 目录行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 跳读表与 `AGENTS.md` 入口清单）。实测依据：ASAN 探针 `CC_RC=0/RUN_RC=0`、`mem_probe 2 3` 每轮回落 82,080 B、`meta_probe clear() released=2`、禁拷贝反证 `CC_RC=1`、`timeout --preserve-status -s INT 10 testnode` → `EXIT=0` + `ss` 见 `*:8550` + `VmRSS=172708 kB`、`git check-ignore` 命中 `build/`；另记环境事实「`ffplay` / `valgrind` 未安装，`ffprobe` 在 `3rdparty/rk3588/ffmpeg/bin/`」 | 本次提交（纯文档，不改变代码校准点） |
 | 2026-11-11 | **新增 `docs/INTERVIEW.md`（面试问答手册）**：三档问答（高频 20 题 / 核心 15 题 / 深入 12 题）+ **§5 内核接触面**（直接：V4L2 `ioctl`+`mmap` 全时序；间接：MPP `/dev/mpp_service`、DMA 堆、ZLM epoll、procfs；并给出"不能吹的边界"对照表）+ **§6 C 语言 8 个落点**（每个给文件/行号、C 概念、练法与面试问法）+ §7 4 周准备路线 + §8 诚实清单/简历 bullet + §9 问题→代码位置速查。全部结论对齐 STATUS §4.1/§4.2、DESIGN §11、TESTLOG §5 与 BUG_CASES B1–B11；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 与 `AGENTS.md`） | 本次提交（纯文档，不改变代码校准点） |
 | 2026-11-11 | **帧内存改由 MPP DRM 缓冲提供**（新增 `common/frame_mem.{h,cpp}`；改 `common/frame_buffer.h`、`common/MemManager/MemManager.cpp`、`common/CMakeLists.txt`，其余零改动）：`FrameBuffer::Allocate()` 不再 `new[]`，改为 `pool::FrameMemAlloc()`（懒建 `MppBufferGroup(MPP_BUFFER_TYPE_DRM)` → `mpp_buffer_get` → `mpp_buffer_get_ptr`），句柄存新字段 `FrameBuffer::native`，`Release()` 对称走 `pool::FrameMemFree()`（`mpp_buffer_put`）；`MemManager::FreeMem()` 末尾加一行 `pool::FrameMemDeinit()`（`group_clear` + `group_put`），因为 `mpp_buffer_put` 只把缓冲挂回组的 unused 链表、不还系统。MPP 头只在 `frame_mem.cpp` 里（`EVS_FRAME_MEM_MPP` 宏隔离），**x86 / 离线探针仍走 `new[]`，`FrameBuffer` 的字段、`BindMemory()`、RAII、禁拷贝全未动**。依赖面：`common_api` 从此 `find_package(MPP REQUIRED)` 并 `PUBLIC` 链 `librockchip_mpp`（仅 rk3588 分支）。验证：`BUILD_RC=0` / warning 0；探针 `/tmp/mpp_pool_probe 2 2` → 记账 12,441,600 B、`data[1]-data[0]=2073600`、`FreeMem` 后归零、fd `11→11`（delta 0）；`/tmp/mpp_rss_probe 50` → 296 MB → 归零；四路 `testnode` 拉流 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 126.6±10.9 / 128.2±1.7）、`hal_h265e` 0 报错、29.18/23.94/23.94/23.78fps、`EXIT=0`；T5/T3/T2 全通过。详见 TESTLOG §5.16 | 本次提交 |
+| 2026-11-12 | **新增顶层 `Makefile`（薄包装）+ 默认构建目录改为 `out/`，并修 P1-2**：`Makefile` 只转发给 CMake（无源码/依赖规则），目标 `all`/`build` `configure` `reconfigure` `rebuild` `clean`（走 CMake `--target clean`，保留手写 `run.sh`）`distclean`（需 `FORCE=1`）`run` `run-node` `run-sh` `test` `test-t5` `info` `help`；变量 `BUILD ?= out`、`JOBS`、`CMAKE_FLAGS`、`PLATFORM`、`APP`、`NODE`、`CFG`、`ARGS` 均可覆盖；`RUN_ENV` 内联 `run.sh` 的 `LD_LIBRARY_PATH`，所以不依赖未入库脚本。`.gitignore` 增 `out/`。**换目录立刻暴露 P1-2**：`BUILD_RTSP_MODULE` 从未 `option()` 声明（旧 `build/CMakeCache.txt` 手工设过 ON 掩盖了它），新目录默认关 → `rtsp` 不加入 → `pipeline` 缺 `avformat.h` / `zlm_push_server.h` 编译失败；已在 `src/platform/CMakeLists.txt` 补 `option(BUILD_RTSP_MODULE "..." ON)`。实测：`make` → `[100%] Built target EdgeVisionService` 0 error、`out/lib` 出 6 个 `.so`（含 `librtsp.so`）；`make help` / `make info` RC=0；`make distclean` 无 `FORCE=1` 时 RC=1 拒绝执行。详见 TESTLOG §5.18 | `本次提交` |
 
 
 

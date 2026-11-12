@@ -85,7 +85,7 @@
 | # | 问题 | 位置 | 建议 |
 | --- | --- | --- | --- |
 | 1 | `pipeline_api` 未链接 `rtsp` / `common_api`，`zlm_rtsp_*` 符号无提供者 | `pipeline/CMakeLists.txt:26-29`、`moudle_push.h:6` | 显式 `target_link_libraries(pipeline_api PUBLIC common_api rtsp)` |
-| 2 | `BUILD_RTSP_MODULE` 未定义，`rtsp` 不参与构建 | `platform/CMakeLists.txt:34` | 增加 `option(BUILD_RTSP_MODULE ...)` 并默认 ON（RK 平台） |
+| 2 | ✅ 已修复（2026-11-12，随「默认构建目录改 `out/`」）：`option(BUILD_RTSP_MODULE "..." ON)` 已补，新构建目录也会编 `rtsp`。历史上它靠 `build/CMakeCache.txt` 手工值掩盖，关掉时 `pipeline` 因缺 `avformat.h` / `zlm_push_server.h` 编译失败 | `platform/CMakeLists.txt:34` | — （验证见 TESTLOG §5.18） |
 | 3 | V4L2 非阻塞 `DQBUF` 未用 `poll/select`，失败仅 `usleep(2ms)` | `v4l2_capture.cpp:163-169` | 使用 `poll()` + 超时，避免忙等与固定延迟 |
 | 4 | V4L2 输入固定 YUYV，输出宽高固定 1920×1080，忽略池块实际容量 | `v4l2_capture.cpp:67-90`、`183-192` | 用 `VIDIOC_S_FMT` 返回的实际宽高；输出前校验 `capacity/data_size` |
 | 5 | V4L2 `open()` 失败路径直接 return，未 `munmap`/`close` | `v4l2_capture.cpp:60-145` | RAII 或统一 `close()` 清理 |
@@ -113,7 +113,7 @@
 
 - `config/`、`scripts/` 为空；`docs/` 已有架构/现状/路线图三份文档，但缺少独立的构建与排错文档。
 - 日志混用 `printf`、`std::cout`、`std::cerr`，无时间戳/级别/模块名，难以定位板端问题。
-- 无单元测试与 CI；`build/` 产物与源码同仓（虽被 `.gitignore` 忽略但本地残留旧缓存）。
+- 无单元测试与 CI；`out/`（默认构建）与历史 `build/` 产物与源码同仓（均被 `.gitignore` 忽略，但本地残留旧缓存/旧产物易误用，见 HANDOFF §1.5）。
 - 命名不统一：`moudle_*`（拼写错误）、`ZlmServerStreamHandle` / `MppEncoder` 风格混用。
 - 大量注释掉的配置代码（MPP CBR/VBR/QP、安全发包等）增加阅读成本，建议移到配置或文档。
 

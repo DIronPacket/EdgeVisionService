@@ -9,8 +9,8 @@
 | --- | --- |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 工作树干净 · 与远程同步（无未推送提交）· 本文**代码**校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；前一校准点 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口：`FrameBuffer` 走 `owned_mem` + `~FrameBuffer(){Release();}` 且禁拷贝，`MemMeta` 槽位经虚析构自动销毁；再前 `114c94d` = P0-14 采集写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`；再前 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2；再前 `29ab58b` = T6 配置 → `PipelineBuilder` → SIGINT 优雅退出） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
-| 构建（已实测） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` |
-| 冒烟运行 | `./build/run.sh EdgeVisionService` → 期望 `EdgeVisionService start` |
+| 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录） |
+| 冒烟运行 | `make run` → 期望 `EdgeVisionService start`（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`） |
 | 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池（块内内存 rk3588 = MPP DRM 缓冲，`common/frame_mem.*`）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
 | P0 问题 | 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；P0-5 核实为假阳性；P0-9 / P0-11 于 2026-11-10 修复；P0-10 的「可拷贝 / 无析构」于同日 RAII 收口，**只剩 `capacity` 语义**；剩 3 项：P0-1 / P0-8 / P0-10（部分）），见 `docs/STATUS.md` §4.1 |
@@ -41,7 +41,7 @@ grep -nE '^#{1,2} ' docs/HANDOFF.md     # ~150 token，一次拿全部章节行�
 
 1. **C++14**：不用 `std::any` / `if constexpr` / 结构化绑定等 C++17+ 特性。
 2. 不引入 `install/` 中没有的新第三方库；不重命名目录（`moudle_*` 保持原样）。
-3. 不提交 `build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）。
+3. 不提交 `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）。
 4. 不 `git push --force`、不 `git reset --hard`、不碰 `main` 分支。
 5. 内存池取块（`acquire` / `getBlock`）之后，**所有失败分支都必须 `release`**。
 6. 没有实际执行编译/运行，不许声称"已修复 / 已通过"。

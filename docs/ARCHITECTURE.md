@@ -56,7 +56,7 @@ EdgeVisionService/
 │   └── main/
 │       ├── main.cpp            # 目前仅为打印入口
 │       └── test/               # testnode / testpool / 旧测试（部分未编译）
-└── build/                      # 旧构建产物（CMakeCache 仍指向 /mnt/nvme/...，已失效）
+└── out/                        # 构建产物（默认，不入库）；build/ 为历史构建目录（可删）
 ```
 
 ## 2. 总体架构
