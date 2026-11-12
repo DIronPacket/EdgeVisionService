@@ -2,6 +2,7 @@
 
 > 本文档描述 EdgeVisionService 的未来扩展计划：H.264 编码推流、RGA 预处理、OSD、录像、Ubuntu 交叉编译、Docker 容器化与 OTA。
 > 当前架构与扩展方式见 [ARCHITECTURE.md](ARCHITECTURE.md)；模块完成度与已知问题见 [STATUS.md](STATUS.md)；项目入口见 [README](../README.md)。本文档侧重目标、方案与排期。
+> **进程形态演进（单进程 → 媒体 / 通信 / 升级 三进程 + 共享通信对象）单独记录在 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)**（当前状态：规划，尚未落地）。
 > 最后更新：2026-11-04；适用分支：`rk3588`。
 
 ## 1. 背景与目标
@@ -321,6 +322,7 @@ docker run -d --name edgevision \
 | --- | --- |
 | 2026-11-04 | 初版：从原 README 第 11 章拆出，补充 WBS、排期、技术方案、验收、风险与待确认项 |
 | 2026-11-04 | 文档重构：README 精简为入口页，架构与扩展约定迁至 `ARCHITECTURE.md`，现状与问题迁至 `STATUS.md`；6 周稳定性 MVP 排期并入本文 6.1 |
+| 2026-11-12 | 新增 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)：三进程（媒体 / 通信 / 升级）+ 共享通信对象 `libcomm_api` 的拆分规划；本文头部补充指引 |
 
 > 维护约定：本路线图随优先级与板端约束调整同步更新；完成一个里程碑后，在“变更记录”中登记，并回写 [STATUS.md](STATUS.md) 的现状章节。
 

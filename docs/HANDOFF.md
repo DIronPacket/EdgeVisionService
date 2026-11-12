@@ -278,6 +278,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 转码 / 画框 / 贴图 / OSD 字符叠加（预处理） | `common/preprocess/image_preprocessor.{h,cpp}`（门面） | `frame_converter`（格式互转）、`frame_drawer`（画框/贴图/截图）、`osd_renderer` + `glyph_source`（字形）、`common/preprocess/README.md`、开关 `BUILD_FREETYPE_OSD` |
 | 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
 | 装配服务入口 | `main/test/main_node.cpp`（**T6 起是唯一真实入口**：config → `MemInit` → `build_all` → 信号 → `start_all` → `stop_all` → `FreeMem`）、`main/main.cpp`（仍是空壳） | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`、TESTLOG §5.9 |
+| 拆三进程（媒体 / 通信 / 升级）/ 加进程间通信 | `docs/DESIGN_PROCESS_SPLIT.md`（规划：目标目录、分层决策、`MqttClient` 接口草案、topic 命名、OpenSSL/mosquitto 实测现状、4 步落地顺序；**尚未落地**） | `src/CMakeLists.txt`（已预留 `# add_subdirectory(comm)`）、空目录 `src/comm`、`src/algorithm`、`install/rk3588/{sbin/mosquitto, include/mosquitto, lib/libmosquitto.so.1, lib/libssl.so.3}` |
 | 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
 | 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
 | 记测试 / 查回归结果 / 证明"已修复" | [TESTLOG.md](TESTLOG.md) | §4 是 L1 冒烟汇总表，§5 是 L2/L3 明细；写完仍按本文 §2.2 顺序验证 |
