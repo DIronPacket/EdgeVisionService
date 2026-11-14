@@ -130,12 +130,16 @@ error: use of deleted function 'FrameBuffer& FrameBuffer::operator=(const FrameB
 ### 2.1 冒烟（最快的一条）
 
 ```bash
-make run-media                                 # ✅ 实测 2026-11-14：4 路出帧；Ctrl+C 后 [main] FreeMem 完成，进程正常退出
-timeout --preserve-status -s INT 5 make run-media; echo "RC=$?"   # 自动化版，期望 RC=0
+make run-media                                                              # ✅ 实测 2026-11-14：4 路出帧；Ctrl+C 后 [main] FreeMem 完成，进程正常退出
+timeout --preserve-status -s INT 12 make run-media; echo "RC=$?"            # RC=130（见下，不是崩溃）
+timeout --preserve-status -s INT 12 scripts/run/out/start.sh; echo "RC=$?"  # ✅ RC=0（start.sh 末尾是 exec）
 ```
 
 **作用**：验证「能起来并且真的出帧」，会打开摄像头/视频文件并推 RTSP（不像旧版 `make run` 只打印一行就退出）。
-**为什么**：`make run` 现在等于真链路（兼容壳 `EdgeVisionService` 与 `evs_media` 共用同一份 `media_service`）；要区分进程用 `make run-media` / `make run-comm`。三者都会 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 跑 `bin/<目标>`，不依赖未入库的 `run.sh`。
+**为什么**：`make run` 与 `make run-media` 跑的是**同一份编排**（`evs::media::Run()`，`EdgeVisionService` 只是旧可执行名），所以输出逐行一致，只有 ZLM 日志前缀 `[evs_media]` / `[EdgeVisionService]` 不同；通信进程是另一条链路，`make run-comm` 打的是 `[comm]` 前缀，两者互不替代。三者都会 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 跑 `bin/<目标>`，不依赖未入库的 `run.sh`。
+
+★ **退出码 130 ≠ 崩溃**：`make run-*` 的配方是 `cd out && … exec bin/xxx`，Ctrl+C（以及 `timeout -s INT`）会把 SIGINT 同时送给 **make 自己**，make 被打断 → `timeout --preserve-status` 原样转出 **130**（128+2）。程序自身的返回值仍是 **0**（尾部有 `进程正常退出`）；要看程序的 rc 就用 `scripts/run/out/start.sh` 或 `(cd out && ./bin/evs_media ../config/node.json)`。
+
 
 ### 2.2 真实主链路（媒体 / 通信两个进程）
 
@@ -154,12 +158,14 @@ make run                                          # 历史兼容壳 EdgeVisionSe
 ### 2.3 定时跑 + 模拟 Ctrl+C（自动化验证用这个）
 
 ```bash
-timeout --preserve-status -s INT 10 make run-media; echo "EXIT=$?"     # ✅ 实测 EXIT=0
-timeout --preserve-status -s INT 5  make run-comm; echo "EXIT=$?"      # 通信进程（无 broker 也照常退出）
+timeout --preserve-status -s INT 12 scripts/run/out/start.sh; echo "EXIT=$?"   # ✅ 实测 EXIT=0
+timeout --preserve-status -s INT 12 make run-media;           echo "EXIT=$?"   # 实测 EXIT=130（make 被打断，见 2.1）
+timeout --preserve-status -s INT 5  make run-comm;            echo "EXIT=$?"   # 同上；无 broker 也照常停
 ```
 
-✅ 实测：`EXIT=0`，日志尾部有 `[main] FreeMem 完成，进程正常退出`，`pgrep evs_media` / `pgrep evs_comm` 无残留。
+✅ 实测：走 `start.sh` → `EXIT=0`；走 `make run-*` → `EXIT=130`（SIGINT 打到了 make）。两种方式的日志尾部都是 `[main] FreeMem 完成，进程正常退出` / `[comm] 通道已清理，进程正常退出`，`pgrep evs_media` / `pgrep evs_comm` 无残留 —— 判「程序有没有正常退出」请看日志，不要只看 130。
 ⚠️ 不加 `--preserve-status` 时 `timeout` 自身返回 **124**，别当成崩溃（TESTLOG §5.15 有此备注）。
+
 
 ### 2.4 不用 make 的等价写法（排「是不是 Makefile / 脚本的问题」）
 
@@ -615,6 +621,9 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 | RGA 只回 `RGA_BLIT fail: Invalid argument`，dump 里参数看着都对 | RGA3 不接受**矩形宽 < 68**（实测宽 64 / 66 失败、68 成功；高度无此下限，16 高可过；面积无关） | 窄条 / 小图标走 CPU 实现；别去查 cache / 物理地址 / 格式，方向错了 |
 | RGA 报 `src, Error yuv not aligned` | 矩形宽为奇数（实测 127×64），NV12 要求偶数宽 | 宽高取偶数（4 对齐更稳） |
 | `imblend` / `improcess` 返回 success，但画面颜色明显不对 | 混合的通道顺序 / alpha 语义与"ARGB8888 = A<<24\|R<<16"的假设不一致（实测 `Y(0,0)=205` 期望 ~70、`UV=(110,25)` 期望 ~(109,184)） | 先用单通道纯色逐通道标定再上 blend；未标定就不要用，叠字走 CPU |
+| Ctrl+C 后多出 `make: *** [Makefile:NNN: run-media] Interrupt` | 配方是 `cd out && …`，Ctrl+C 时**外层 shell** 被 SIGINT 打死，make 认为「这条命令被中断了」；程序其实已经打印过「进程正常退出」 | 2026-11-14 起配方末尾加 `exec`（shell 被程序替换）→ 该行消失；`make` 自身退出码仍是 130 |
+| `timeout --preserve-status -s INT … make run-media` 得到 130 | SIGINT 打到了 **make**，不是程序（程序 rc=0，尾部有「进程正常退出」） | 判程序 rc：`scripts/run/out/start.sh`（末尾 `exec`）或直跑 `out/bin/evs_media`，都是 0 |
+| `make run` 与 `make run-media` 输出一模一样 | 同一个 `evs::media::Run()`：兼容壳 `EdgeVisionService` 只是旧可执行名，只差崩溃报告里的 `app_name` 与 ZLM 日志前缀 | 想看通信进程用 `make run-comm`（`[comm]` 前缀）；两者的分工见 HANDOFF §1.4 |
 
 ---
 
@@ -634,9 +643,11 @@ cd /mnt/nvme/workspace/EdgeVisionService && \
 带硬件的主链路（有 `/dev/video0` 时；通信进程用 `make run-comm`；`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）：
 
 ```bash
-timeout --preserve-status -s INT 20 make run-media CFG="$PWD/config/node.json"; echo "EXIT=$?"
+timeout --preserve-status -s INT 20 make run-media CFG="$PWD/config/node.json"; echo "EXIT=$?"   # EXIT=130 = make 被打断（见 2.3）
+timeout --preserve-status -s INT 20 scripts/run/out/start.sh;                    echo "EXIT=$?"   # EXIT=0 = 程序自身正常退出
 pgrep evs_media || echo '无残留'
 ```
+
 
 ---
 

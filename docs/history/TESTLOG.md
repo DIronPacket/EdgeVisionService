@@ -780,6 +780,29 @@
 - 未做 / 受限：`evs_media` **尚未**接入 `comm_api`（不建通道、不发 `media/evt/*`）；`evs_comm` 不拉起/守护 broker；无进程间消息编解码与命令路由、无心跳超时判定；`src/main/test/` 仍未接入构建；`evs_upgrade` 未创建。
 - 收尾回归（同日）：`make` rc=0（`out/bin` = `EdgeVisionService` / `evs_comm` / `evs_media` / `test_comm`）；`bash scripts/tests/run_t6_comm.sh` rc=0（UDP 段全 `[PASS]`、MQTT 段因本机无 broker `[SKIP]`，`fail=0`）。
 
+### 5.23 L2 · `make run-*` 按下 Ctrl+C 后的收尾：去掉误导性的 `*** Interrupt`（2026-11-14）
+
+- 现象：关闭程序（Ctrl+C）后，日志在程序自己的「进程正常退出」之后多出一行 `make: *** [Makefile:131: run-media] Interrupt`；`timeout --preserve-status -s INT … make run-media` 退出码 **130**。看起来像崩溃，实际程序已 `return 0`。
+- 根因（三层，缺一层都不成立）：
+  1. 运行目标的配方是 `@cd $(BUILD) && $(RUN_ENV) ./bin/…` —— 有 `&&` 就必须有 shell；
+  2. Ctrl+C 把 SIGINT 发给**整个前台进程组**：make、外层 shell、程序三者都收到；
+  3. 程序自己 `signal(SIGINT, OnSignal)` → 有序停止 → `return 0`；但外层 shell 被 SIGINT 打死 → make 判定该命令「被中断」→ 打印 `Interrupt`；make 自身也被 SIGINT 打断 → `timeout --preserve-status` 原样转出 130。
+- 修复：`run` / `run-app` / `run-media` / `run-comm` / `run-node` 配方末尾加 `exec` —— shell 被程序**替换**，make 的直接子进程就是程序本身（正常退出 0），不再有 shell 被打死 → `Interrupt` 行消失。原因写在 `Makefile` 的 `RUN_ENV` 注释里（防后人删 `exec`）。
+- 验证（两种等价 Ctrl+C：`os.killpg(pgid, SIGINT)`、`timeout --preserve-status -s INT`；2026-11-14）：
+  | 命令 | `Interrupt` 行 | make / 程序退出码 |
+  | --- | --- | --- |
+  | `make run-media`（改前） | 1 行 | 130 |
+  | `make run-media`（改后） | 0 行 | 130（make 被打断）/ 程序 0 |
+  | `make run-comm`（改后，无 broker） | 0 行 | 130 / 程序 0 |
+  | `make run`（改后，兼容壳） | 0 行 | 130 / 程序 0 |
+  | `scripts/run/out/start.sh`（脚本本身 `exec`） | — | **0** |
+  | 直跑 `out/bin/evs_comm ../config/comm.json` | — | **0** |
+  三次 `make run-*` 的尾部都仍是 `[main] FreeMem 完成，进程正常退出` / `[comm] 通道已清理，进程正常退出`；`grep -c 'Interrupt'` = 0。
+- 顺带纠正文档旧结论：`timeout --preserve-status -s INT … make run-*` **不可能**是 0（SIGINT 打在 make 上），`docs/ops/COMMANDS.md` §2.1 / §2.3 / §10 已改为「make 形式 130、程序自身 0、要看程序 rc 用 `start.sh` 或直跑二进制」，§9 踩坑表加了三行（Interrupt / 130 / `make run` 与 `run-media` 输出相同）。
+- 用户提问澄清：`make run` 与 `make run-media` 输出逐行相同，是因为两者调用**同一个** `evs::media::Run()`（`EdgeVisionService` 只是历史兼容名），差异只有崩溃报告里的 `app_name`（`EdgeVisionService` / `evs_media`）与 ZLM 日志前缀；`evs_comm` 是另一个进程，打 `[comm]` 前缀。
+- 改动范围：只改 `Makefile`（4 个配方 + 注释）与文档，**未动 `src/`**，所以本机最后一次代码构建仍是 `0117907`，无需重编。
+- 结论：✅ 通过。
+
 ## 6. 维护约定
 
 1. 提交代码时，同一 commit 里**必须**包含对应的 TESTLOG 记录（L1 或 L2）。

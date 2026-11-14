@@ -49,6 +49,14 @@ FORCE       ?= 0
 # $(BUILD)/run.sh 干的两件事：cwd 切到 $(BUILD)/、导出 $(BUILD)/lib 与 install/<平台>/lib
 RUN_ENV = LD_LIBRARY_PATH="$(abspath $(BUILD)/lib):$(abspath install/$(PLATFORM)/lib):$$LD_LIBRARY_PATH"
 
+# 运行目标的配方一律以 `exec` 结尾（见下面「运行」一节的说明）：
+#   recipe 里有 `cd ... && ...` 就必须有 shell；Ctrl+C 会把 SIGINT 同时送到 make
+#   和这个 shell。程序自己是捕获 SIGINT 正常退出（exit 0），但如果外层 shell 还活着，
+#   它会被 SIGINT 打死 → make 认为「这条命令被中断了」，于是多打一行
+#         make: *** [Makefile:131: run-media] Interrupt
+#   看起来像报错，其实程序已经打印过「进程正常退出」。让 exec 把 shell **替换成**
+#   被测程序后，make 的直接子进程就是程序本身（正常退出 0），这一行就消失了。
+
 .DEFAULT_GOAL := all
 .PHONY: all build configure reconfigure rebuild clean distclean \
         media comm proc run run-app run-media run-comm run-node run-sh \
@@ -116,8 +124,14 @@ distclean:
 # ------------------------------------------------------------------ 运行
 # 等价 $(BUILD)/run.sh：切到 $(BUILD)/、导出两个库路径、起 bin/<name>；
 # 关键差别：不依赖那个不入库的脚本，删掉 $(BUILD)/ 后照样能跑
+#
+# 配方末尾的 `exec` 不能删（原因见 RUN_ENV 上方的注释）：
+#   有 exec → Ctrl+C 时只看到程序自己的「收到退出信号 → 有序退出 → 进程正常退出」；
+#   没有 exec → 末尾多一行 `make: *** [Makefile:NNN: run-media] Interrupt`，
+#              再往后 `echo $?` 得到 130（那是 make 被 Ctrl+C 打断的退出码，
+#              不是程序崩溃；程序自身的返回值仍是 0）。
 run run-app: build
-	@cd $(BUILD) && $(RUN_ENV) ./bin/$(APP) $(ARGS)
+	@cd $(BUILD) && $(RUN_ENV) exec ./bin/$(APP) $(ARGS)
 
 run-node: build
 	@test -x $(BUILD)/bin/$(NODE) || { \
@@ -125,13 +139,13 @@ run-node: build
 		echo "          原因：src/main/CMakeLists.txt 里 add_subdirectory(test) 处于注释状态（当前有意关闭）。"; \
 		echo "          需要时取消注释后执行 make reconfigure && make。"; \
 		exit 1; }; \
-	cd $(BUILD) && $(RUN_ENV) ./bin/$(NODE) $(CFG)
+	cd $(BUILD) && $(RUN_ENV) exec ./bin/$(NODE) $(CFG)
 
 run-media: media
-	@cd $(BUILD) && $(RUN_ENV) ./bin/$(MEDIA) $(CFG)
+	@cd $(BUILD) && $(RUN_ENV) exec ./bin/$(MEDIA) $(CFG)
 
 run-comm: comm
-	@cd $(BUILD) && $(RUN_ENV) ./bin/$(COMM) $(COMM_CFG)
+	@cd $(BUILD) && $(RUN_ENV) exec ./bin/$(COMM) $(COMM_CFG)
 
 # 老用法兼容：$(BUILD)/run.sh 存在就走它（该脚本重建方法见 HANDOFF §1.5）
 run-sh:
