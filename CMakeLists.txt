@@ -5,6 +5,23 @@ set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# ========== 调试信息：崩溃现场必需的编译选项 ==========
+# 之前不指定 CMAKE_BUILD_TYPE 时 CMake 用「空 flags」（既无 -g 也无 -O）：
+# 二进制虽 not stripped，但没有 DWARF，core dump 里只能看到地址，看不到
+# 函数名 / 文件行号 / 局部变量 —— 崩溃定位直接断一半。
+# 这里给默认 RelWithDebInfo（-O2 -g -DNDEBUG）：板端性能 + 可调试。
+# 需要逐个变量查看时（-O2 会把局部变量放进寄存器、显示 <optimized out>）：
+#   make BUILD=out-dbg CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Debug"
+# 显式传入的 CMAKE_BUILD_TYPE 不会被覆盖。
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING
+        "Build type: Debug/Release/RelWithDebInfo" FORCE)
+    message(STATUS "CMAKE_BUILD_TYPE 未指定 → 默认 RelWithDebInfo（含 -g，便于 core 定位）")
+endif()
+
+# 帧指针：backtrace / gdb 靠 x29(FP) 串调用栈，-O2 默认会省略它
+add_compile_options(-fno-omit-frame-pointer)
+
 # ========== 默认开启：自研模块编译成动态库.so ==========
 option(BUILD_SHARED_MODULE "Build self-written module as shared(.so) or static(.a)" ON)
 if(BUILD_SHARED_MODULE)

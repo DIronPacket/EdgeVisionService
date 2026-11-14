@@ -1,0 +1,42 @@
+# ============================================================================
+# systemd 单元示例（复制到 /etc/systemd/system/ 后按实际路径改）
+# ----------------------------------------------------------------------------
+# 为什么需要它：
+#   1. systemd 服务不读 /etc/security/limits.d → 必须在单元里写 LimitCORE，
+#      否则即使 core_pattern 设好了，RLIMIT_CORE=0 仍然一个 core 都不落
+#   2. 崩了自动拉起（Restart=on-failure），配合「报告 + core」形成自动抓取闭环
+#   3. WorkingDirectory 决定相对 core_pattern 的落点，这里统一用绝对路径
+#
+# 安装：
+#   sudo cp scripts/deploy/evs-edgevision.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now evs-edgevision
+#   systemctl status evs-edgevision
+#   journalctl -u evs-edgevision -n 200 --no-pager
+#   ls -lt /var/lib/evs/coredump | head
+# ============================================================================
+[Unit]
+Description=EdgeVisionService (RK3588 media pipeline)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ↓ 改成实际部署路径（下面 /opt/EdgeVisionService 出现两处，一起换）
+WorkingDirectory=/opt/EdgeVisionService
+# 崩溃报告目录（crash_handler 优先读它；默认是 ./crash）
+Environment=EVS_CRASH_DIR=/var/lib/evs/crash
+# 关键：unit 不继承登录 shell 的 ulimit -c，不写这行 = 服务模式一个 core 都不会有
+LimitCORE=infinity
+# 用 start.sh：内部会算仓库根、设 LD_LIBRARY_PATH / EVS_CRASH_DIR / ulimit -c，再前台 exec
+ExecStart=/opt/EdgeVisionService/scripts/run/out/start.sh
+Restart=on-failure
+RestartSec=2
+# 防止崩溃-重启风暴（配合 journalctl 定位第一现场）
+StartLimitIntervalSec=60
+StartLimitBurst=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

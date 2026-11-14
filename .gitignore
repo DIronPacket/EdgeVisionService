@@ -1,6 +1,12 @@
 # 编译产物（CMake 构建目录：默认 out/，历史遗留 build/ 也仍忽略）
 out/
 build/
+
+# 例外：scripts/run/{out,build}/ 是【启动脚本】目录，名字像构建产物但必须入库。
+# 不加这两行会被上面的 out/ build/ 规则连目录一起忽略 → systemd 单元引用的
+# scripts/run/out/start.sh 根本不在仓库里（2026-11-14 整理目录时发现）。
+!/scripts/run/out/
+!/scripts/run/build/
 install/
 bin/
 lib/
@@ -13,3 +19,7 @@ lib/
 
 # IDE 配置（如果你不想同步VS Code的配置）
 .vscode/
+
+# 崩溃报告目录（scripts/run/{out,build}/start.sh 默认 EVS_CRASH_DIR=<仓库根>/crash）
+# 注意必须写成 /crash/：写成 crash/ 会连 src/common/crash/ 源码一起忽略
+/crash/

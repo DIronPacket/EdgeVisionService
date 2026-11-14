@@ -2,6 +2,7 @@
 add_library(common_api SHARED
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemPool.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/MemManager.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/crash/crash_handler.cpp  # 崩溃现场：信号处理 + 报告 + 触发 core
     ${CMAKE_CURRENT_SOURCE_DIR}/frame_mem.cpp   # 帧内存分配边界（rk3588: MPP DRM 缓冲；其他平台 new[]/delete[]）
     ${CMAKE_CURRENT_SOURCE_DIR}/configmgr/node_config_manager.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/frame_converter.cpp
@@ -25,6 +26,7 @@ target_include_directories(common_api PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/
     ${CMAKE_CURRENT_SOURCE_DIR}/MemManager/
     ${CMAKE_CURRENT_SOURCE_DIR}/configmgr/
+    ${CMAKE_CURRENT_SOURCE_DIR}/crash/
     ${CMAKE_CURRENT_SOURCE_DIR}/profiler/
     ${CMAKE_CURRENT_SOURCE_DIR}/preprocess/
 )
