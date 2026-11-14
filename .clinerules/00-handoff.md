@@ -7,11 +7,11 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 与远程同步（`45a070c`）· 工作树有未提交改动（`src/common/crash/*`、`scripts/coredump/*`、`scripts/run/{out,build}/start.sh`、顶层与 `src/main` 的 CMake、`src/main/main.cpp`、`config/*`、`docs/ops/CRASH_DUMP.md`、`.gitignore`、docs 多篇）· 本文**代码**校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）；**工作树新增崩溃现场采集（`crash_handler` + 诊断脚本 + `CRASH_DUMP.md` 流程文档 + 体检/归档/启动脚本，未提交）**；前一校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；再前 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口；再前 `114c94d` = P0-14；`c557d89` = P0-13；`eac4bb0` = T7 + P0-2；`29ab58b` = T6） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **与远程同步（`c6d040c`，已推送）** · 工作树只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库）· **代码校准点 `f0b7899`**（崩溃现场采集：`crash_handler` + 默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic` + `scripts/coredump/*` + `scripts/run/{out,build}/start.sh`；同时给 `.gitignore` 加 `!/scripts/run/{out,build}/` 例外）· 前一校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）；再前 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；再前 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口；再前 `114c94d` = P0-14；`c557d89` = P0-13；`eac4bb0` = T7 + P0-2；`29ab58b` = T6） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录） |
 | 冒烟运行 | `make run` → 期望 `EdgeVisionService start`（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`） |
-| 真实主链路 | `src/main/test/main_node.cpp`（可执行 `testnode`）；`src/main/main.cpp` 是空壳 |
+| 真实主链路 | **`src/main/main.cpp`（可执行 `EdgeVisionService`）**：崩溃 handler → `load_with_fallback` → `MemInit` → `build_all` → `start_all` → 信号 → 有序停止 → `FreeMem`；`src/main/test/main_node.cpp`（`testnode`）**当前不参与构建**（`# add_subdirectory(test)`） |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池（块内内存 rk3588 = MPP DRM 缓冲，`common/frame_mem.*`）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP |
 | P0 问题 | 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；P0-5 核实为假阳性；P0-9 / P0-11 于 2026-11-10 修复；P0-10 的「可拷贝 / 无析构」于同日 RAII 收口，**只剩 `capacity` 语义**；剩 3 项：P0-1 / P0-8 / P0-10（部分）），见 `docs/STATUS.md` §4.1 |
 

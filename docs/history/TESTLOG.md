@@ -88,6 +88,8 @@
 | 2026-11-14 | **docs/ 与 scripts/ 目录分类 + README**（纯文档/脚本搬迁，无 C++ 改动） | `docs/` 分子目录：`design/`（ROADMAP·DESIGN_MULTI_PIPELINE·DESIGN_PROCESS_SPLIT）、`ops/`（COMMANDS·CRASH_DUMP）、`history/`（TESTLOG·BUG_CASES）、`interview/`（INTERVIEW），根保留 `HANDOFF`/`ARCHITECTURE`/`STATUS`；`scripts/`：`diag/`→`coredump/`、`evs-edgevision.service`→`deploy/`。新增 `docs/README.md`、`scripts/README.md`（+4 个子目录 README）、`scripts/tests/README.md`、`cmake/README.md`、`config/README.md`、`src/README.md`。验证：`bash -n` 12 个脚本全过（无输出）；markdown 相对链接体检 **missing=0**；`grep -rn 'docs/<旧名>\\.md'`、`grep -rn 'scripts/diag'` 均无残留；38 个文件（md/sh/cpp/h/cmake/service/Makefile）引用路径批量修正 | ✅ 通过（路径与文档变更，代码语义未变） |
 | 2026-11-14 | 目录分类后构建复验 | `make` → `[100%] Built target EdgeVisionService`；`grep -cE 'error:\|Error [0-9]'` = 0（`out/` 增量构建，无源码改动） | ✅ 通过（分类未影响构建） |
 | 2026-11-14 | 目录分类后冒烟运行（4 路真实出帧） | `timeout --preserve-status -s INT 8 scripts/run/out/start.sh` → `rc=0`；日志：`[main] 配置来源: …/config/node.json（v1 node.json） / 链路 4 条`、`[main] global: rtsp 端口 8550 / app "live" / pool.blocks 64 / queue_depth 8`、4 条链 `vi0→vpss0→rtsp0→print0` / `vi1→rtsp1→print1` …；实测 **30.44/23.98/23.96/23.96fps**、`[MemManager] FreeMem: 释放 50 块 / 100 个槽位`、`[main] FreeMem 完成，进程正常退出` | ✅ 通过（与 `config/README.md` §8 记录的日志逐行一致） |
+| 2026-11-14 | 入库并推送（`f0b7899` 崩溃采集 · `c6d040c` 目录分类+README） | `git push origin rk3588` → `547ab3a..c6d040c rk3588 -> rk3588`、`rc=0`；两个 commit 分别 18 文件 / 40 文件；`git status` 提交后仅剩 `?? config/2.mp4`、`?? config/test.nv12`（本机素材，有意不入库） | ✅ 通过 |
+
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 

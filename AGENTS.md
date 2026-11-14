@@ -15,8 +15,8 @@
 - **不要全仓扫描**：文件清单看 §1.4，构建/运行命令看 §0 与附录 A
 - 行号会漂移，读之前先跑 `grep -nE '^#{1,2} ' docs/HANDOFF.md` 一次拿行号，再定向读区间
 
-基线：分支 `rk3588` / 代码校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 作为唯一分配边界，`FrameBuffer::Allocate()` 走 `mpp_buffer_get`+`mmap`、`Release()` 走 `mpp_buffer_put`，`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；前一校准点 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口，`owned_mem` + `~FrameBuffer(){Release();}` 且拷贝/赋值 `= delete`，`MemMeta` 槽位改为 `MemSlotBase*` + 虚析构自动销毁；再前 `114c94d` = P0-14 采集写块前重绑 `FrameBuffer` 视图，实际修复 `eee3b01`；再前 `c557d89` = P0-13 `MppEncoder` 按平面拷贝 NV12；再前 `eac4bb0` = T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2）/ C++14 / aarch64 板端本机编译 / `make`（= `cmake -S . -B out && cmake --build out -j8`，默认构建目录 `out/`）。
+基线：分支 `rk3588` / 已推送至 `origin/rk3588`（HEAD `c6d040c`）/ 代码校准点 `f0b7899`（崩溃现场采集：`common/crash/crash_handler` 信号→报告→解除屏蔽重抛→core；构建默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic`；`scripts/coredump/*` 全套诊断脚本；`scripts/run/{out,build}/start.sh`）/ 前一校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）/ 再前 `12f5480`（帧内存改由 MPP DRM 缓冲提供：`common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` 走 `mpp_buffer_get`+`mmap`、`Release()` 走 `mpp_buffer_put`，`FreeMem()` 末尾 `FrameMemDeinit()`）/ 再前 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）/ C++14 / aarch64 板端本机编译 / `make`（= `cmake -S . -B out && cmake --build out -j8`）。
 
 Cline 专用入口（内容一致，自动加载）：`.clinerules/00-handoff.md`。
 
-工作树追加（未提交）：崩溃现场采集 —— `src/common/crash/crash_handler.{h,cpp}`（信号 → 报告 → 解除屏蔽重抛 → core）+ `scripts/coredump/{enable_coredump,symbolize_report,analyze_core,gcore_now}.sh` + 构建默认 `RelWithDebInfo` / `-rdynamic`。
+工作树追加（已入库 `f0b7899`）：崩溃现场采集 —— `src/common/crash/crash_handler.{h,cpp}`（信号 → 报告 → 解除屏蔽重抛 → core）+ `scripts/coredump/*.sh` + 构建默认 `RelWithDebInfo` / `-rdynamic`；`.gitignore` 例外放行 `scripts/run/{out,build}/`（否则 start.sh 被 `out/`、`build/` 规则整目录忽略）。`config/2.mp4`、`config/test.nv12` 为本机素材，**不要 `git add -A`**。
