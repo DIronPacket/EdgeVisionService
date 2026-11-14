@@ -53,8 +53,11 @@ EdgeVisionService/
 │   │   ├── moudle_push/        # 编码推流节点 PushNode
 │   │   ├── moudle_vpss/        # 预处理节点 VpssNode（转码 + 叠加，处理逻辑待实现）
 │   │   └── moudle_print/       # 耗时打印节点 PrintNode（流水线终点）
-│   └── main/
-│       ├── main.cpp            # 目前仅为打印入口
+│   └── main/                   # 进程入口（2026-11-14 拆分）
+│       ├── CMakeLists.txt      # EVS_PROCESS=all|media|comm|media,comm（未选中的 target 仍存在）
+│       ├── media/              # evs_media：main_media.cpp（入口）+ media_service.cpp（编排真源）
+│       ├── comm/               # evs_comm：main_comm.cpp（读 config/comm.json → CommManager → 信号退出）
+│       ├── main.cpp            # 历史兼容壳 EdgeVisionService（调同一个 evs::media::Run()）
 │       └── test/               # testnode / testpool / 旧测试（部分未编译）
 └── out/                        # 构建产物（默认，不入库）；build/ 为历史构建目录（可删）
 ```
@@ -65,8 +68,10 @@ EdgeVisionService/
 
 ```text
 ┌──────────────────────────────────────────────┐
-│ main / test 可执行文件                        │
-│   EdgeVisionService、testnode                 │
+│ main 可执行文件                               │
+│   evs_media（媒体进程）/ evs_comm（通信进程）  │
+│   EdgeVisionService（兼容壳，= evs_media 逻辑）│
+│   testnode（当前未参与构建）                   │
 └───────────────┬──────────────────────────────┘
                 │
 ┌───────────────▼──────────────────────────────┐

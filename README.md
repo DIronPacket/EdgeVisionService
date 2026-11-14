@@ -1,275 +1,75 @@
 # EdgeVisionService
 
-> 边缘视觉服务原型：**配置驱动装配 → 采集 → 统一内存池 → 节点流水线 → 硬件/软件编码 → RTSP 推流**。
-> 主平台 RK3588（MPP / V4L2 / RGA），x86_64（FFmpeg）作为开发调试目标。
-> 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；P0 共 14 项、已修 10 项（最近一批 2026-11-10：P0-9 池块泄漏 · P0-11 `MemMeta` 槽位泄漏 · P0-10 `FrameBuffer` RAII），剩 P0-1 / P0-8 / P0-10 残余（`capacity` 语义）。详细现状见 [docs/STATUS.md](docs/STATUS.md)。
-> **下一步演进（规划，未落地）**：单进程 → **媒体 / 通信 / 升级 三进程 + 共享通信对象 `libcomm_api`**，设计见 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)。
+> **边缘视觉服务原型**：配置驱动装配 → 视频采集 → 统一内存池 → 节点流水线 → MPP 硬件编码 → RTSP 推流。
+> 主平台 **RK3588**（aarch64 板端本机编译，MPP / V4L2 / RGA）；x86_64（FFmpeg）作为开发调试目标。
+> 工程标准 **C++14** · CMake 3.22 · g++ 11.4 · 8 核 · 无 CTest / CI（回归靠 `scripts/tests/` 的可重跑脚本）。
 
-## 目录
+## 1. 这是什么
 
-1. [现在能做什么](#1-现在能做什么)
-2. [架构一图流](#2-架构一图流)
-3. [快速开始](#3-快速开始)
-4. [当前状态](#4-当前状态)
-5. [路线图](#5-路线图)
-6. [文档导航](#6-文档导航)
-7. [开发约定](#7-开发约定)
-
-## 1. 现在能做什么
-
-- **配置驱动编排（T5/T6，已可跑）**：`config/node.json`（v1）描述 `global` + `pipelines[]`；`NodeConfigManager` 负责解析、字段级校验（错误带字段路径）、`${global.*}` 引用展开与默认值合并；`PipelineBuilder` 负责拓扑校验（R1–R5）→ `NodeFactory` 造节点 → 连队列 → 批量启停。
-- **真实入口是配置编排，不是手写装配**：`src/main/test/main_node.cpp`（可执行名 `testnode`）只做五件事 —— 读配置 → 建进程级资源（内存池）→ `build_all` → 等信号 → `stop_all` + `FreeMem`。代码里没有节点名、没有设备路径、没有 `while(1)`。
-- **SIGINT 优雅退出（T6，已实测）**：`Ctrl+C` / `SIGTERM` → 按链路**正序**（采集 → 推流 → 打印）停线程 → 释放 ZLMediaKit 流与服务 → `FreeMem` → 退出码 0，无残留进程。
-- **采集（T7：后端由配置决定）**：`vi.src` 的前缀决定采集实现 —— `dev:` → `V4l2Capture`（RK 的 `/dev/video*`，可只写设备路径或写全 `设备:宽:高:格式:fps`）、`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://` → `FfmpegCapture`（本地文件、摄像头、网络流）；无前缀时按老规则兜底。两者统一输出 NV12。
-- **内存池与流水线**：`MemManager::MemInit(50)` 预建 50 个 1920×1080 NV12 块；节点间用 `MemQueue`（深度 20，满则丢最老帧）连接。⚠️ 这两个数字当前仍写死在代码里，`global.pool.blocks / queue_depth / quota_per_channel` 尚未被读取（T10a）。
-- **硬件编码**：`MppEncoder` 支持 H.264/H.265，NV12 输入、128 字节 stride 对齐、固定 QP 33、GOP 150，回调输出裸流。
-- **RTSP 推流**：通过 ZLMediaKit C API 起 RTSP 服务、建流、送裸流，播放地址 `rtsp://<板端IP>:8550/live/<stream>`（端口/app/stream/codec/fps/码率均可配）。
-- **耗时统计**：每个块挂 `profile::NodeProfiler`，各节点记录自身耗时，终点 `PrintNode` 周期打印「各节点耗时 + 合计 + 首尾跨度 + 实测 fps」。
-- **可重跑的自检脚本**：`scripts/tests/` 四套（T1 RTSP 键 18 项、T2 配置解析 53 项、T3 `node.json` 104 项、T5 装配 64 项断言），全部无需硬件。
-
-当前限制（每条都有对应任务，不是"大概不行"）：
-
-- **每路一个独立源**：4 路 = 1 个摄像头 + 3 个 mp4，各读各的源（T7 已打通）。`vi.width/height` 已作为输出尺寸交给采集层，但 `FfmpegCapture` 只做 sws 转换、不保证严格缩放（**T7b**）。
-- `FfmpegCapture` 不循环、不缩放（**T7b**），mp4 播完即停。
-- 一源多下游（扇出）**拓扑当前不可达**：`PipelineBuilder` 只连 `i→i+1`（**T9** / STATUS §4.2 第 24 条）。块级引用计数本身是完整的（`acquire` / `pushBlock` 加，`release` 减，`userCnt()==0` 才回池 —— P0-5 于 2026-11-10 核实为**假阳性**）；真要做扇出还得解决"下游就地改写同一块会互相污染"。
-- 池块按 `width*height*3` 分配（1080p NV12 实需 2.97 MB、实给 6.22 MB，约 2× 过分配，P0-10 残余），且池块数 / 队列深度仍硬编码为 `MemInit(50)` / 队列 20（**T10a**）。
-- RGA 预处理、OSD、录像、统一日志 / 指标 / 健康检查均未落地；媒体服务仍由 `PushNode` 内部启停（**T4** 才上提到 `MediaServer`）。
-- x86 本机构建仍会失败（`install/x86_64` 为空，P0-1）；FFmpeg 软编/软解未完成。
-- **仍是单进程**：媒体 / 通信 / 升级尚未拆分，进程间也没有消息总线。三进程 + 共享 MQTT 通信对象（`libcomm_api`）的目录结构、分层决策、接口草案与 4 步落地顺序已写成 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)，**代码未动**。
-
-> 模块完成度、P0–P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)；多链路的决策与任务清单见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md)。
-
-## 2. 架构一图流
-
-```text
-config/node.json（v1：global + pipelines[]）
-        │
-        ▼
-NodeConfigManager ── 解析 / 字段级校验 / ${global.*} 展开 / v0 push.json 适配
-        │
-        ▼
-PipelineBuilder ──── 拓扑校验(R1–R5) → NodeFactory 造节点 → link_to 连线 → 批量 start/stop
-        │
-        ├─ ch0  ViNode ──MemQueue(20)──▶ [VpssNode] ──▶ PushNode ──▶ ZLMediaKit RTSP  rtsp://<ip>:8550/live/ch0
-        ├─ ch1  ViNode ──MemQueue(20)──▶ PushNode ──▶                    .../live/ch1
-        ├─ ch2  ViNode ──…                                                        …
-        └─ ch3  ViNode ──…                                                        …
-                   终点 PrintNode：打印各节点耗时 + 实测 fps，并归还 MemBlock
-                                   │
-                                   ▼
-                    共享内存池 MemPool（50 × 1920×1080 NV12，全进程一份）
-```
-
-链路由 `config/node.json` 决定：节点数量、顺序、参数都写在配置里（`[VpssNode]` 是可选的中间处理节点，ch0 配了、ch1~ch3 没配）。
-
-进程级资源由入口建、由入口拆：`load 配置 → MemInit → build_all → start_all → 等 SIGINT → stop_all → sets.clear() → FreeMem`。
-
-> 顺序是硬约定：`stop_all` 之后必须 `sets.clear()`（析构节点、释放队列）再 `FreeMem`（销毁池）；反过来会用到已销毁的块。详见 [docs/HANDOFF.md](docs/HANDOFF.md) §1.7。
-
-当前每条链是**独立源**（一链一个 `ViNode`）；一源多下游（主/子码流、算法、录像）还要补**扇出拓扑**（T9：`PipelineBuilder` 目前只连 `i→i+1`；块级引用计数本身已完整，P0-5 核实为假阳性）。分层、内存模型、线程/背压与平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；多链路方案取舍见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md)。
-
-## 3. 快速开始
-
-### 3.1 依赖
-
-| 依赖 | 期望位置 | 仓库里有什么 |
-| --- | --- | --- |
-| FFmpeg 5.x（头文件 + `.so`） | `install/<platform>/{include,lib}` | **不入库**（在 `.gitignore` 里），需自备 |
-| Rockchip MPP | 同上 | 同上（`librockchip_mpp.so`） |
-| ZLMediaKit（`libmk_api.so`） | 同上 | 同上 |
-| RGA | 同上 | 同上（代码尚未使用） |
-| FreeType（**可选**，OSD 矢量字体） | 系统库或 `install/<platform>` | 未提供。默认 `BUILD_FREETYPE_OSD=OFF`，OSD 只用内置点阵字体（`.evsfont`） |
-| OpenSSL 3.5.4（**规划中**，通信/升级的 TLS） | `install/<platform>/{include/openssl,lib}` | 已就地源码构建安装：`libssl.so.3`、`libcrypto.so.3`、`libssl.a`、`libcrypto.a`、`lib/cmake/OpenSSL`、`lib/ossl-modules`、142 个 `include/openssl/*.h`。**无 `openssl.pc`**（集成只能用 `find_package(OpenSSL)` + `OPENSSL_ROOT_DIR`）。不入库 |
-| mosquitto 2.0.22（**规划中**，进程间消息总线） | 同上（`sbin/mosquitto` = broker，`lib/libmosquitto.so.1` = 客户端） | 已源码构建安装（`WITH_TLS=ON`、`DOCUMENTATION=OFF`）：`bin/{mosquitto_pub,sub,rr,passwd}`、`lib/pkgconfig/libmosquitto.pc`、`etc/mosquitto`。不入库；**当前媒体链路不链接它** |
-| 交叉工具链（**可选**） | `cmake/rk3588.toolchain.cmake` | 路径需按本机实际安装修改 |
-
-> ⚠️ `install/`、`3rdparty/`、`out/`（构建产物）、`build/`（历史构建目录）全在 `.gitignore` 里且**从未提交过**（`git ls-files install` 输出为空）。clone 下来是纯源码，必须自己把依赖树放到 `install/rk3588/`，否则 `cmake -S . -B out` 会在 `find_package(FFMPEG)` 处直接失败。
-
-### 3.2 板端本机构建（aarch64，当前默认路径 · 已实测）
-
-在 RK3588 板子上直接编——这是本项目的日常路径：`aarch64` 会被自动识别成 `TARGET_PLATFORM=rk3588`，不需要工具链文件。
-
-```bash
-make                       # 首次自动 configure，之后增量；= cmake -S . -B out && cmake --build out -j"$(nproc)"
-```
-
-顶层 `Makefile` 只是**薄包装**（不含源码/依赖规则，全部规则仍在 CMake）；默认构建目录 **`out/`**（`make BUILD=xxx` 可覆盖，`JOBS`/`CMAKE_FLAGS` 亦可）。产物在 `out/lib/*.so` 与 `out/bin/`。当前**启用**的可执行目标：
-
-| 目标 | 源码 | 说明 |
-| --- | --- | --- |
-| `EdgeVisionService` | `src/main/main.cpp` | 空壳，只打印一行（冒烟用，`make run`） |
-| `testnode` | `src/main/test/main_node.cpp` | **真实主链路**：配置 → builder → SIGINT 优雅退出；⚠ **当前未启用**——`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 处于注释状态 |
-| `test_builder` | `scripts/tests/t5_builder.cpp` | T5 装配自检（只 build 不 start，不碰硬件）；与 `testnode` 同属被注释的 `test/` 子目录 |
-| `evs_media` / `evs_comm` / `evs_upgrade` | `src/media/` · `src/comm/` · `src/upgrade/` | **规划中，尚未创建**：三进程拆分的产物名（见 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md) §2 / §7） |
-
-`out/bin/` 只会出现上面启用的目标。历史 `build/bin/` 里的 `testnode` / `test_builder` / `test_encoder` / `test_pushStream` / `test_decoder` / `testpool` 都是旧产物（`add_subdirectory(test)` 现已注释），**别用、别当基线**。
-
-> 清理方式：`make clean`（只清编译目标，保留手写 `run.sh`）/ `make distclean FORCE=1`（删整个 `out/`）。若想复用历史 `build/`，先看 `build/CMakeCache.txt` 的 `CMAKE_HOME_DIRECTORY` 是否等于本机源码路径。
-
-### 3.3 RK3588 交叉编译（可选，非当前路径）
-
-```bash
-cmake -S . -B build-rk \
-      -DCMAKE_TOOLCHAIN_FILE=cmake/rk3588.toolchain.cmake
-cmake --build build-rk -j"$(nproc)"
-```
-
-注意：
-
-- 工具链默认写死 `/usr/aarch64-linux-gnu/bin/aarch64-linux-gnu-g++`，需改成实际编译器路径（例如 `/usr/bin/aarch64-linux-gnu-g++-11`）。
-- 未设置 `CMAKE_SYSROOT`；板端 sysroot 与 glibc 版本需先确认。
-- 一旦传了 `CMAKE_TOOLCHAIN_FILE`，`TARGET_PLATFORM` 会被直接钉成 `rk3588`（不看宿主架构）。
-
-### 3.4 x86_64 本机构建（当前会失败，P0-1）
-
-```bash
-cmake -S . -B build-x86
-```
-
-> `cmake/FindFFMPEG.cmake` 用 `NO_DEFAULT_PATH` 只查 `install/x86_64`，而该目录当前是空的 → 配置阶段直接失败。开发机要跑起来需先补 x86 依赖，或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback（见 [docs/STATUS.md](docs/STATUS.md) P0-1）。
-
-### 3.5 运行与优雅退出
-
-```bash
-# 冒烟（最快的一条）
-make run                        # = cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService
-
-# 真实主链路（⚠ testnode 当前未启用：src/main/CMakeLists.txt 的 # add_subdirectory(test) 为注释）
-make run-node                   # 需要先取消上面那行注释 → make reconfigure && make
-```
-
-`make run` / `make run-node` 做的就是 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 运行 `bin/<目标>`；历史 `build/run.sh` 是同一套路（`exec` 让 `Ctrl+C` 直达二进制），已不再必需（见 docs/HANDOFF.md §1.5）。
-
-**读哪份配置**（`NodeConfigManager::load_with_fallback`；候选路径相对当前工作目录，而 `make run-node` 的 cwd 是 `out/`）：
-
-| 命令 | 实际读到 | 跑几条链 |
-| --- | --- | --- |
-| `make run-node`（默认 `CFG=../config/node.json`） | `argv[1]` 显式传入的 `../config/node.json` | **4 条**（v1 `config/node.json`） |
-| `make run-node CFG=config/push.json` | 同上（相对 `out/` 解析） | **1 条**（v0 单链路） |
-| `make run-node CFG=/abs/path/node.json` | 绝对路径 | 按该配置 |
-
-**期望输出**（4 路配置，实测）：
-
-```text
-[main] global: rtsp 端口 8550 / app "live" / pool.blocks 64 / queue_depth 8
-[main] 注意: pool.blocks / queue_depth / quota_per_channel 尚未接线（T10a），当前仍用 MemInit() 默认值
-[builder] 链路就绪: ch0[0] vi0 -> vpss0 -> rtsp0 -> print0
-[builder] 汇总: 建成 4 条, 失败 0 条, 跳过 0 条
-[main] 4 条链路已启动（Ctrl+C 退出）
-[ViNode] 采集源: dev:/dev/video0 -> CAPTURE_V4L2 (/dev/video0:640:480:NV12:30)
-[ViNode] 采集源: file:/…/build/file/test1.mp4 -> CAPTURE_FFMPEG (/…/build/file/test1.mp4)
-[vi0] successfully open stream:/dev/video0:640:480:NV12:30, output=1920x1080
-[vi1] successfully open stream:/…/build/file/test1.mp4, output=1024x576
-[print0] ……各节点耗时 + 实测 fps（实测：摄像头路 ~30fps，mp4 路 ~24fps）
-^C
-[main] 收到退出信号，开始有序退出
-[vi0] VI Node Stopped.          ← 正序：采集 → 推流 → 打印
-[rtsp0] Push Node Stopped.
-[print0] Print Node Stopped.
-[main] FreeMem 完成，进程正常退出
-```
-
-退出码 0、无残留进程。任一源打不开时（设备不存在 / 文件路径写错）该路只打印 `[viN] open failed: <src>` 并退出自己的节点线程，**其余链路照常出帧、进程不崩**（P0-2 已修）。
-
-自动化 / 长跑验证用 `timeout` 代替手按 Ctrl+C：
-
-```bash
-timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EXIT=$?"
-```
-
-播放：`ffplay rtsp://<板端IP>:8550/live/ch0`（`stream` 每路不同：`ch0`~`ch3`）。只调采集不推流时，把配置里的 `push.enable` 设为 `false`。
-
-### 3.6 自检脚本
-
-```bash
-./scripts/tests/run_t1_zlm_rtsp_key.sh   # RTSP key / ref_cnt / 入参校验，18 项断言
-./scripts/tests/run_t2_node_config.sh    # NodeConfigManager 解析/校验/v0 适配，53 项断言
-./scripts/tests/run_t3_node_json.sh      # config/node.json 结构与字段，104 项断言
-./scripts/tests/run_t5_builder.sh        # NodeFactory + PipelineBuilder，64 项断言
-```
-
-四套脚本都会自己 `cmake --build` 出所需 target（前提是 `install/` 已就绪），工作目录固定为仓库根，结尾打印 `passes=N fails=0`。
-
-- **不需要摄像头/采集设备**，也不起业务流水线；T2/T3/T5 纯逻辑与配置。
-- **T1 例外**：它真的会起停一个 ZLMediaKit RTSP 服务（默认端口 `18550`，避开现场 8550），并用 `ss` 观察端口是否释放。
-
-每次真实验证的结论都记在 [docs/history/TESTLOG.md](docs/history/TESTLOG.md)（L1 一行 / L2 小节），**没记录的"已通过"视为未验证**。
-
-## 4. 当前状态
-
-| 模块 | 状态 | 说明 |
-| --- | --- | --- |
-| 配置管理与装配 | 🟢 85% | T2/T5：v1 解析 + 字段级校验（带字段路径）+ `${global.*}` 展开 + `NodeFactory` + 拓扑校验 + 批量启停；`global.pool.*` 尚未接线（T10a） |
-| 进程编排 / 主程序 | 🟢 75% | T6：`testnode` = 配置 → builder → SIGINT 优雅退出 → `FreeMem`，退出码 0（实测）；`src/main/main.cpp` 仍是空壳；媒体服务未上提（T4） |
-| 内存池 / 流水线 | 🟡 70–80% | 单消费者链路可跑；块级引用计数完整（P0-5 假阳性）、块内存与 `MemMeta` 槽位已 RAII 化（P0-9 / P0-11 / P0-10，2026-11-10）；扇出拓扑不可达（T9）；`capacity = w*h*3` 过分配（P0-10 残余）；池块数与队列深度硬编码 50/20（T10a） |
-| 采集 | 🟢 75% | T7：`vi.src` 前缀选后端（`dev:` → V4L2；`file:` / 网络流 → FFmpeg），4 路同时出帧已实测；`FfmpegCapture` 仍不循环、不保证缩放（T7b） |
-| 编码 | 🟡 70% | MPP H.264/H.265 可跑，NV12 **按平面拷贝**（P0-13 已修，不再把 UV 当成 Y 的尾巴）；x86 软编未完成；无 EOS flush |
-| RTSP 推流 | 🟡 65% | 单路可演示；P0-6 / P0-7 已修（T1）；多路并存与"停一路不影响其他路"待 T4 |
-| 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
-| 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
-| 进程模型（三进程） | 🔴 规划中 | 当前单进程（`testnode`）。媒体 / 通信 / 升级拆分 + 共享 `libcomm_api` 已出设计，**代码未落地**（[docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)） |
-
-> P0 共 14 项：**已修 10 项**（P0-2 / 3 / 4 / 6 / 7 / 9 / 11 / 12 / 13 / 14）、**核实假阳性 1 项**（P0-5 引用计数）、**剩 3 项**（P0-1 x86 缺依赖 · P0-8 解码器往栈上 `FrameBuffer` 写 · P0-10 残余 `capacity` 语义）。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
-
-## 5. 路线图
-
-任务编号（T1~T19）与验收标准见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md) §7。
-
-| 里程碑 | 目标 | 任务与进度 |
-| --- | --- | --- |
-| **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ · T7 ✅ → **下一个 T7b**（循环 + 缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
-| **M2**（P1） | 多路真正稳定 | T9 扇出拓扑 / 多下游用例 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
-| **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进 → **设计已出**：[docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)（媒体 / 通信 / 升级 + `libcomm_api`，分 4 步落地） |
-
-M1 的三条硬验收（当前**未**全部满足）：
-
-1. `config/node.json` 启动 4 路（ch0 摄像头 + ch1~ch3 三个 mp4 循环），4 个 `rtsp://<ip>:8550/live/chX` 连续出帧 **30 分钟**。
-2. 停掉 ch0 的推流**不影响** ch1~ch3 的 RTSP 服务。
-3. `Ctrl+C` → `stop_all → MediaServer::shutdown() → FreeMem` 顺序正确，`valgrind --leak-check=full` 无 definite leak。
-
-> 长期 WBS、12 周排期、技术方案、验收指标与风险矩阵见 [docs/design/ROADMAP.md](docs/design/ROADMAP.md)。
-
-## 6. 文档导航
-
-| 想了解什么 | 看哪里 |
+| 项 | 值 |
 | --- | --- |
-| **接手项目：现状快照、必须遵守的规定、常见任务流程** | **[docs/HANDOFF.md](docs/HANDOFF.md)**（新接手先读这篇） |
-| **不知道该读哪篇文档 / 文档放在哪个子目录** | **[docs/README.md](docs/README.md)**（总索引：按场景导航 + 目录分区判据 + 维护规则） |
-| 脚本怎么用 / cmake 依赖怎么找 / 配置字段含义 / 源码分层 | [scripts/README.md](scripts/README.md) · [cmake/README.md](cmake/README.md) · [config/README.md](config/README.md) · [src/README.md](src/README.md) |
-| AI 助手自动加载入口（Cline / 其他 agent） | [`.clinerules/00-handoff.md`](.clinerules/00-handoff.md)、[`AGENTS.md`](AGENTS.md)（均指向 `docs/HANDOFF.md`） |
-| 当前架构、目录、数据流、内存/线程模型、平台接口 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| 模块完成度、已实现/占位、P0–P2、优化建议 | [docs/STATUS.md](docs/STATUS.md) |
-| 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md) |
-| **三进程拆分（媒体 / 通信 / 升级）+ 进程间通信对象 `libcomm_api` 的设计与落地顺序** | [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)（状态：**规划**；含目录结构、分层决策、`MqttClient` 接口草案、topic 命名、依赖现状、4 步落地） |
-| **测试怎么做、某条"已通过"当初怎么验的** | **[docs/history/TESTLOG.md](docs/history/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
-| **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/history/BUG_CASES.md](docs/history/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
-| **某条命令怎么敲、怎么看内存、怎么写一次性探针** | **[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)**（分类命令手册：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 踩坑表，均带实测输出） |
-| **面试怎么讲、哪里碰过内核、哪里能练 C** | **[docs/interview/INTERVIEW.md](docs/interview/INTERVIEW.md)**（高频 20 题 · 核心 15 题 · 深入 12 题 + 内核接触面与不能吹的边界 + C 语言 8 个落点 + 诚实清单） |
-| 长期 WBS、排期、技术方案、风险与待确认项 | [docs/design/ROADMAP.md](docs/design/ROADMAP.md) |
-| 源码入口 | `src/`；真实主链路在 `src/main/test/main_node.cpp`，节点在 `src/pipeline/` |
-| 配置 | `config/node.json`（v1，4 路，当前主用）、`config/push.json`（v0 单链路，T8 删除） |
+| **能跑什么** | `config/node.json` 描述的 **4 路链路**（1 个摄像头 + 3 路 mp4）同时出帧并推 RTSP；`Ctrl+C` → 正序停线程 → 释放 ZLM 流 → `FreeMem` 归还 50 块 → 退出码 0。实测 `[print3] 实测=23.82fps` |
+| **进程形态** | **两个进程 + 一个兼容壳**（2026-11-14 拆分）：`evs_media`（媒体）/ `evs_comm`（通信）/ `EdgeVisionService`（旧名字，与 `evs_media` 共用同一份 `media_service` 逻辑） |
+| **通信** | `src/comm/` = `libcomm_api.so`：`CommBase` + `UdpComm` / `MqttComm` + 全局 `CommManager`，`scripts/tests/run_t6_comm.sh` 43 项断言。**媒体进程尚未接总线**（不建通道、不上报 `media/evt/*`） |
+| **主要缺口** | 无日志 / 指标体系、无单测 / CI、扇出拓扑不可达（T9）、池块数与队列深度未接线（T10a）、x86 依赖缺失（P0-1）；**媒体与通信两进程之间还没有消息路由** |
+| **P0 现状** | 共 14 项：已修 10 项、核实假阳性 1 项（P0-5）、剩 3 项（P0-1 / P0-8 / P0-10 残余）。明细见 [docs/STATUS.md](docs/STATUS.md) |
 
-## 7. 开发约定
+## 2. 30 秒跑起来
 
-**红线（违反即错误交付）**
+```bash
+# 0) 依赖不入库：FFmpeg 5.x / Rockchip MPP / ZLMediaKit / mosquitto 2.0.22 需自备到 install/rk3588/{include,lib}
+#    （OpenSSL 3.5.4 与 FreeType 可选；查找策略见 cmake/README.md）
+make                     # 首次自动 configure；产物在 out/bin、out/lib
+make run-media           # 4 路出帧；Ctrl+C → FreeMem → 退出码 0
+make run-comm            # 通信进程（无 broker 只报 Connection refused，不退出）
+make info                # 看当前编哪些进程（EVS_PROCESS）与构建参数
+```
 
-1. **C++14**：`set(CMAKE_CXX_STANDARD 14)`。不用 `std::any` / `if constexpr` / 结构化绑定等 C++17+ 特性。
-2. **不引入 `install/` 里没有的新第三方库**；不重命名既有目录（`moudle_vi` / `moudle_push` / `moudle_print` 是历史拼写，改名属独立任务）。
-3. **取块必有释放**：`acquire()` / `getBlock()` 之后，所有失败分支都必须 `release()`，否则池子会被几帧内耗干。
-4. **`FrameBuffer` 不可拷贝**：它已改为 RAII（`owned_mem` + 析构 `Release()`，拷贝/赋值 `= delete`）——要共享块只能传指针，别写按值传参或赋值（P0-10，[docs/history/TESTLOG.md](docs/history/TESTLOG.md) §5.15）。
-5. **改了代码/配置必须留测试记录**：按 [docs/history/TESTLOG.md](docs/history/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
-6. **不提交** `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
+- **只编一个进程**：`make media` / `make comm`；**改默认集**：`make proc PROC=comm`（写进 `out/CMakeCache.txt`，`PROC=all` 恢复）；等价 CMake 写法 `cmake -S . -B out -DEVS_PROCESS=media,comm`。
+- **播放**：`ffplay rtsp://<板端IP>:8550/live/ch0`（每路 `ch0`~`ch3`）。
+- **自检**：`bash scripts/tests/run_t6_comm.sh`（其余见 [scripts/tests/README.md](scripts/tests/README.md)）。
+- 命令细节、实测输出与踩坑：**[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)** §1 构建 / §2 运行 / §3 内存 / §11 崩溃 / §12 自启。
 
-**写法约定**
+## 3. README 索引（每个目录一篇，改哪块先看哪篇）
 
-- 新节点继承 `PipelineNode`：`push_input()` 只入队，耗时处理放 `run()`，处理完 `dispatch_to_children()`，终点 `release_block()`。
-- 新节点要在 `NodeFactory` 注册 `type` 名，并在 `config/node.json` 里可用；装配交给 `PipelineBuilder`，**不要在手写入口里 `make_shared` + `link_to`**。
-- 配置统一走 `config/`；取值非法要明确报错（带字段路径），**不要静默忽略**。新增配置字段如果还没接线，入口要打印"尚未接线"，别让人以为生效了。
-- 提交信息：`<模块>: <动词> <对象>`，例如 `pipeline: 新增 NodeFactory`、`main: 重写真实入口`、`rtsp: 修复 P0-6`、`config: 定稿 node.json`、`docs: 坐标回写`。
-- 合并前：板端构建通过、`scripts/tests/` 四套全绿、无新增编译告警。
+| 位置 | README | 里面有什么 |
+| --- | --- | --- |
+| `docs/` | [docs/README.md](docs/README.md) | **文档总索引**：按场景导航 + 目录分区判据（不知道读哪篇从这里进） |
+| `src/` | [src/README.md](src/README.md) | 编译出什么、每层职责、帧怎么流动、改哪类需求去哪个目录 |
+| `src/comm/` | [src/comm/README.md](src/comm/README.md) | 通信层：server/client 语义、回调三条硬约束、已知限制 |
+| `src/common/preprocess/` | [README.md](src/common/preprocess/README.md) | 预处理框架：能力边界、怎么调、哪里还没实现 |
+| `config/` | [config/README.md](config/README.md) | `node.json`（v1 多链路）/ `push.json`（v0）/ `comm.json` 每个字段 |
+| `cmake/` | [cmake/README.md](cmake/README.md) | `Find*.cmake` 查找策略、`TARGET_PLATFORM` 判定、交叉编译工具链 |
+| `scripts/` | [scripts/README.md](scripts/README.md) | 脚本总览（约定：一律从仓库根执行） |
+| `scripts/tests/` | [README.md](scripts/tests/README.md) | 五套回归脚本清单（T1 / T2 / T3 / T5 / T6，共 282 项断言） |
+| `scripts/coredump/` | [README.md](scripts/coredump/README.md) | 崩溃现场采集与解析（core 命名、符号化、gcore） |
+| `scripts/run/` | [README.md](scripts/run/README.md) | `out/` 与 `build/` 两个同名 `start.sh` |
+| `scripts/deploy/` | [README.md](scripts/deploy/README.md) | systemd unit（开机自启） |
+| `docs/design/` | [README.md](docs/design/README.md) | 设计与规划（多链路 / 三进程拆分 / ROADMAP） |
+| `docs/history/` | [README.md](docs/history/README.md) | `TESTLOG.md`（测试证据）+ `BUG_CASES.md`（bug 原理复盘） |
+| `docs/ops/` | [README.md](docs/ops/README.md) | `COMMANDS.md`（命令手册）+ `CRASH_DUMP.md`（崩溃链路） |
+| `docs/interview/` | [README.md](docs/interview/README.md) | 面试问答（高频 / 核心 / 深入 + 内核边界 + C 落点） |
+| 仓库根（AI 入口） | [AGENTS.md](AGENTS.md) · [.clinerules/00-handoff.md](.clinerules/00-handoff.md) | 自动加载的接手卡，二者都指向 `docs/HANDOFF.md` |
 
-> 完整红线、构建坑、内存池/节点 API 速查见 [docs/HANDOFF.md](docs/HANDOFF.md) §1.7 与 §2。
+## 4. 四篇必读（按这个顺序）
+
+| 顺序 | 文档 | 什么时候读 |
+| --- | --- | --- |
+| 1 | [docs/HANDOFF.md](docs/HANDOFF.md) | **接手第一天**：30 秒事实卡 + 红线 §2 + 任务→文件索引 §1.9 |
+| 2 | [docs/STATUS.md](docs/STATUS.md) | **动手之前**：模块完成度、P0–P2 明细、优化建议 |
+| 3 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | **改结构之前**：分层、数据流、内存池与线程模型、扩展方式 |
+| 4 | [docs/history/TESTLOG.md](docs/history/TESTLOG.md) | **想声称"已修复"之前**：怎么验、验过什么（没有记录视为未验证） |
+
+## 5. 红线摘要（全文见 [docs/HANDOFF.md](docs/HANDOFF.md) §2，违反即错误交付）
+
+1. **C++14**：不用 `std::any` / `if constexpr` / 结构化绑定等 C++17+ 特性。
+2. 不引入 `install/` 里没有的新第三方库；不重命名既有目录（`moudle_*` 保持原样）。
+3. 内存池取块（`acquire` / `getBlock`）之后，**所有失败分支都必须 `release`**。
+4. 不提交 `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
+5. **`git push` 之前必须先问用户**（2026-11-14 起）：先报「要推哪几笔 + 哪个分支 + 哪些文件」，得到明确同意才推。
+6. 测试必须留痕（`docs/history/TESTLOG.md`）；修"有原理含量"的 bug 必须写 `docs/history/BUG_CASES.md`。
 
 ---
 
-最后更新：2026-11-12；适用分支：`rk3588`；代码校准点：`ee046a3`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + P1-2 提示）；文档校准点：`af4b0b3`（新增三进程拆分设计）。
+最后更新：2026-11-14（精简为「项目介绍 + README 索引」，详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
+适用分支：`rk3588` · 代码校准点：`f0b7899` · 工作树：通信层 + 进程拆分（未提交）

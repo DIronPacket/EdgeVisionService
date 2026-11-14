@@ -1,7 +1,10 @@
 # 三进程拆分设计（媒体 / 通信 / 升级）+ 进程间通信对象
 
-> **状态：规划（未落地）**。本文只记录设计决策与落地顺序，代码尚未拆分。
-> 最后更新：2026-11-12；适用分支：`rk3588`；校准提交：`ee046a3`。
+> **状态：部分落地（2026-11-14）**。
+> 1. **共享通信库已落地**：`src/comm/` → `libcomm_api.so`（`CommBase` 抽象基类 + `UdpComm`/`MqttComm` + 全局单例 `CommManager`）。位置与本文原计划的 `src/common/comm/` 不同，接口以代码为准（[../../src/comm/README.md](../../src/comm/README.md)）。
+> 2. **媒体 / 通信两个进程入口已拆**：`src/main/media/` → `evs_media`、`src/main/comm/` → `evs_comm`。**不按本文 §2 放在 `src/media/`、`src/comm/`**：`src/comm` 已被通信库占用，且约定进程代码集中在 `src/main/`。两者可分别编译（`-DEVS_PROCESS=media|comm|media,comm`、`make media` / `make comm`，不指定 = 都编）。
+> 3. **尚未做**：`src/upgrade/`（升级进程）、`evs_comm` 拉起并守护 broker、消息编解码 / 命令路由 / 心跳超时判定、媒体进程真正收发 `media/evt/*`、跨进程联调。
+> 最后更新：2026-11-14；适用分支：`rk3588`；代码校准点：`f0b7899`（+ 工作树：通信层 + 进程拆分）。
 > 相关文档：[ARCHITECTURE.md](../ARCHITECTURE.md)（当前单进程架构）· [ROADMAP.md](ROADMAP.md)（功能路线与 OTA）· [STATUS.md](../STATUS.md)（完成度与问题）· [TESTLOG.md](../history/TESTLOG.md)（验证记录）· [HANDOFF.md](../HANDOFF.md)（接手规范）
 
 ## 1. 背景与目标
@@ -58,6 +61,13 @@ src/
 ```
 
 产物：`out/bin/{evs_media, evs_comm, evs_upgrade}`；库 `out/lib/{libcommon_api.so, libcomm_api.so, libpipeline_api.so, platform_api}`。
+
+> **实际落地（2026-11-14）与上图的不同处**（以上图为准的地方就不用看这段）：
+> - 通信库：`src/common/comm/` → 实际 **`src/comm/`**（顶层独立库 `comm_api`）；内部也不是单一 `MqttClient`，而是 `CommBase` 抽象基类 + `UdpComm`/`MqttComm` 两后端 + 全局 `CommManager`。
+> - 媒体进程：`src/media/` → 实际 **`src/main/media/`**（`main_media.cpp` 入口 + `media_service.{h,cpp}` 编排）；兼容壳 `src/main/main.cpp` 在原位复用同一份 `media_service`。
+> - 通信进程：`src/comm/` → 实际 **`src/main/comm/`**（`main_comm.cpp`）—— `src/comm/` 这个名字已被库占用，不能再放进程。
+> - 升级进程：`src/upgrade/` **仍未创建**。
+> - `src/CMakeLists.txt`：**没有**新增 `add_subdirectory(media/comm/upgrade)`；进程子目录挂在 `src/main/CMakeLists.txt` 下，用 `EVS_PROCESS`（`all|media|comm|media,comm`）+ `EXCLUDE_FROM_ALL` 控制默认编译集。
 
 `src/CMakeLists.txt` 目标形态：
 
@@ -139,11 +149,11 @@ target_link_libraries(media_domain INTERFACE pipeline_api platform_api)
 
 ## 4. 三个进程的职责边界
 
-| 进程 | 目录 | 产物 | 配置 | 主要依赖 | 职责 |
+| 进程 | 目录（计划 → 实际） | 产物 | 配置 | 主要依赖 | 职责 |
 | --- | --- | --- | --- | --- | --- |
-| 媒体处理 | `src/media/` | `evs_media` | `config/node.json` | common + comm + pipeline + platform | 采集/编码/推流；发 `media/evt/*`；收 `media/cmd/*` |
-| 通信服务 | `src/comm/` | `evs_comm` | `config/comm.json` | common + comm | 拉起并守护 broker、命令路由、状态汇聚、心跳超时判定 |
-| 升级服务 | `src/upgrade/` | `evs_upgrade` | `config/upgrade.json` | common + comm | 收 `upgrade/cmd/*`、上报 `upgrade/evt/*`、版本/包校验与切换 |
+| 媒体处理 | `src/media/` → **`src/main/media/`** | `evs_media`（+ 兼容壳 `EdgeVisionService`） | `config/node.json` | common + comm + pipeline + platform | 采集/编码/推流；发 `media/evt/*`；收 `media/cmd/*`（**收发尚未接线**） |
+| 通信服务 | `src/comm/` → **`src/main/comm/`**（`src/comm/` 是库 `comm_api`） | `evs_comm` | `config/comm.json` | common + comm | 命令路由、状态汇聚、心跳超时判定；broker 拉起/守护**尚未实现** |
+| 升级服务 | `src/upgrade/`（**未建**） | `evs_upgrade` | `config/upgrade.json` | common + comm | 收 `upgrade/cmd/*`、上报 `upgrade/evt/*`、版本/包校验与切换 |
 
 ### 4.1 关于 broker 位置（重要事实）
 
@@ -247,14 +257,15 @@ set(OPENSSL_ROOT_DIR ${CMAKE_SOURCE_DIR}/install/${TARGET_PLATFORM})
 find_package(OpenSSL REQUIRED)          # 需要静态时再加 OPENSSL_USE_STATIC_LIBS ON
 ```
 
-## 7. 落地顺序（4 步，每步可独立编译验证）
+## 7. 落地顺序（4 步，每步可独立编译验证；★ = 2026-11-14 已落地）
 
-| 步骤 | 动作 | 验证方式 |
-| --- | --- | --- |
-| 1 | 建 `src/common/comm/`（6 个头/源 + CMakeLists）+ `cmake/FindMosquitto.cmake`；`comm_api` 只编库、不挂任何可执行 | `make` 通过；`nm -D out/lib/libcomm_api.so \| grep MqttClient` |
-| 2 | `src/media/main.cpp` 由 `src/main/test/main_node.cpp` 迁入，新 target `evs_media`；`testnode` 保留 | `make` + `make run-node`（旧链路不回归）+ `./out/bin/evs_media` 冒烟 |
-| 3 | `src/comm/` 落地 `evs_comm`：拉起/守护 broker + 订阅 `evs/v1/+/evt/#` 打印 | 起 `evs_comm` 后 `mosquitto_sub -t 'evs/#'` 能看到心跳 |
-| 4 | `src/upgrade/` 落地骨架：订阅 `upgrade/cmd/check`，回 `upgrade/evt/done` | 手动 `mosquitto_pub` 一条 cmd，观察 evt 回包 |
+| 步骤 | 动作（计划 → 实际） | 状态 | 验证方式（实际跑过的） |
+| --- | --- | --- | --- |
+| 1 ★ | `src/common/comm/` → **实际 `src/comm/`**（`comm_base` / `udp_comm` / `mqtt_comm` / `comm_manager` + `cmake/FindMosquitto.cmake`）；`comm_api` 只编库、不挂可执行 | **已落地** | `make` 0 error；`bash scripts/tests/run_t6_comm.sh` → 43 项 PASS（TESTLOG §5.21） |
+| 2 ★ | `src/media/` → **实际 `src/main/media/`**：`media_service.{h,cpp}`（从 `main.cpp` 抽出）+ `main_media.cpp` → `evs_media`；兼容壳保留 | **已落地** | `make run-media` 4 路出帧 `[print3] 实测=23.82fps`、`FreeMem: 释放 50 块`、正常退出；`make run` 输出一致（TESTLOG §5.22） |
+| 3 ★ | `src/comm/` → **实际 `src/main/comm/`**：`main_comm.cpp` 读 `config/comm.json` → `CommManager` 建通道 → 打印收发/状态；**broker 拉起与守护未做**（仍手工起或 systemd） | **部分落地** | `make run-comm` + 临时 broker：`通道=cmd → running`，收到 `evs/v1/media/evt/heartbeat`（`size=17`）；无 broker 时只告警不退出（TESTLOG §5.22） |
+| 4 | `src/upgrade/` 骨架：订阅 `upgrade/cmd/check`，回 `upgrade/evt/done` | **未开始** | 手动 `mosquitto_pub` 一条 cmd，观察 evt 回包 |
+| 5（新增） | 进程可选编译：`EVS_PROCESS`（`src/main/CMakeLists.txt`）+ `make media` / `comm` / `proc` / `run-media` / `run-comm` | **已落地** | `-DEVS_PROCESS=media` / `comm` 两棵独立构建树产物正确（未选中的 target 仍可用 `--target` 构建）；`make proc PROC=comm` 持久生效（TESTLOG §5.22） |
 
 每步完成后：按 [TESTLOG.md](../history/TESTLOG.md) 写 L2 记录（改代码/改配置没记录 = 未验证），并同步 [HANDOFF.md](../HANDOFF.md) §1.4 目录地图与 §1.9 任务索引、[ARCHITECTURE.md](../ARCHITECTURE.md) 的进程拓扑一节。
 
@@ -271,15 +282,16 @@ find_package(OpenSSL REQUIRED)          # 需要静态时再加 OPENSSL_USE_STAT
 
 ## 9. 待确认项
 
-1. `evs_comm` 是否自己 `fork/exec` 拉起 broker（形态 A），还是 broker 由 systemd/容器入口单独拉起（形态 B）。
-2. 三个可执行命名：`evs_media / evs_comm / evs_upgrade`（与 `evs/v1` topic 前缀一致）还是沿用 `EdgeVisionService` 系列。
-3. 媒体进程迁移后，`testnode` 是否保留为调试入口（建议保留至三进程稳定后）。
-4. 通信对象是否需要 QoS 1 / retain 语义（影响 broker 配置与消息去重策略）。
+1. `evs_comm` 是否自己 `fork/exec` 拉起 broker（形态 A），还是 broker 由 systemd/容器入口单独拉起（形态 B）。→ **暂按形态 B**：当前 `evs_comm` 只连 broker，不拉起、不守护；拉起/守护列为后续 TODO。
+2. 三个可执行命名：`evs_media / evs_comm / evs_upgrade`（与 `evs/v1` topic 前缀一致）还是沿用 `EdgeVisionService` 系列。→ **已定（2026-11-14）**：新进程用 `evs_media` / `evs_comm`（升级预留 `evs_upgrade`）；`EdgeVisionService` 仅作为兼容壳保留。
+3. 媒体进程迁移后，`testnode` 是否保留为调试入口（建议保留至三进程稳定后）。→ 现状：`src/main/test/` 仍未接入构建，保留在源码里。
+4. 通信对象是否需要 QoS 1 / retain 语义（影响 broker 配置与消息去重策略）。→ 配置项已预留（`CommConfig::qos` / `retain`），策略未定。
 
 ## 10. 变更记录
 
 | 日期 | 变更 |
 | --- | --- |
 | 2026-11-12 | 初版：记录三进程拆分目标、目标目录结构、`platform`/`pipeline` 不迁入 `media/` 的三条理由与判断规则、通信对象接口草案、topic 与 payload 约定、OpenSSL 3.5.4 / mosquitto 2.0.22 实测现状、4 步落地顺序与已知构建坑 |
+| 2026-11-14 | 通信库落地（`src/comm/` → `comm_api`）与**两个进程入口拆分**（`src/main/media/` → `evs_media`、`src/main/comm/` → `evs_comm`；兼容壳 `EdgeVisionService` 复用 `media_service`）；新增进程可选编译（`EVS_PROCESS` + `make media/comm/proc/run-*`）。§2 补「实际落地与计划差异」、§4 目录列改为「计划 → 实际」、§7 步骤表补状态与实测证据、§9 第 1/2 项定论 |
 
 [返回 ROADMAP](ROADMAP.md) · [返回 README](../../README.md)

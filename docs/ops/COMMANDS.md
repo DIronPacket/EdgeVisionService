@@ -61,6 +61,33 @@ cmd; echo "RC=$?"
 
 ## 1. 构建
 
+### 1.0 依赖放置（clone 后第一件事）
+
+| 依赖 | 期望位置 | 仓库里有什么 |
+| --- | --- | --- |
+| FFmpeg 5.x（头文件 + `.so`） | `install/<platform>/{include,lib}` | **不入库**（在 `.gitignore` 里），需自备 |
+| Rockchip MPP | 同上（`librockchip_mpp.so`） | 同上 |
+| ZLMediaKit（`libmk_api.so`） | 同上 | 同上 |
+| mosquitto 2.0.22 | 同上（`sbin/mosquitto` = broker，`lib/libmosquitto.so.1` = 客户端） | 已源码构建安装（`WITH_TLS=ON`）；**只有通信进程 `evs_comm` 用它** |
+| OpenSSL 3.5.4 | 同上（`libssl.so.3` / `libcrypto.so.3` / `include/openssl/`） | 已就地构建；**无 `openssl.pc`**（集成只能用 `find_package(OpenSSL)` + `OPENSSL_ROOT_DIR`） |
+| RGA | 同上 | 已安装，代码尚未使用 |
+| FreeType（**可选**，OSD 矢量字体） | 系统库或 `install/<platform>` | 未提供；默认 `BUILD_FREETYPE_OSD=OFF`，OSD 用内置点阵字体 |
+
+> ⚠️ `install/`、`3rdparty/`、`out/`、`build/` 全在 `.gitignore` 里且**从未提交过**。clone 下来是纯源码，必须自己把依赖树放到 `install/rk3588/`，否则 `cmake -S . -B out` 会在 `find_package(FFMPEG)` 处直接失败。查找策略见 [cmake/README.md](../../cmake/README.md) §2。
+
+**交叉编译（可选，非当前路径）**
+
+```bash
+cmake -S . -B build-rk -DCMAKE_TOOLCHAIN_FILE=cmake/rk3588.toolchain.cmake
+cmake --build build-rk -j"$(nproc)"
+```
+
+注意：工具链路径写死 `/usr/aarch64-linux-gnu/bin/aarch64-linux-gnu-g++`（需按实际改）、未设 `CMAKE_SYSROOT`、一旦传了 `CMAKE_TOOLCHAIN_FILE` 就把 `TARGET_PLATFORM` 钉成 `rk3588`（不看宿主架构）。
+
+**x86_64 本机构建当前必然失败（P0-1）**：`cmake/FindFFMPEG.cmake` 用 `NO_DEFAULT_PATH` 只查 `install/x86_64`，而该目录为空 → configure 阶段就挂。要在开发机跑需先补 x86 依赖，或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback（见 [../STATUS.md](../STATUS.md) P0-1）。
+
+### 1.1 日常构建（板端 aarch64 本机）
+
 ```bash
 make                                   # ✅ 首选：= cmake -S . -B out + cmake --build out -j"$(nproc)"
 make -j8 2>&1 | tail -2                # 只看结果尾（✅ 实测 2026-11-12：[100%] Built target EdgeVisionService）
@@ -103,17 +130,21 @@ error: use of deleted function 'FrameBuffer& FrameBuffer::operator=(const FrameB
 ### 2.1 冒烟（最快的一条）
 
 ```bash
-make run                                # ✅ 实测：EdgeVisionService start
+make run-media                                 # ✅ 实测 2026-11-14：4 路出帧；Ctrl+C 后 [main] FreeMem 完成，进程正常退出
+timeout --preserve-status -s INT 5 make run-media; echo "RC=$?"   # 自动化版，期望 RC=0
 ```
 
-**作用**：验证「能跑起来」，不碰硬件、不起流水线。
-**为什么**：`make run` 会 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 运行 `bin/EdgeVisionService`，不依赖未入库的 `run.sh`。
+**作用**：验证「能起来并且真的出帧」，会打开摄像头/视频文件并推 RTSP（不像旧版 `make run` 只打印一行就退出）。
+**为什么**：`make run` 现在等于真链路（兼容壳 `EdgeVisionService` 与 `evs_media` 共用同一份 `media_service`）；要区分进程用 `make run-media` / `make run-comm`。三者都会 `cd out/` + 导出 `LD_LIBRARY_PATH`（`out/lib` + `install/rk3588/lib`）+ 跑 `bin/<目标>`，不依赖未入库的 `run.sh`。
 
-### 2.2 真实主链路（4 路 / 单路）
+### 2.2 真实主链路（媒体 / 通信两个进程）
 
 ```bash
-make run-node                                          # 默认 CFG=../config/node.json（4 路）
-make run-node CFG=/abs/path/config/push.json           # 显式绝对路径（1 路，避免 cwd 歧义）
+make run-media                                    # 媒体进程，4 路（CFG 默认 ../config/node.json）
+make run-media CFG=/abs/path/config/push.json     # 单路（v0 push.json）
+make run-comm                                     # 通信进程（COMM_CFG 默认 ../config/comm.json）
+make run-comm COMM_CFG=/abs/path/config/comm.json # 换通信配置
+make run                                          # 历史兼容壳 EdgeVisionService（= evs_media 逻辑）
 ```
 
 ⚠️ `testnode` **当前未参与构建**（`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 为注释）；`make run-node` 会提示这一点。需要时取消注释 → `make reconfigure && make`。
@@ -123,17 +154,19 @@ make run-node CFG=/abs/path/config/push.json           # 显式绝对路径（1 
 ### 2.3 定时跑 + 模拟 Ctrl+C（自动化验证用这个）
 
 ```bash
-timeout --preserve-status -s INT 10 make run-node CFG=/abs/path/config/push.json; echo "EXIT=$?"
+timeout --preserve-status -s INT 10 make run-media; echo "EXIT=$?"     # ✅ 实测 EXIT=0
+timeout --preserve-status -s INT 5  make run-comm; echo "EXIT=$?"      # 通信进程（无 broker 也照常退出）
 ```
 
-✅ 实测：`EXIT=0`，日志尾部有 `[main] FreeMem 完成，进程正常退出`，`pgrep testnode` 无残留。
+✅ 实测：`EXIT=0`，日志尾部有 `[main] FreeMem 完成，进程正常退出`，`pgrep evs_media` / `pgrep evs_comm` 无残留。
 ⚠️ 不加 `--preserve-status` 时 `timeout` 自身返回 **124**，别当成崩溃（TESTLOG §5.15 有此备注）。
 
 ### 2.4 不用 make 的等价写法（排「是不是 Makefile / 脚本的问题」）
 
 ```bash
 export LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
-./out/bin/testnode "$PWD/config/node.json"
+(cd out && ./bin/evs_media ../config/node.json)     # 媒体进程
+(cd out && ./bin/evs_comm  ../config/comm.json)     # 通信进程
 ```
 
 ### 2.5 两个一键启动脚本（`out/` 与 `build/` 各一个，同名 `start.sh`）
@@ -449,12 +482,14 @@ FF=3rdparty/rk3588/ffmpeg/bin
 bash scripts/tests/run_t5_builder.sh     | tail -3   # 拓扑/装配校验，期望 passes=64 fails=0 skips=2
 bash scripts/tests/run_t3_node_json.sh   | tail -3   # config/node.json 结构，期望 passes=104 fails=0 skips=0
 bash scripts/tests/run_t2_node_config.sh | tail -3   # v1 解析 / v0 适配，期望 ALL PASS (fails=0)
+bash scripts/tests/run_t6_comm.sh        | tail -3   # 通信层：CommManager / UDP 回环 / MQTT 回环，期望「全部通过（fail=0）」
 bash scripts/tests/run_t1_zlm_rtsp_key.sh | tail -3  # ZLM RTSP key 校验（涉及外部服务，按需跑）
 ```
 
-**目录里实际只有 t1 / t2 / t3 / t5 四套**（`ls scripts/tests/`，无 `t4`，编号是历史跳号）。
-**作用**：改完配置/构建器后**先跑这几套**——纯 CPU、不需要摄像头与 NPU，1 秒出结果，能在跑真链路前挡掉大部分回归。
-**为什么看 `tail -3`**：脚本结尾固定打印 `passes=N fails=N skips=N`，刷屏的中间行没有价值。
+**目录里实际有五套：t1 / t2 / t3 / t5 / t6**（`ls scripts/tests/`，无 `t4`，编号是历史跳号）。
+**作用**：改完配置/构建器/通信层后**先跑这几套**——纯 CPU、不需要摄像头与 NPU，1 秒出结果，能在跑真链路前挡掉大部分回归。
+**为什么看 `tail -3`**：脚本结尾固定打印 `passes=N fails=N skips=N`（T6 打印 `结果: 全部通过（fail=0）`），刷屏的中间行没有价值。
+⚠️ `run_t6_comm.sh` 用默认构建目录 `out/`；`run_t1/t2/t3/t5` 仍写死 `build/`（历史遗留，见 TESTLOG §5.18「未做/受限」）。
 
 ---
 
@@ -490,10 +525,18 @@ docs: 新增 docs/ops/COMMANDS.md 常用命令手册
 
 - 归档今晚实测通过的命令：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git
 - 每条给「作用 + 为什么这么写 + 实测输出」，标注 ✅ 实测项
-- HANDOFF §0.1 跳读表、§1.4 文档清单、README §6 增加入口
+- HANDOFF §0.1 跳读表、§1.4 文档清单、README 文档索引增加入口
 ```
 
 ### 7.3 推送 + 校验（远端到底有没有这笔）
+
+> 🚫 **推送前必须先问用户**（`docs/HANDOFF.md` §2.6 第 9 条 / §2.1 第 11 条红线；用户 2026-11-14 明确要求）。
+> 先把「要推什么」摆出来，等用户明确答复「推」之后再执行 `git push`：
+>
+> ```bash
+> git --no-pager log --oneline origin/rk3588..HEAD     # 要推哪几笔
+> git --no-pager show --stat --oneline HEAD            # 最后一笔动了哪些文件
+> ```
 
 ```bash
 git push origin rk3588
@@ -519,6 +562,7 @@ git --no-pager show --name-only --format='' HEAD | grep -E '^(src|cmake|config|s
 
 ```bash
 # ✗ git push --force   ✗ git reset --hard   ✗ 提交 out/ build/ install/ 3rdparty/ .vscode/
+# ✗ 未经用户同意就 git push（每次推送前必须先问，HANDOFF §2.6 第 9 条）
 git check-ignore -v out/bin/testnode     # 确认忽略规则生效
 ```
 
@@ -554,7 +598,7 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 | `cat: /tmp/x.txt: input file is output file` | 同一个文件既当 `>` 重定向目标又当 `cat` 参数 | 先 `{ ... } > /tmp/x.txt` 落盘，**另一条命令**再 `cat` |
 | 命令退出码 1，但明明成功了 | 管道最后一环（`grep`/`tail`）的退出码 | 看 `${PIPESTATUS[0]}`，或先落盘再判 RC |
 | `timeout` 返回 124 | 没加 `--preserve-status`，`timeout` 自己超时退出 | `timeout --preserve-status -s INT 10 ...`，看程序自身 RC |
-| 配置文件读不到 | 构建目录被设为 cwd（`make run*` 与 `run.sh` 都是 `cd out/`） | 传**绝对路径**：`make run-node CFG="$PWD/config/node.json"` |
+| 配置文件读不到 | 构建目录被设为 cwd（`make run*` 与 `run.sh` 都是 `cd out/`） | 传**绝对路径**：`make run-media CFG="$PWD/config/node.json"` |
 | `error while loading shared libraries` | 只有 `-L`（编译期），没设运行期搜索路径 | `LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib"` |
 | `undefined reference to ...` | `-l` 写在源文件前面（`--as-needed`） | 源文件在前、`-lcommon_api` 在后 |
 | heredoc 里的 `$` 被吃掉 | `<<EOF` 没加引号 | 用 `<<'EOF'` |
@@ -587,11 +631,11 @@ cd /mnt/nvme/workspace/EdgeVisionService && \
 
 期望：分支行无 `[ahead/behind]`、`[100%] Built target ...`、`EdgeVisionService start`、`passes=64 fails=0`。
 
-带硬件的主链路（有 `/dev/video0` 时；`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）：
+带硬件的主链路（有 `/dev/video0` 时；通信进程用 `make run-comm`；`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）：
 
 ```bash
-timeout --preserve-status -s INT 20 make run-node CFG="$PWD/config/node.json"; echo "EXIT=$?"
-pgrep testnode || echo '无残留'
+timeout --preserve-status -s INT 20 make run-media CFG="$PWD/config/node.json"; echo "EXIT=$?"
+pgrep evs_media || echo '无残留'
 ```
 
 ---

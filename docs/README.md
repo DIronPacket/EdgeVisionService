@@ -64,7 +64,7 @@ docs/
 
 | 你的目标 | 顺序 |
 | --- | --- |
-| 只想跑起来 | [HANDOFF §0](HANDOFF.md)（事实卡）→ [ops/COMMANDS.md §1–§2](ops/COMMANDS.md) → `make && make run` |
+| 只想跑起来 | [HANDOFF §0](HANDOFF.md)（事实卡）→ [ops/COMMANDS.md §1–§2](ops/COMMANDS.md) → `make && make run-media` |
 | 要改代码 | [HANDOFF §2](HANDOFF.md)（红线，必须全读）→ [ARCHITECTURE](ARCHITECTURE.md) → [STATUS](STATUS.md) → [../src/README.md](../src/README.md)（源码分层与改动落点） |
 | 要抓崩溃 | [ops/CRASH_DUMP.md](ops/CRASH_DUMP.md) → [ops/COMMANDS.md §11](ops/COMMANDS.md) → [history/BUG_CASES.md](history/BUG_CASES.md) B12/B13 |
 | 要上线部署 | [ops/COMMANDS.md §12](ops/COMMANDS.md)（systemd）→ [ops/CRASH_DUMP.md](ops/CRASH_DUMP.md) §5（`LimitCORE`） |

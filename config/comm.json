@@ -1,0 +1,22 @@
+{
+  "_comment": "evs_comm 的通道配置（进程 2）。改这里不用重新编译；字段语义见 src/comm/README.md §4 与 src/comm/comm_types.h 的 CommConfig。",
+  "_notes": [
+    "type: udp | mqtt；role: server | client",
+    "MQTT 的 server 不是 broker：它是订阅通配主题的订阅端角色，broker 是独立进程（install/rk3588/sbin/mosquitto）",
+    "port 省略时：UDP 必填、MQTT 默认 1883；topic 省略时 server=evs/v1/#、client=evs/v1/comm/cmd/#",
+    "只跑媒体进程时本文件不参与任何事"
+  ],
+  "channels": [
+    {
+      "name": "cmd",
+      "type": "mqtt",
+      "role": "server",
+      "host": "127.0.0.1",
+      "port": 1883,
+      "topic": "evs/v1/#",
+      "keepalive_sec": 30,
+      "reconnect_delay_ms": 1000,
+      "recv_timeout_ms": 200
+    }
+  ]
+}

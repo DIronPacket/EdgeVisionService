@@ -11,13 +11,15 @@
 | `run_t2_node_config.sh` | T2：`node.json` 解析 + 校验（缺字段 / 类型错 / 重复 channel / 端口冲突 / fps=0） | 53 | 无 | TESTLOG §5.6 |
 | `run_t3_node_json.sh` | T3：`config/node.json` v1 全量自检（JSON 语法 + `ffprobe` 探测素材分辨率/帧率/编码，缺失则跳过实测比对） | 104 | `ffprobe`（可选） | TESTLOG §5.7 |
 | `run_t5_builder.sh` | T5：`NodeFactory` 按 `type` 造节点 + `PipelineBuilder` 按配置建链路（**只 build 不 start**） | 64 | 无 | TESTLOG §5.8 |
+| `run_t6_comm.sh` | T6：通信层 —— `CommManager` 工厂/命名/查表、UDP 本机回环（server 记住对端回包）、Start/Stop 幂等、MQTT pub/sub 回环（**需要 `127.0.0.1:1883` 有 broker，没有则 SKIP**） | 43 | 无（MQTT 分支需要 broker） | TESTLOG §5.21 |
 
 配套文件：
 
 ```text
 scripts/tests/
 ├── t1_zlm_rtsp_key.cpp  t2_node_config.cpp  t3_node_json.cpp  t5_builder.cpp   ← 断言用 C++（各自链接被测库）
-├── run_t1_zlm_rtsp_key.sh  run_t2_node_config.sh  run_t3_node_json.sh  run_t5_builder.sh
+├── t6_comm.cpp                                                              ← T6：链 comm_api（由 src/comm/CMakeLists.txt 定义 test_comm 目标）
+├── run_t1_zlm_rtsp_key.sh  run_t2_node_config.sh  run_t3_node_json.sh  run_t5_builder.sh  run_t6_comm.sh
 └── fixtures/            ← T2/T3 的输入样例（正向 1 个 + 反向 6 个）
     ├── node_v1_ok_ref.json           正向基线
     ├── node_v1_missing_type.json     缺 type → 应报错
@@ -53,6 +55,8 @@ T1/T2/T3/T5 四个脚本都**硬编码历史构建目录 `build/`**（`cmake --b
 - 后果：全新 clone 后直接跑会失败（`build/lib` 不存在）。
 - 临时办法：先 `cmake -S . -B build && cmake --build build -j"$(nproc)"` 造出 `build/`，再跑脚本。
 - 正确做法（待办）：脚本内统一成 `BUILD_DIR="${BUILD_DIR:-out}"` 并替换 `build` 字样，属独立小任务，改完需重跑四套并更新 TESTLOG。
+
+**例外**：`run_t6_comm.sh`（2026-11-14 新增）已按新约定写成 `BUILD="${BUILD:-out}"`，不需要造 `build/`。它只构建一个目标（`test_comm`），不做 `-rpath` 注入，而是运行时给 `LD_LIBRARY_PATH="${BUILD}/lib:${ROOT}/install/rk3588/lib"`。
 
 ## 4. 新增一个验收脚本的模板
 

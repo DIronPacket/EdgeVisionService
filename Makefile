@@ -12,8 +12,13 @@
 #
 # 常用：
 #   make                 # = cmake -S . -B $(BUILD) && cmake --build $(BUILD) -j$(nproc)
-#   make run             # 起 EdgeVisionService（冒烟）
-#   make run-node        # 起真实主链路 testnode
+#   make media           # 只编媒体进程 evs_media
+#   make comm            # 只编通信进程 evs_comm
+#   make proc PROC=media # 改「默认构建哪些进程」（all | media | comm | media,comm）
+#   make run             # 起 EdgeVisionService（历史兼容壳，= 媒体进程逻辑）
+#   make run-media       # 起 evs_media（真实媒体主链路）
+#   make run-comm        # 起 evs_comm（通信进程骨架）
+#   make run-node        # 起 testnode（历史调试入口，需先打开 add_subdirectory(test)）
 #   make test            # 依次跑 scripts/tests/run_t*.sh
 #   make clean           # 清编译产物（保留 run.sh）
 #   make help            # 看全部目标
@@ -33,7 +38,11 @@ CMAKE_FLAGS ?=
 PLATFORM    ?= rk3588
 APP         ?= EdgeVisionService
 NODE        ?= testnode
+MEDIA       ?= evs_media
+COMM        ?= evs_comm
 CFG         ?= ../config/node.json
+COMM_CFG    ?= ../config/comm.json
+PROC        ?= all
 ARGS        ?=
 FORCE       ?= 0
 
@@ -42,7 +51,8 @@ RUN_ENV = LD_LIBRARY_PATH="$(abspath $(BUILD)/lib):$(abspath install/$(PLATFORM)
 
 .DEFAULT_GOAL := all
 .PHONY: all build configure reconfigure rebuild clean distclean \
-        run run-app run-node run-sh test test-t5 info help
+        media comm proc run run-app run-media run-comm run-node run-sh \
+        test test-t5 info help
 
 # ------------------------------------------------------------------ 构建
 all: build
@@ -61,6 +71,25 @@ reconfigure: configure
 rebuild:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory build
+
+# ------------------------------------------------------------ 单进程构建
+# 只编某个进程。target 始终存在（即使 EVS_PROCESS 没选中它，也只是
+# EXCLUDE_FROM_ALL），所以随时可用，不需要为了「只编一个」重新 configure。
+media:
+	@test -f $(BUILD)/Makefile || $(MAKE) --no-print-directory configure
+	$(CMAKE) --build $(BUILD) --target $(MEDIA) -j$(JOBS)
+
+comm:
+	@test -f $(BUILD)/Makefile || $(MAKE) --no-print-directory configure
+	$(CMAKE) --build $(BUILD) --target $(COMM) -j$(JOBS)
+
+# 改变「默认构建哪些进程」——写进 $(BUILD)/CMakeCache.txt，之后 `make` 一直生效：
+#   make proc PROC=media   → 以后 make 只编媒体进程
+#   make proc PROC=comm    → 以后 make 只编通信进程
+#   make proc PROC=all     → 恢复两个都编（默认）
+proc:
+	$(CMAKE) -S . -B $(BUILD) -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DEVS_PROCESS=$(PROC) $(CMAKE_FLAGS)
+	$(CMAKE) --build $(BUILD) -j$(JOBS)
 
 # ------------------------------------------------------------------ 清理
 clean:
@@ -98,6 +127,12 @@ run-node: build
 		exit 1; }; \
 	cd $(BUILD) && $(RUN_ENV) ./bin/$(NODE) $(CFG)
 
+run-media: media
+	@cd $(BUILD) && $(RUN_ENV) ./bin/$(MEDIA) $(CFG)
+
+run-comm: comm
+	@cd $(BUILD) && $(RUN_ENV) ./bin/$(COMM) $(COMM_CFG)
+
 # 老用法兼容：$(BUILD)/run.sh 存在就走它（该脚本重建方法见 HANDOFF §1.5）
 run-sh:
 	@if [ -x $(BUILD)/run.sh ]; then \
@@ -130,6 +165,9 @@ info:
 	@echo "PLATFORM    = $(PLATFORM)"
 	@echo "CMAKE_FLAGS = $(CMAKE_FLAGS)"
 	@echo "APP / NODE  = $(APP) / $(NODE)"
+	@printf "EVS_PROCESS = "; if [ -f $(BUILD)/CMakeCache.txt ]; then \
+		grep '^EVS_PROCESS:' $(BUILD)/CMakeCache.txt | cut -d= -f2; \
+	else echo "(未 configure，默认 all)"; fi
 	@echo "CFG         = $(CFG)"
 	@echo -n "CMAKE       = "; $(CMAKE) --version 2>/dev/null | head -1 || echo "未安装"
 	@echo -n "CXX         = "; $(CXX) --version 2>/dev/null | head -1 || echo "未安装"
@@ -151,6 +189,13 @@ help:
 	@echo "    make run-node        $(NODE) ../config/node.json"
 	@echo "    make run-node CFG=/abs/path/node.json"
 	@echo "    make run-sh          走老脚本 $(BUILD)/run.sh（存在时）"
+	@echo ""
+	@echo "  进程（源码在 src/main/media/ 与 src/main/comm/）"
+	@echo "    make media           只编 $(MEDIA)"
+	@echo "    make comm            只编 $(COMM)"
+	@echo "    make proc PROC=media 改默认进程集（all | media | comm | media,comm）"
+	@echo "    make run-media       起 $(MEDIA)（CFG=$(CFG)）"
+	@echo "    make run-comm        起 $(COMM)（COMM_CFG=$(COMM_CFG)）"
 	@echo ""
 	@echo "  测试 / 信息"
 	@echo "    make test            依次跑 scripts/tests/run_t*.sh"

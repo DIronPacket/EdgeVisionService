@@ -9,6 +9,7 @@
 | --- | --- | --- |
 | `node.json` | ✅ | **主配置（v1）**：`global` 进程级资源 + `pipelines[]` 多链路（当前 ch0 摄像头 + ch1~ch3 三个 mp4） |
 | `push.json` | ✅ | **兼容配置（v0）**：单链路 `vi → push(rtsp) → print`，`node.json` 不存在或被显式指定时才用 |
+| `comm.json` | ✅ | **通信进程（`evs_comm`）的通道配置**：`channels[]`（`type` udp/mqtt · `role` server/client · `host`/`port`/`topic` …）。媒体进程不读它（见 §11） |
 | `2.mp4` (33 MB) | ❌ 未跟踪 | 本地测试素材（推流/解码验证用），**不入库** |
 | `test.nv12` (556 MB) | ❌ 未跟踪 | 本地 NV12 裸帧素材，**不入库** |
 
@@ -177,3 +178,36 @@ scripts/run/out/start.sh
 - 换机器 / 换素材：先 `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of csv=p=0 <文件>`，
   再**同时**改该路 `vi.width/height/fps` 与 `push.width/height/fps`（四处必须一致）。
 - 素材缺失时程序不会崩：该链 `open` 失败、其余链继续跑（构建阶段失败只告警）。
+
+## 11. `comm.json`（通信进程 `evs_comm` 的通道配置）
+
+媒体进程（`evs_media` / `EdgeVisionService`）**不读这个文件**；只有 `evs_comm` 读它（`src/main/comm/main_comm.cpp`；候选路径 `config/comm.json` → `../config/comm.json`，也可 `argv[1]` 显式指定）。
+
+```json
+{
+  "channels": [
+    { "name": "cmd", "type": "mqtt", "role": "server",
+      "host": "127.0.0.1", "port": 1883, "topic": "evs/v1/#",
+      "keepalive_sec": 30, "reconnect_delay_ms": 1000, "recv_timeout_ms": 200 }
+  ]
+}
+```
+
+| 字段 | 取值 | 说明 |
+| --- | --- | --- |
+| `name` | 字符串 | 管理器内唯一名；空 = 自动 `udp-server-1` 式命名 |
+| `type` | `udp` \| `mqtt` | **必填**，其余字段缺失即取默认值 |
+| `role` | `server` \| `client` | 缺省 `client`。★ MQTT 的 `server` 是**订阅端角色**（订阅 `evs/v1/#`），不是 broker —— broker 是独立进程 `install/rk3588/sbin/mosquitto`（见 `src/comm/README.md` §3） |
+| `host` / `port` | 字符串 / 0–65535 | UDP `client` 必填；MQTT 空 = `127.0.0.1`，`port` 0 = 1883 |
+| `topic` / `topic_pub` | 字符串 | 订阅 / 发布主题；空值语义见 `src/comm/comm_types.h::CommConfig` |
+| `client_id` / `username` / `password` | 字符串 | MQTT 连接参数；空 = 自动 id + 匿名 |
+| `keepalive_sec` / `qos` / `retain` / `reconnect_delay_ms` | 整数 / 布尔 | `qos` 只接受 0/1/2（订阅固定 0）；断线按 `reconnect_delay_ms` 重连并重订阅 |
+| `recv_timeout_ms` | 整数 | 单次等待超时，决定 `Stop()` 的响应延迟（100–500 合适） |
+| `udp_broadcast` | 布尔 | UDP `server` 打开 `SO_BROADCAST` |
+
+行为约定（实测口径见 [../docs/history/TESTLOG.md](../docs/history/TESTLOG.md) §5.22）：
+
+- **语法/取值错误** → 打印 `[comm] 配置错误: channels[i]: …` 后退出码 1（快速失败，避免带错配置长跑）。
+- 单个通道 `Create`/`Start` 失败 → 只告警，其余通道照跑（与流水线「单链失败只告警」同一策略）。
+- 找不到配置文件 / 一个通道都没有 → **不退出**，打印试过的路径并等信号（systemd 下不会因 broker 没起来反复重启）。
+- 改完怎么验：`make run-comm` → 期望 `[comm] 通道就绪 …` → `[comm] 1 个通道已启动` → `[comm] 运行中`；另一侧用 `mosquitto_pub` 或 `out/bin/test_comm` 发消息，能看到 `[comm] 收包 通道=… topic=… peer=… size=… body="…"`。

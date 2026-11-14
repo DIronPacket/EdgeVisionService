@@ -89,6 +89,8 @@
 | 2026-11-14 | 目录分类后构建复验 | `make` → `[100%] Built target EdgeVisionService`；`grep -cE 'error:\|Error [0-9]'` = 0（`out/` 增量构建，无源码改动） | ✅ 通过（分类未影响构建） |
 | 2026-11-14 | 目录分类后冒烟运行（4 路真实出帧） | `timeout --preserve-status -s INT 8 scripts/run/out/start.sh` → `rc=0`；日志：`[main] 配置来源: …/config/node.json（v1 node.json） / 链路 4 条`、`[main] global: rtsp 端口 8550 / app "live" / pool.blocks 64 / queue_depth 8`、4 条链 `vi0→vpss0→rtsp0→print0` / `vi1→rtsp1→print1` …；实测 **30.44/23.98/23.96/23.96fps**、`[MemManager] FreeMem: 释放 50 块 / 100 个槽位`、`[main] FreeMem 完成，进程正常退出` | ✅ 通过（与 `config/README.md` §8 记录的日志逐行一致） |
 | 2026-11-14 | 入库并推送（`f0b7899` 崩溃采集 · `c6d040c` 目录分类+README） | `git push origin rk3588` → `547ab3a..c6d040c rk3588 -> rk3588`、`rc=0`；两个 commit 分别 18 文件 / 40 文件；`git status` 提交后仅剩 `?? config/2.mp4`、`?? config/test.nv12`（本机素材，有意不入库） | ✅ 通过 |
+| 2026-11-14 | **T6 通信层**（`src/comm/` → `libcomm_api.so`） | `make` → 0 error，新增 `out/lib/libcomm_api.so` + `out/bin/test_comm`；`run_t6_comm.sh` → **43 项 PASS / fail=0**（MQTT 分支临时起 broker 真跑 pub/sub）；`timeout 12 make run` → 4 路 23.9~29.9fps、`FreeMem: 释放 50 块`、正常退出（见 5.21） | ✅ 通过（未接主链路） |
+| 2026-11-14 | **两进程拆分 + 进程可选编译**（`evs_media` / `evs_comm` + 兼容壳 `EdgeVisionService`） | `make` → 0 error（`out/bin/{evs_media,evs_comm,EdgeVisionService}`）；`-DEVS_PROCESS=media` / `comm` 两棵独立构建树产物正确，未选中的 target 仍可 `--target` 构建；`make media` / `comm` / `proc PROC=comm` / `proc PROC=all` 全 rc=0；`make run-media` → 4 路 `实测=23.82fps` + `FreeMem: 释放 50 块` + 正常退出；`make run-comm` → 有 broker `cmd → running` 且收到 `evs/v1/media/evt/heartbeat size=17`，无 broker `Connection refused` 后正常退出（见 5.22） | ✅ 通过 |
 
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
@@ -718,6 +720,65 @@
   - `build` 版 `start.sh`：同样 4 路出帧并 `RC=0`；日志**无 `[crash]` 行**（`build/` 是 11-12 旧产物，不含崩溃采集）
 - 结论：✅ 通过。core 名字现在可自动带「程序 + pid + 时间 + 信号 + 函数@文件:行号」，且两个构建目录都能一键启动；体检脚本能在复现前就判出"抓不到"
 - 未做 / 受限：`enable_coredump.sh` 需 root 未执行（`core_pattern` 仍为 `core`）；`gcore_now.sh` 未实跑；systemd 单元未部署（§12 只给说明与命令）
+
+### 5.21 L2 · T6 通信层：`CommBase` + `UdpComm` / `MqttComm` + 全局 `CommManager`（2026-11-14）
+
+- 代码基线：`rk3588 @ c6d040c` + 工作树（`src/comm/` 未提交）
+- 目标：给服务加通信层 —— 抽象基类 + 两种后端（UDP / MQTT）+ server/client 角色在初始化时可选 + 一个全局单例工厂，落在 `src/comm/`
+- 改动（新增 12 文件，改 1 文件）：
+  - `cmake/FindMosquitto.cmake`：`NO_DEFAULT_PATH` 只认 `install/<平台>`，找 `mosquitto/mosquitto.h` + `libmosquitto.so`，缺失 `FATAL_ERROR`（`install/rk3588` 已有 2.0.22，未新增任何第三方）
+  - `src/comm/comm_types.{h,cpp}`：`CommType{kUdp,kMqtt}` / `CommRole{kServer,kClient}` / `CommState` / `CommConfig`（两后端字段并集）/ `CommFrame`（`data` 仅回调期间有效）/ 回调 + `ToString` / `ParseCommType` / `ParseCommRole`
+  - `src/comm/comm_base.{h,cpp}`：模板方法 `Init/Start/Stop/Send/SendText` + 内部接收线程 + 状态机 + `last_error()`；纯虚 `DoInit/DoStart/DoStop/DoSend/ReceiveLoop`；`Stop()` 顺序 = `running_=false` → `DoStop()` → `join()`
+  - `src/comm/udp_comm.{h,cpp}`：POSIX `socket` + `poll`；server = `bind` + 记住最近对端回包，client = `connect`；`DoStop()` 用 `shutdown` 唤醒 `poll`（使 `Start` 可重复）；pimpl 隐藏 `<netinet/in.h>`
+  - `src/comm/mqtt_comm.{h,cpp}`：libmosquitto **C API** + pimpl（头文件只前向声明 `struct mosquitto;`）；`mosquitto_lib_init/cleanup` 进程级引用计数；`NO_CONN`/`CONN_LOST` 按 `reconnect_delay_ms` 重连并重订阅；通配订阅时发布主题自动落 `evs/v1/comm/evt/{server,client}`（带 `#` 的主题不能作为发布主题）
+  - `src/comm/comm_manager.{h,cpp}`：`getInstance()` 单例 + `recursive_mutex`；`Create(CommConfig)` / `Create(type,role,host,port)` 工厂 + `<type>-<role>-<n>` 自动命名；`Find/Destroy/Start/Stop/StartAll/StopAll/Clear/names/size`；统一回调注入通道名
+  - `src/comm/CMakeLists.txt`（`add_library(comm_api SHARED ...)` + `test_comm` 可执行）、`src/comm/README.md`、`src/CMakeLists.txt`（启用 `add_subdirectory(comm)`）、`scripts/tests/t6_comm.cpp`、`scripts/tests/run_t6_comm.sh`
+- 命令与结果：
+  ```bash
+  cmake -S . -B out && cmake --build out --target test_comm -j8   # configure 打印 Found Mosquitto: install/rk3588/include；build rc=0
+  make                                                            # rc=0；out/lib 多出 libcomm_api.so，out/bin 多出 test_comm
+  ./scripts/tests/run_t6_comm.sh                                   # 无 broker：管理器 12 项 + UDP 17 项 PASS，MQTT 段 [SKIP]
+  ./install/rk3588/sbin/mosquitto -c /tmp/evs_mosq_test.conf -d    # listener 1883 + allow_anonymous true
+  LD_LIBRARY_PATH="out/lib:install/rk3588/lib" ./out/bin/test_comm # 43 项全 PASS、fail=0
+  timeout 12 make run                                              # 4 路出帧 23.9~29.9fps、FreeMem: 释放 50 块、正常退出
+  ```
+  - 管理器段：`Clear()` 后为空 / `Create(udp,server)` OK / Init 后未 Start 时 `state=stopped` / 未 Start 就 `Send` 失败 / `Find` 返回同一对象 / 同名创建被拒且 `last_error="通道名已存在: probe-udp"` / `Destroy` 后 `Find=nullptr` / 空 name 自动命名 `udp-server-1` / `port=0` 与 UDP client 缺 host 均创建失败
+  - UDP 段：39210 起找空闲端口 → client `ping` → server 收到且 `peer="127.0.0.1:<client 端口>"` → server `pong` 回给最近对端 → client 收到；重复 `Start` 幂等返回 true；`Stop` 两次后 `state=stopped`；`Destroy` 后注册表清空
+  - MQTT 段：server 订阅 `evs/v1/#`、client 订阅 `evs/v1/comm/cmd/#` 并上报到 `evs/v1/media/evt/heartbeat`；client 发布 → server 收到且 `frame.topic="evs/v1/media/evt/heartbeat"`；server 发布 `evs/v1/comm/cmd/pong` → client 收到；`Stop` 后两端 `stopped`；broker 日志：两个客户端 `evs-comm-<pid>-1/2` 真实连上（p2, c1, k30）
+- 断言分布：管理器 **12** 项 + UDP **17** 项 + MQTT **14** 项 = **43** 项；无 broker 时前 29 项 PASS、MQTT 段 SKIP（不计失败）
+- 过程中修正的一处测试缺陷：最初让 client 发布到 `evs/v1/comm/cmd/ping`（落在自己订阅的 `evs/v1/comm/cmd/#` 内）→ MQTT 会把发布者的消息回灌给发布者，client 首帧是自收的 `hello-from-client`，断言「client 内容 = hello-from-server」FAIL。**这不是实现 bug**（MQTT 正常语义），改为上报/命令主题分离后全 PASS，并把这条例外写进 `src/comm/README.md` §3.1
+- 结论：✅ 通过。通信层可独立使用（`libcomm_api.so`），UDP 回环与 MQTT pub/sub 回环均实测；主程序与 4 路链路的构建、出帧、`FreeMem` 零回归
+- 未做 / 受限：**未接进主链路**（`main.cpp` 未创建通道）；未做 TLS、消息协议/分帧、UDP 多对端会话表、`epoll` 多路复用；MQTT 只测了 v3.1.1 + QoS 0（未测 QoS 1/2 与断线重连的真实 brokers 掉线场景）；`test_comm` 的 MQTT 段依赖本机 broker（无则 SKIP，不计失败）
+
+### 5.22 L2 · 进程拆分：`evs_media` / `evs_comm` + `EVS_PROCESS` 进程可选编译（2026-11-14）
+
+- 目标：媒体处理与通信处理拆成两个独立可执行；`cmake` 与 `make` 都能**只编其中一个进程**，不指定则都编。
+- 代码改动：
+  - `src/main/media/media_service.{h,cpp}`：把原 `main.cpp` 的编排（崩溃 handler → 配置 → `MemInit` → `build_all` → 信号 → `start_all` → 有序停止 → `FreeMem`）抽成 `evs::media::Run()`；日志前缀保持 `[main]`（既有 TESTLOG 期望逐行不变）。
+  - `src/main/media/main_media.cpp`：`evs_media` 入口（argv → app_name `evs_media` → `Run()`）。
+  - `src/main/comm/main_comm.cpp`：`evs_comm` 入口 —— 读 `config/comm.json` / `../config/comm.json`（或 `argv[1]`）→ `CommManager::Create` → `SetReceiveCallback` / `SetStateCallback` → `StartAll` → 等信号 → `StopAll` + `Clear`。**配置语法/取值错误退出码 1**；配置缺失 / 无通道 / 单通道启动失败**不退出**。
+  - `src/main/CMakeLists.txt`：新增 `EVS_PROCESS`（CACHE STRING，默认 `all`；取 `media | comm | media,comm`）→ `EVS_WITH_MEDIA` / `EVS_WITH_COMM`；未选中的可执行设 `EXCLUDE_FROM_ALL`；非法值 `FATAL_ERROR`。
+  - `src/main/main.cpp`：降为兼容壳（`EdgeVisionService` → `evs::media::Run()`）。
+  - 顶层 `Makefile`：`media` / `comm`（单 target）、`proc PROC=...`（改默认集 + reconfigure + 构建）、`run-media` / `run-comm`、`info` 打印 `EVS_PROCESS`、`help` 增「进程」段。
+  - `config/comm.json`：示例通道 `cmd`（`mqtt` / `server` / `127.0.0.1:1883` / `evs/v1/#`）。
+- 构建验证：
+  | 命令 | 结果 |
+  | --- | --- |
+  | `make`（默认 all） | rc=0；`out/bin` 四个可执行：`evs_media` / `evs_comm` / `EdgeVisionService` / `test_comm` |
+  | `cmake -S . -B /tmp/evs-pm -DEVS_PROCESS=media` + build | rc=0；`bin` 只有 `evs_media` + `EdgeVisionService`；打印 `主进程选择: EVS_PROCESS=media -> media=TRUE comm=FALSE` |
+  | `cmake -S . -B /tmp/evs-pc -DEVS_PROCESS=comm` + build | rc=0；`bin` 只有 `evs_comm`（+ `test_comm`） |
+  | 在 `-DEVS_PROCESS=media` 的树里 `cmake --build <树> --target evs_comm` | rc=0 —— 未选中 ≠ 不存在，单 target 随时可编 |
+  | `make media` / `make comm` | rc=0（不重新 configure，只编对应 target） |
+  | `make proc PROC=comm` → `make info` → `make proc PROC=all` | 全 rc=0；中间 `EVS_PROCESS = comm`，恢复后 `= all` |
+  | `cmake -S . -B /tmp/evs-bad -DEVS_PROCESS=foo` | rc=1；报 `EVS_PROCESS 不认识 'foo'；可选值：all \| media \| comm \| media,comm` |
+- 运行验证：
+  - `timeout --preserve-status -s INT 14 make run-media` → 4 条链建成（`ch0: vi0→vpss0→rtsp0→print0` …）、`[print3] 实测=23.82fps`、`[MemManager] FreeMem: 释放 50 块 / 100 个槽位`、`[main] FreeMem 完成，进程正常退出`；ZLM 日志前缀 `[evs_media]`（app_name 生效）。
+  - `timeout --preserve-status -s INT 14 make run`（兼容壳）→ 同样 4 路 + 释放 50 块 + 正常退出；ZLM 前缀 `[EdgeVisionService]`。**与拆分前输出一致 ⇒ 薄壳回归通过**。
+  - `make run-comm`（无 broker）→ `[comm] 配置来源: ../config/comm.json`、`通道 1 个`、`通道就绪 cmd（mqtt / server / 127.0.0.1:1883）`、`状态 → error`、`启动通道 cmd 失败: … Connection refused（broker 起了吗？…）`、`运行中（Ctrl+C 退出）`；SIGINT 后 `StopAll` + `Clear` → `通道已清理，进程正常退出`（直接跑二进制 **rc=0**）。
+  - `make run-comm`（临时 broker：`./install/rk3588/sbin/mosquitto -c /tmp/evs_mosq_test.conf -d`）→ `通道=cmd → running`、`1 个通道已启动`；同时跑 `out/bin/test_comm` → `evs_comm` 打出 `[comm] 收包 通道=cmd topic=evs/v1/media/evt/heartbeat peer=127.0.0.1:1883 size=17 body="hello-from-client"` 与 `topic=evs/v1/comm/cmd/pong … body="hello-from-server"`；`test_comm` 仍 43 项 PASS、`fail=0`。
+- 结论：✅ 通过。媒体行为与拆分前逐行一致（薄壳回归）；通信进程可独立启停，收包路径端到端可用（broker → `evs_comm` → 回调打印）。
+- 未做 / 受限：`evs_media` **尚未**接入 `comm_api`（不建通道、不发 `media/evt/*`）；`evs_comm` 不拉起/守护 broker；无进程间消息编解码与命令路由、无心跳超时判定；`src/main/test/` 仍未接入构建；`evs_upgrade` 未创建。
+- 收尾回归（同日）：`make` rc=0（`out/bin` = `EdgeVisionService` / `evs_comm` / `evs_media` / `test_comm`）；`bash scripts/tests/run_t6_comm.sh` rc=0（UDP 段全 `[PASS]`、MQTT 段因本机无 broker `[SKIP]`，`fail=0`）。
 
 ## 6. 维护约定
 

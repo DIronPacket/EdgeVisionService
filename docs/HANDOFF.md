@@ -8,7 +8,7 @@
 > 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](design/ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
-> 最后更新：2026-11-11；适用分支：`rk3588`；校准点：`12f5480`。
+> 最后更新：2026-11-14；适用分支：`rk3588`；校准点：`f0b7899`（其后新增 `src/comm/`，见 §0 与 §1.4）。
 > 纯 `docs:` 提交不算"基线漂移"，不需要回写校准点；只有 `src/`、`CMakeLists.txt`、依赖或构建方式变化时才更新本文。
 
 ## 0. 30 秒事实卡（**只想知道现状 → 读完本节即可停止**）
@@ -18,15 +18,16 @@
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
 | 最新进展（2026-11-12，构建入口） | **新增顶层 `Makefile`（薄包装）+ 默认构建目录 `build/` → `out/`**：`make` / `make run` / `make clean`（保留手写 `run.sh`）/ `make distclean FORCE=1`；`.gitignore` 增 `out/`。换目录当场暴露 **P1-2**（`BUILD_RTSP_MODULE` 从未 `option()`，靠旧缓存掩盖）并已修 → `out/lib` 首次全量编译 0 error、含 `librtsp.so`。详见 [TESTLOG.md §5.18](history/TESTLOG.md)、本文附录 B |
+| 通信层（2026-11-14 新增，已入库） | 新增 `src/comm/` → `out/lib/libcomm_api.so`：`CommBase` 抽象基类（模板方法 `Init/Start/Stop/Send` + 内部接收线程 + 状态机 + `last_error()`，子类实现 `DoInit/DoStart/DoStop/DoSend/ReceiveLoop` 五个钩子）+ `UdpComm`（POSIX socket/poll，**零第三方依赖**）+ `MqttComm`（libmosquitto **C API** + pimpl；`install/rk3588` 已有 2.0.22）+ 全局单例 `CommManager`（按 `CommType` 工厂、按 name 注册表、统一回调带通道名）。**UDP 与 MQTT 都不需要引入 zltoolkit**（`install/` 无其 C++ 头文件，且违反 §2 红线 2）。★ MQTT 的 `kServer` 不是 broker：libmosquitto 只有客户端 API，「服务端」= 通配订阅 `evs/v1/#` 的**订阅端角色**，broker 是独立进程。验收 `scripts/tests/run_t6_comm.sh` → 43 项全 PASS（MQTT 分支真起 broker 跑通 pub/sub 回环）。**媒体进程尚未接总线**（`evs_comm` 已使用） |
 | 崩溃现场采集（2026-11-14，已入库 `f0b7899`） | 新增 `src/common/crash/crash_handler.{h,cpp}`：致命信号 → 写 `crash/crash_<app>_<pid>_<epoch>_sig<N>.log`（程序 / signal / 故障地址 / `pc sp lr fp` / 业务 tag / 调用栈）→ **解除该信号屏蔽后重抛** → 内核按 `core_pattern` 落 core；`std::set_terminate` 抓未捕获异常。构建侧未指定时默认 `RelWithDebInfo`（`-g`）+ `-fno-omit-frame-pointer` + `-rdynamic`。诊断脚本 `scripts/coredump/{enable_coredump,symbolize_report,analyze_core,gcore_now}.sh` + systemd 单元。实测：探针 `probe_rc=139` 出报告 + core（gdb 读到 `chain_id=7` / `f={1920,1080,"vi0"}`）；真实 4 路 `SIGQUIT` → `RC=131` + `out/core.75879`（353 MB、24 线程全解析）。详见 [COMMANDS.md §11](ops/COMMANDS.md)、[TESTLOG.md §5.19](history/TESTLOG.md)、BUG_CASES B12/B13 |
 | RGA 实测（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](history/TESTLOG.md) |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **与 `origin/rk3588` 同步（`c6d040c`）** · 工作树只剩两台本机素材未跟踪（`config/2.mp4` 33 MB、`config/test.nv12` 556 MB，**有意不入库**）· **代码校准点 `f0b7899`**（崩溃现场采集：`crash_handler` + 默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic` + `scripts/coredump/*` + `scripts/run/{out,build}/start.sh`）· 前一校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2 `option(BUILD_RTSP_MODULE ... ON)`）、再前 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）、`15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）、`114c94d`（P0-14）、`c557d89`（P0-13）、`eac4bb0`（T7 + P0-2）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
-| 构建（已实测通过 2026-11-12） | **`make`**（顶层薄包装 → `cmake -S . -B out` + `cmake --build out -j"$(nproc)"`；默认构建目录 **`out/`**，`build/` 为历史目录）。等价手写：`cmake -S . -B out && cmake --build out -j"$(nproc)"` |
-| 冒烟运行 | **`make run`**（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`）→ 期望输出 `EdgeVisionService start` |
-| 真实主链路 | **`src/main/main.cpp`（可执行 `EdgeVisionService`）**：装崩溃 handler → `load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`（2026-11-14 实测 4 路出帧）。`src/main/test/main_node.cpp`（`testnode`）是 T6 起的配置驱动验证程序，**当前不参与构建**（`src/main/CMakeLists.txt` 末行 `# add_subdirectory(test)`） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **本地 HEAD = 本提交**（2026-11-14 `comm: 新增 UDP/MQTT 通信层并将入口拆分为 evs_media / evs_comm`，**尚未推送**；哈希见 `git log -1 --oneline`）· 工作树只剩两台本机素材未跟踪（`config/2.mp4` 33 MB、`config/test.nv12` 556 MB，**有意不入库**）· **代码校准点 = 本提交**；前一校准点 `f0b7899`（崩溃现场采集：`crash_handler` + 默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic` + `scripts/coredump/*` + `scripts/run/{out,build}/start.sh`）、再前 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2 `option(BUILD_RTSP_MODULE ... ON)`）、`12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）、`15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）、`114c94d`（P0-14）、`c557d89`（P0-13）、`eac4bb0`（T7 + P0-2）、`29ab58b`（T6）；只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
+| 构建（已实测通过 2026-11-14） | **`make`**（顶层薄包装 → `cmake -S . -B out` + `cmake --build out -j"$(nproc)"`；默认构建目录 **`out/`**，`build/` 为历史目录）。**进程可分别编译**（2026-11-14 起）：`cmake -S . -B out -DEVS_PROCESS=media\|comm\|media,comm`（**不指定 = `all`**：`evs_media` + `evs_comm` + 兼容壳 `EdgeVisionService` 都编）、`make media` / `make comm`（只编某一个 target，无需重新 configure）、`make proc PROC=comm`（改默认进程集，写进 `out/CMakeCache.txt` 持久生效；`make info` 可查当前值） |
+| 冒烟运行 | 媒体进程 **`make run-media`**（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/evs_media ../config/node.json`）；通信进程 **`make run-comm`**（`./bin/evs_comm ../config/comm.json`，无 broker 时只报 `Connection refused` 并继续等信号）；历史兼容壳 **`make run`**（`./bin/EdgeVisionService`，与 `evs_media` 同一份 `media_service`，只差崩溃报告里的程序名） |
+| 两个进程（2026-11-14 拆分，已入库） | **`src/main/media/` → `out/bin/evs_media`（进程 1）**：`media_service.{h,cpp}` 是编排真源（崩溃 handler → `load_with_fallback` → `MemInit` → `build_all` → SIGINT → `stop_all` → `FreeMem`，**日志前缀仍是 `[main]`**），`main_media.cpp` 只做入口；`src/main/main.cpp` 降为兼容壳（`EdgeVisionService`）同样调 `evs::media::Run()`。**`src/main/comm/` → `out/bin/evs_comm`（进程 2）**：读 `config/comm.json` → `CommManager` 建通道 → 统一收包/状态回调打印 → 信号 → `StopAll`+`Clear`；只链 `comm_api`+`common_api`，**不碰 `pipeline`/`platform`**。★ `src/comm/` 仍是**库**（`comm_api`），进程入口在 `src/main/comm/`，两者不是一个目录。`src/main/test/`（`testnode`）仍不参与构建 |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
 | 最大问题 | P0 共 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；**P0-5 于 2026-11-10 核实为非缺陷**；**P0-9 / P0-11 于 2026-11-10 修复**，同日 `FrameBuffer` 补 RAII 收口 P0-10 的 ①②；剩 3 项 = P0-1 x86 FFmpeg 路径 / P0-8 解码器写栈 / P0-10 残余（仅 `capacity` 语义）），见 [STATUS.md §4.1](STATUS.md) |
-| 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
+| 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 取块必有 `release` · **`git push` 前必须先问用户**（2026-11-14） |
 
 ## 0.1 按需跳读表（全文约 10k token，**不要默认全文读**）
 
@@ -73,11 +74,13 @@
 
 | 项 | 值 |
 | --- | --- |
-| 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`（HEAD = `c6d040c`，已推送）；工作树干净，只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库） |
-| 代码校准点 / 最近提交 | **代码校准点 = `12f5480`**（`feat(common): 帧内存改由 MPP DRM 缓冲提供（新增 frame_mem 分配边界）`）；其后均为 `docs:`（坐标回写），**不改变代码校准点**；再前 `15cf975`（`common: 修 P0-9/P0-11 并收口 P0-10`）、`114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）、`c557d89`（P0-13）、`eac4bb0`（T7）、`29ab58b`（T6） |
+| 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`（HEAD = 本提交，**尚未推送**；`origin/rk3588` 仍停在 `c6d040c`）；**工作树干净**，只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库） |
+| 代码校准点 / 最近提交 | **代码校准点 = `f0b7899`**（`feat: 崩溃现场采集`：`common/crash/crash_handler` + 默认 `RelWithDebInfo` + `scripts/coredump/*`）；其后 `c6d040c` 为 `docs:` / 脚本分类（不改代码校准点）；再前 `45a070c`（顶层 `Makefile` 薄包装 + 默认 `out/` + 修 P1-2）、`12f5480`（帧内存改由 MPP DRM 缓冲提供）、`15cf975`（P0-9 / P0-11 + P0-10 ①②）、`114c94d`（P0-14）、`c557d89`（P0-13）、`eac4bb0`（T7 + P0-2）、`29ab58b`（T6） |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
 | 远程其他 ref | `refs/heads/main = b9c39ef`（旧代码，仍含已删除的 media 试验框架）、`refs/tags/base = 90b8c88` |
+| 通信层坐标（2026-11-14 新增） | 代码 `src/comm/{comm_types,comm_base,udp_comm,mqtt_comm,comm_manager}.{h,cpp}` + `src/comm/README.md`；构建 `src/comm/CMakeLists.txt`（`comm_api` + `test_comm`）、`cmake/FindMosquitto.cmake`；依赖 `install/rk3588/{include/mosquitto/,lib/libmosquitto.so}`（2.0.22）；验收 `scripts/tests/{t6_comm.cpp,run_t6_comm.sh}`；记录 TESTLOG §5.21。**已随本提交入库** |
+| 进程拆分坐标（2026-11-14 新增） | 代码 `src/main/media/{main_media.cpp,media_service.{h,cpp},CMakeLists.txt}`（`evs_media`）+ `src/main/comm/{main_comm.cpp,CMakeLists.txt}`（`evs_comm`）+ `src/main/main.cpp`（兼容壳 `EdgeVisionService`）；构建开关 `src/main/CMakeLists.txt::EVS_PROCESS`（`all\|media\|comm\|media,comm`，默认 all）+ 顶层 `Makefile`（`media`/`comm`/`proc`/`run-media`/`run-comm`）；配置 `config/comm.json`（`channels[]`）；记录 TESTLOG §5.22、`docs/design/DESIGN_PROCESS_SPLIT.md` §2/§7。**已随本提交入库** |
 | 历史状态 | 本地与远程旧 `rk3588`（`776fb4f`）无共同祖先，已于 2026-11-05 用 `--force-with-lease` 覆盖。旧代码只能从 GitHub 提交页或 `base` tag 追溯，本地已无引用 |
 
 > ⚠️ 因为主干历史已被重写，**任何"重新 clone 后合并"的思路都会失败**，见 §2.6。
@@ -102,7 +105,7 @@ EdgeVisionService/
 ├── .clinerules/00-handoff.md   # ★ AI 助手自动加载入口（现状卡 + 跳读表 + 硬约束）
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
-├── cmake/                      # 依赖查找：FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA + rk3588.toolchain.cmake（说明见 cmake/README.md）
+├── cmake/                      # 依赖查找：FindFFMPEG / FindMPP / FindZLMediaKit / FindMosquitto / FindRGA + rk3588.toolchain.cmake（说明见 cmake/README.md）
 ├── config/                     # node.json：v1 多链路（4 路，真实入口直接消费）· push.json：v0 单链路（T8 删除）；本机素材 2.mp4 / test.nv12 未跟踪（说明见 config/README.md）
 ├── scripts/                    # 脚本总览见 scripts/README.md
 │   ├── tests/                  # 验收：run_t1_zlm_rtsp_key.sh（18 断言）· run_t2_node_config.sh + fixtures/（53）· run_t3_node_json.sh（104）· run_t5_builder.sh（64）
@@ -121,7 +124,7 @@ EdgeVisionService/
 ├── Makefile                    # 顶层薄包装：只转发给 CMake，规则不由它定义
 └── src/
     ├── README.md               # ★ src 结构总览：构建产物 / 分层依赖 / 帧流动 / 关键类 / 改动落点
-    ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
+    ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · comm · main（algorithm / streamer 仍注释）
     ├── common/                 #                      → libcommon_api.so
     │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size + owned_mem + native；~FrameBuffer() 调 Release 归还，拷贝已删）
     │   ├── frame_mem.{h,cpp}   # ★ 帧内存的唯一分配边界：rk3588 走 MPP DRM 缓冲（mpp_buffer_get + mmap），其他平台 new[]；MPP 头只在本 cpp 里
@@ -145,8 +148,23 @@ EdgeVisionService/
     │   ├── encoder/            # rk_mpp_encoder（RK 可用）+ ffmpeg_encoder（x86 未完成）
     │   ├── decoder/            # rk_mpp_decoder（草稿）+ ffmpeg_decoder（x86 未完成）
     │   └── rtsp/               # zlm_push_server：ZLMediaKit C API 封装
-    └── main/
-        ├── main.cpp            # 真实入口（EdgeVisionService）：崩溃 handler → 配置 → MemInit → build_all → start_all → 信号 → 有序停止 → FreeMem
+    ├── comm/                   #                      → libcomm_api.so（T6，2026-11-14 新增）
+    │   ├── comm_types.{h,cpp}  # CommType{kUdp,kMqtt} · CommRole{kServer,kClient} · CommState · CommConfig（两后端字段并集）· CommFrame（data 仅回调期间有效）· Receive/State 回调 + ToString/Parse*
+    │   ├── comm_base.{h,cpp}   # 抽象基类：Init/Start/Stop/Send + 内部接收线程 + 状态机 + last_error()；子类实现 DoInit/DoStart/DoStop/DoSend/ReceiveLoop
+    │   ├── udp_comm.{h,cpp}    # UDP（POSIX socket + poll，零第三方依赖）：server=bind 且记住最近对端；client=connect；shutdown 唤醒 poll（可重复 Start）
+    │   ├── mqtt_comm.{h,cpp}   # MQTT（libmosquitto C API + pimpl）：通配订阅/重连重订阅；★「server」=订阅端角色，broker 是独立进程
+    │   ├── comm_manager.{h,cpp}# 全局单例工厂：Create(type/role/host/port) · Find/Destroy/Start/Stop/StartAll/StopAll/Clear · 统一回调带通道名
+    │   └── README.md           # ★ 用法 / server-client 语义 / 回调三条硬约束 / 为什么不用 zltoolkit / 已知限制
+    └── main/                   # 进程入口（三个 target 由 EVS_PROCESS 决定默认编哪些）
+        ├── CMakeLists.txt      # 解析 EVS_PROCESS（all|media|comm|media,comm）→ EXCLUDE_FROM_ALL 控制默认集
+        ├── main.cpp            # 历史兼容壳（EdgeVisionService）：取 argv[1] → app_name → evs::media::Run()
+        ├── media/              # → out/bin/evs_media（进程 1：媒体处理）
+        │   ├── main_media.cpp  # 入口三件事（argv → app_name="evs_media" → Run()）
+        │   ├── media_service.{h,cpp}  # 编排真源：崩溃 handler → 配置 → MemInit → build_all → 信号 → stop_all → FreeMem（日志前缀仍 [main]）
+        │   └── CMakeLists.txt  # 链 common_api + comm_api + pipeline_api + platform_api，-rdynamic
+        ├── comm/               # → out/bin/evs_comm（进程 2：通信服务）
+        │   ├── main_comm.cpp   # 读 config/comm.json → CommManager 建通道 → 收包/状态打印 → 信号 → StopAll+Clear
+        │   └── CMakeLists.txt  # 只链 common_api（crash_handler/json.hpp）+ comm_api，-rdynamic
         └── test/               # T6 起 builder 驱动的验证程序（main_node.cpp 等 4 个），**当前不参与构建**（# add_subdirectory(test) 注释状态）
 ```
 
@@ -157,6 +175,7 @@ EdgeVisionService/
 3. ✅ **P1-2 已修（2026-11-12）**：`BUILD_RTSP_MODULE` 原先在 `src/platform/CMakeLists.txt:34` 被使用却**从未 `option()` 定义**，于是新构建目录里该开关默认关 → `rtsp` 不加入 → `pipeline` 随后因缺两条 include 路径而编译失败（`rtsp` 的 `PUBLIC ${ZLM_INCLUDE_DIRS}` 是 `avformat.h` 与 `zlm_push_server.h` 唯一的传播来源）。现已补上 `option(BUILD_RTSP_MODULE "..." ON)`。
    → 教训：**旧 `build/CMakeCache.txt` 里手工设过的值会长期掩盖这类缺陷**（`BUILD_RTSP_MODULE:BOOL=ON` 就这么来的），换构建目录（`out/`）立刻暴露。改动构建目录或新增开关后，必须重新 configure + 全量编译验证（TESTLOG §5.18）。
 4. `pipeline_api` **T5 起 `PUBLIC` 链 `common_api` + `platform_api`**（`PipelineBuilder` 要读 `NodeConfigManager`，同时拿到 `configmgr` 头路径）。2026-11-08 之前它只链 `platform_api`，`common_api` 靠可执行文件层补链（`testnode` 里手写）——那段隐式依赖已随 T5 消除，但**其它新增 target 仍应显式链 `common_api`**，别指望传递依赖。
+5. **进程入口都在 `src/main/`**（2026-11-14）：`main/media/` = 媒体进程 `evs_media`（编排真源 `media_service.cpp`）、`main/comm/` = 通信进程 `evs_comm`、`main/main.cpp` = 历史兼容壳 `EdgeVisionService`。★ 注意 `src/comm/` 是**库**（`comm_api`），`src/main/comm/` 是**进程**，名字像但不是一回事。编哪些进程由 `main/CMakeLists.txt` 的 `EVS_PROCESS` 决定（默认 `all`），细节见 §2.5 第 7 条。
 
 ## 1.5 构建产物现状（最容易踩坑的地方）
 
@@ -166,8 +185,9 @@ EdgeVisionService/
 | --- | --- |
 | 构建入口 | `make`（薄包装：首次自动 `cmake -S . -B out`，之后 `cmake --build out -j`）；等价手写 `cmake -S . -B out && cmake --build out -j"$(nproc)"` |
 | 产物位置 | `out/lib/*.so`、`out/bin/*`（`out/` 已在 `.gitignore`） |
-| ✅ 全量构建已实测 | `make` → `[100%] Built target EdgeVisionService`，0 error（2026-11-12，TESTLOG §5.18）；产物含 `librtsp.so`（P1-2 修好后才成立，见 §1.4 第 3 条） |
-| ✅ 冒烟 | `make run` → `EdgeVisionService start`；等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService` |
+| ✅ 全量构建已实测 | `make` → `[100%] Built target evs_comm`，0 error（2026-11-14）；`out/bin` 四个可执行：`evs_media` / `evs_comm` / `EdgeVisionService`（兼容壳）/ `test_comm`（T6 验收）；产物含 `librtsp.so`（P1-2 修好后才成立，见 §1.4 第 3 条） |
+| ✅ 进程可选编（2026-11-14 实测） | 三种写法都验过：`cmake -S . -B X -DEVS_PROCESS=media` → `X/bin` 只有 `evs_media`+`EdgeVisionService`；`-DEVS_PROCESS=comm` → 只有 `evs_comm`；未选中的 target **仍是有效 target**（在 media-only 树里 `cmake --build X --target evs_comm` 成功）。`make media` / `make comm` / `make proc PROC=comm` / `make proc PROC=all` 均 rc=0，`make info` 打印当前 `EVS_PROCESS`。非法值（`-DEVS_PROCESS=foo`）→ configure 阶段 `FATAL_ERROR` 并列出可选值 |
+| ✅ 冒烟 | 媒体：`timeout --preserve-status -s INT 14 make run-media` → 4 条链路建成、`[print3] 实测=23.82fps`、`FreeMem: 释放 50 块`、`[main] FreeMem 完成，进程正常退出`；兼容壳 `make run` 输出与之一致（同样 4 路 + 释放 50 块）。通信：`make run-comm` 有 broker → `通道=cmd → running` + `[comm] 收包 通道=cmd topic=evs/v1/media/evt/heartbeat peer=127.0.0.1:1883 size=17`；无 broker → `Connection refused` 后**不退出**、继续等信号（`StopAll`+`Clear` 后正常退出 `rc=0`） |
 | ⚠️ 历史 `build/` | 缓存 `CMAKE_HOME_DIRECTORY` 仍指向本机（可复用但不再默认）；`build/bin/testnode`、`test_builder` 等是旧产物，`src/main/CMakeLists.txt` 的 `add_subdirectory(test)` 当前为注释状态 |
 | ❗ `run.sh` 不再必需 | 它做的就是「`cd` 到构建目录 + 导出 `LD_LIBRARY_PATH` + `exec bin/$@`」；`make run` / `make run-node` 已内联同样逻辑，**删掉构建目录也不会失效** |
 | ⚠️ 验收脚本仍写死 `build/` | `scripts/tests/run_t*.sh` 里是 `-B build` / `--build build` / `-L build/lib` / `./build/bin/test_builder`，与默认 `out/` 不一致；`make test` / `make test-t5` 会先打印提醒。统一路径属待办（TESTLOG §5.18） |
@@ -288,9 +308,12 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 做多链路 / 改配置格式 / 上提进程级资源 | `docs/design/DESIGN_MULTI_PIPELINE.md`（方案与分期；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**；**已落地 T2 配置 / T3 定稿 / T5 builder / T6 入口 / T7 采集源**，剩 T7b（loop + 缩放）、T8（删 `push.json`）、T10a（池参数接线）） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`pipeline/moudle_vi/moudle_vi.cpp`（T7 的 `ResolveSrc`）、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5 |
 | 转码 / 画框 / 贴图 / OSD 字符叠加（预处理） | `common/preprocess/image_preprocessor.{h,cpp}`（门面） | `frame_converter`（格式互转）、`frame_drawer`（画框/贴图/截图）、`osd_renderer` + `glyph_source`（字形）、`common/preprocess/README.md`、开关 `BUILD_FREETYPE_OSD` |
 | 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
-| 装配服务入口 | `main/main.cpp`（**T6 起的真实入口**，可执行名 `EdgeVisionService`：`InstallCrashHandler` → 配置 → `MemInit` → `build_all` → 信号 → `start_all` → 有序停止 → `FreeMem`）；`main/test/main_*.cpp`（`main_node`/`main_testpool`/`main_encode`/`main_pushStream`）是历史验证程序，`main/CMakeLists.txt` 末行 `# add_subdirectory(test)` 处于注释状态 → **当前不参与构建**（`testnode` 仅存在于旧 `build/bin`） | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`、TESTLOG §5.9 |
-| 拆三进程（媒体 / 通信 / 升级）/ 加进程间通信 | `docs/design/DESIGN_PROCESS_SPLIT.md`（规划：目标目录、分层决策、`MqttClient` 接口草案、topic 命名、OpenSSL/mosquitto 实测现状、4 步落地顺序；**尚未落地**） | `src/CMakeLists.txt`（已预留 `# add_subdirectory(comm)`）、空目录 `src/comm`、`src/algorithm`、`install/rk3588/{sbin/mosquitto, include/mosquitto, lib/libmosquitto.so.1, lib/libssl.so.3}` |
-| 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
+| 改装配服务入口 / 媒体进程编排 | `main/media/media_service.cpp`（**唯一真源**：`InstallCrashHandler` → 配置 → `MemInit` → `build_all` → 信号 → `start_all` → 有序停止 → `FreeMem`）；`main/media/main_media.cpp`（`evs_media` 入口）与 `main/main.cpp`（`EdgeVisionService` 兼容壳）都只是薄壳，改行为只改 `media_service.cpp` | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`（`EVS_PROCESS`）、TESTLOG §5.9 / §5.22 |
+| 加 / 改通信进程（`evs_comm`） | `main/comm/main_comm.cpp`（读 `config/comm.json` → `CommManager::Create` → `SetReceiveCallback` / `SetStateCallback` → `StartAll` → 信号 → `StopAll` + `Clear`） | `config/comm.json`（`channels[]`；字段见 `comm/comm_types.h::CommConfig`）、`src/comm/README.md` §3/§5、`main/comm/CMakeLists.txt` |
+| 只编某个进程 / 加第三个进程 | `main/CMakeLists.txt`（解析 `EVS_PROCESS` → `EVS_WITH_MEDIA` / `EVS_WITH_COMM`；新进程照抄 `add_subdirectory(xxx)` + `if(NOT EVS_WITH_XXX) set_target_properties(xxx PROPERTIES EXCLUDE_FROM_ALL TRUE)`）、顶层 `Makefile`（`media` / `comm` / `proc` / `run-media` / `run-comm`） | `make help`、`make info`（打印当前 `EVS_PROCESS`）、`docs/design/DESIGN_PROCESS_SPLIT.md` §7、本文 §2.5 |
+| 用 UDP / MQTT 收发消息 / 加通信后端 | `src/comm/comm_manager.{h,cpp}`（全局单例工厂：`Create(CommConfig)` / `Create(type,role,host,port)`）+ `src/comm/comm_base.h`（五个钩子） | `src/comm/README.md`（§3 server/client 语义 · §5 回调三条硬约束 · §9 已知限制）、`udp_comm.cpp`（零依赖）、`mqtt_comm.cpp`（libmosquitto C API）、`cmake/FindMosquitto.cmake`、验收 `scripts/tests/run_t6_comm.sh`（43 断言）、TESTLOG §5.21 |
+| 拆三进程（媒体 / 通信 / 升级）/ 加进程间通信 | `docs/design/DESIGN_PROCESS_SPLIT.md`（§2 目标结构 · §3 分层决策 · §7 落地顺序）。**2026-11-14 进度**：通信库 = `src/comm/`→`comm_api`（文档原计划 `src/common/comm`，实际独立成顶层库）；进程入口 = `src/main/media/`（`evs_media`）+ `src/main/comm/`（`evs_comm`），**没有按文档放在 `src/media` / `src/comm`** —— `src/comm` 已被库占用，且约定进程代码集中在 `src/main/`。剩：`src/upgrade/`（未建）、broker 守护（`fork/exec`）、消息编解码 / 命令路由 / 心跳超时判定、媒体进程接入 `comm_api` 上报 `media/evt/*` | `src/main/{media,comm}/**`、`src/main/CMakeLists.txt`（`EVS_PROCESS`）、`src/comm/**`、`config/comm.json`、`install/rk3588/{sbin/mosquitto, include/mosquitto, lib/libmosquitto.so, lib/libssl.so}` |
+| 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake`；**进程子集** = `src/main/CMakeLists.txt` 的 `EVS_PROCESS`（`all|media|comm|media,comm`）+ 顶层 `Makefile` 的 `media`/`comm`/`proc` | `src/*/CMakeLists.txt`、本文 §2.5 |
 | 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
 | 记测试 / 查回归结果 / 证明"已修复" | [TESTLOG.md](history/TESTLOG.md) | §4 是 L1 冒烟汇总表，§5 是 L2/L3 明细；写完仍按本文 §2.2 顺序验证 |
 | 崩溃了 / 程序卡死 / 要抓现场看变量 | `src/common/crash/crash_handler.{h,cpp}`（handler 行为、报告字段、`SetCrashTag`） | [CRASH_DUMP.md](ops/CRASH_DUMP.md)（全流程 + core 命名 + 抓不到的原因（按链路 7 段 27 条））、`scripts/coredump/`（体检 / 开 core / 符号化 / 解析 core / 归档改名 / gcore / systemd 单元）、`scripts/run/{out,build}/start.sh`、[COMMANDS.md §11–§12](ops/COMMANDS.md)、本文 §1.10、BUG_CASES B12/B13 |
@@ -344,6 +367,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 8 | 做任务范围之外的"顺手修"（批量格式化、调整无关代码风格、改注释排版） | 污染 diff，让 review 与回滚失效 |
 | 9 | 在**没有实际执行构建/运行**的情况下声称"已修复/已通过" | 必须给出真实命令与输出 |
 | 10 | 擅自改动 `main` 分支或推送其他远程分支 | 只操作 `rk3588`，其他分支需用户明确指定 |
+| 11 | **未经用户明确同意执行 `git push`**（每次推送前必须先问，见 §2.6 第 9 条） | 用户 2026-11-14 明确要求：**远程可见的写操作必须先征得同意**，由用户决定"什么时候推、推哪几笔" |
 
 ## 2.2 构建与验证规定
 
@@ -355,10 +379,10 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 2. **不要盲目 `rm -rf out` / `rm -rf build`**：两者缓存里的 `CMAKE_HOME_DIRECTORY` 都指向本机，未必失效。要清就 `make distclean FORCE=1`（⚠ 会删该目录下手写的 `run.sh`）。
 3. 改了 `CMakeLists.txt` / `cmake/Find*.cmake` 后，必须**重新 configure**（`make reconfigure` 或 `cmake -S . -B out`），不能只 `cmake --build`。
 4. ✅ **P1-2 已修（2026-11-12）**：`BUILD_RTSP_MODULE` 已补成正式 `option(... ON)`，新构建目录也会编 `rtsp`。若有人显式 `-DBUILD_RTSP_MODULE=OFF`，`pipeline` 会因缺 `avformat.h` / `zlm_push_server.h` 而编译失败 —— 那不是环境问题，见 §1.4 第 3 条。
-5. 验证顺序固定为：**编译通过 → `make run`（冒烟）→ 相关可执行**（`testnode` 当前未参与构建，见 §1.5）。
-6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
+5. 验证顺序固定为：**编译通过 → `make run-media`（冒烟 + 真实主链路）→ 相关可执行**（`testnode` 当前未参与构建，见 §1.5）。
+6. 媒体进程需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
-8. 长跑类验证一律套 `timeout`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）：`timeout --preserve-status -s INT 20 make run-node`（`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）。
+8. 长跑类验证一律套 `timeout`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）：`timeout --preserve-status -s INT 20 make run-media`（通信进程用 `make run-comm`）。
 9. **每次验证都要留痕**：跑完按 [TESTLOG.md](history/TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
 10. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug —— ① 现象与根因不在同一层 ② 只在特定并发/时序/内存残留下复现 ③ 涉及资源所有权、生命周期、跨组件共享状态 ④ 曾被误判过方向 —— 修完必须在 **[BUG_CASES.md](history/BUG_CASES.md)** 追加案例（固定顺序：现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误 / 单行空指针且无连带语义的，只在 [STATUS.md](STATUS.md) 标注。
 
@@ -392,9 +416,10 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 1. 新增源文件必须显式加入对应 `target_sources` / `add_library`。
 2. 新模块使用 `MODULE_LIB_TYPE` 变量，跟随顶层 `BUILD_SHARED_MODULE`（`common_api` 写死 `SHARED` 属于历史例外，不要扩散）。
 3. 输出目录统一走顶层全局设置（`out/lib`、`out/bin`），不要自定 `LIBRARY_OUTPUT_DIRECTORY`。
-4. 新开关必须 `option(... "描述" ON/OFF)` 给默认值并写注释；**改开关要同步 README §3 与 ARCHITECTURE §3**。
+4. 新开关必须 `option(... "描述" ON/OFF)` 给默认值并写注释；**改开关要同步 [ops/COMMANDS.md](ops/COMMANDS.md) §1（构建）与 [ARCHITECTURE.md](ARCHITECTURE.md) §3**（根 `README.md` 只留项目介绍与索引，不再重复构建细节）。
 5. 依赖查找只放在 `cmake/Find*.cmake`，不在 `CMakeLists.txt` 里硬编码绝对路径。
 6. 链接关系尽量用 `PUBLIC`/`PRIVATE` 表达真实依赖，避免依赖可执行文件层"补链"（P1-1 就是这类问题，修复时一次改到位）。
+7. **进程子集开关 `EVS_PROCESS`（2026-11-14）**：定义在 `src/main/CMakeLists.txt`（`set(EVS_PROCESS "all" CACHE STRING ...)`），取 `all | media | comm | media,comm`，解析成 `EVS_WITH_MEDIA` / `EVS_WITH_COMM`；未选中的可执行用 `set_target_properties(X PROPERTIES EXCLUDE_FROM_ALL TRUE)`——**不要用 `if(...) add_subdirectory()` 排除**，否则 `cmake --build out --target X` 与 `make X` 全部失效。新增进程照此追加一个 `EVS_WITH_<NAME>` 分支，并在 `Makefile` 加同名目标。
 
 ## 2.6 Git 规定
 
@@ -408,6 +433,11 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 6. **禁止 force 推送**。历史已重写过一次；若确实必须重写，前置条件：用户明确同意 + 在本地先打备份 tag。
 7. **禁止在有未提交改动时**执行 `git reset --hard`、`git clean -xfd`、`git checkout -- .`。
 8. 提交后如需同步，用普通 `git push origin rk3588`；不要推 `main`。
+9. **每次 `git push` 之前必须先问用户**（用户 2026-11-14 明确要求，等同 §2.1 第 11 条红线）：
+   - 推之前先说清三件事：**要推哪几个 commit**（`git log --oneline origin/rk3588..HEAD`）、**推到哪个分支/远程**、**涉及哪些文件**（`git show --stat`）；
+   - 得到用户明确答复（"推" / "可以"）才执行；**不要**在收尾流程末尾自动推送，**不要**因为上一次同意过就默认继续推；
+   - 用户没答复 = 不推，把命令留在回复里让用户自己执行或再说一次"推"。
+   - `push --force` 属于第 6 条（永远禁止，除非用户**单独**授权并先打备份 tag）。
 
 ## 2.7 命名与目录规定
 
@@ -440,6 +470,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 - [ ] 提交信息符合 `<模块>: <动词> <对象>`
 - [ ] 若修的是"有原理含量"的 bug：已在 **`docs/history/BUG_CASES.md`** 追加案例（含根因原理与函数级位置），并更新其 §1 索引表
 - [ ] 没有提交被忽略目录的内容
+- [ ] 如果这一步涉及推送：**已先问过用户并得到明确同意**（§2.6 第 9 条），没有自作主张 `git push`
 
 ---
 
@@ -537,10 +568,11 @@ ls install/rk3588/include | grep -E 'zlmediakit|ZLMediaKit|libavcodec'
 # 4) 构建（约 1 分钟；失败先对照 §2.2 与 STATUS P0-1）
 make 2>&1 | tail -20
 
-# 5) 冒烟运行：期望输出 "EdgeVisionService start"
-make run
+# 5) 冒烟运行：期望 4 路出帧，Ctrl+C 后 "[main] FreeMem 完成，进程正常退出"
+make run-media
 
-# 6) 真实主链路：testnode 当前未参与构建（add_subdirectory(test) 为注释状态）；
+# 6) 通信进程（无 broker 只告警，不退出）：make run-comm
+#    testnode 当前未参与构建（add_subdirectory(test) 为注释状态）；
 #    需要时取消注释 → make reconfigure && make → timeout 20 make run-node
 ```
 
@@ -581,10 +613,8 @@ make run
 | 2026-11-14 | **崩溃采集补齐（流程 / 命名 / 体检 / 启动脚本）**：新增 `docs/ops/CRASH_DUMP.md`（信号→handler→`do_coredump` 七步时序、`core_pattern` 格式符全表、`%e` 16 字节截断、抓不到的原因（按链路 7 段 27 条）按链路分段、本机实测结论表）；新增 `scripts/coredump/check_coredump_env.sh`（13 项 PASS/WARN/FAIL 只读体检）、`scripts/coredump/collect_core.sh`（gdb 解析崩溃帧 → 归档目录 `core.<app>.<pid>.<epoch>.sig<N>.<函数>@<文件>:<行>/`，内含 core 硬链 + `meta.txt`（build-id/core_pattern/ulimit）+ 崩溃线程栈 + 全线程栈 + `.so` 列表 + 自动配对的 `report.log`）；新增 `scripts/run/{out,build}/start.sh`（`ulimit -c` / `LD_LIBRARY_PATH` / `EVS_CRASH_DIR` / 前台 `exec`）；`enable_coredump.sh` pattern 改 `%e.%p.%t.sig%s`；`evs-edgevision.service` 改 `ExecStart=…/scripts/run/out/start.sh`。文档：`COMMANDS.md` §2.5/§11.7/§11.8/**§12（开机自启）**、本文 §1.4/§1.9/§1.10、`TESTLOG.md` §5.20、`AGENTS.md` 与 `.clinerules` 入口。实测：8 脚本 `bash -n` 全过；体检 `PASS=5 WARN=9 FAIL=0`；探针 core → `…sig11.crash_in_worker@evs_crash_probe.cpp:17`；真实 core → `…sig3.std::this_thread::sleep_for_…@this_thread_sleep.h:82`；两个 start.sh 各 4 路出帧且 `RC=0` | `f0b7899` |
 | 2026-11-14 | **目录分类（docs/ 与 scripts/ 分子目录）+ 五份 README**（纯文档/脚本搬迁，无 C++ 改动）：`docs/` 根保留 `HANDOFF`/`ARCHITECTURE`/`STATUS`，新增 `design/`（ROADMAP·DESIGN_MULTI_PIPELINE·DESIGN_PROCESS_SPLIT）、`ops/`（COMMANDS·CRASH_DUMP）、`history/`（TESTLOG·BUG_CASES）、`interview/`（INTERVIEW）；`scripts/` 的 `diag/` 改名 `coredump/`、`evs-edgevision.service` 移入 `deploy/`；新增 `docs/README.md`（总索引）、`scripts/README.md` + `coredump/`/`deploy/`/`run/`/`tests/` 四份子 README、`cmake/README.md`、`config/README.md`、`src/README.md`。同步：38 个文件的 `docs/<旧名>.md` 与 `scripts/diag/` 引用改为新路径、markdown 相对链接按文件新位置重算（`../README.md` → `../../README.md`）；本文 §1.4 目录树、§1.9「装配服务入口」行（更正为 `main/main.cpp` 是真实入口、`main/test/` 当前不参与构建）、根 `README.md` §6 导航。验证：`bash -n` 12 脚本全过、链接体检 `missing=0`、无旧路径残留、`make` 0 error | `c6d040c` |
 | 2026-11-14 | **入库并推送（`f0b7899` + `c6d040c`）** + `.gitignore` 例外修正：分类提交时发现 `scripts/run/{out,build}/` 被 `.gitignore` 的 `out/`、`build/` 规则**整目录吞掉**，`start.sh` 根本进不了仓库（而 `deploy/evs-edgevision.service` 的 `ExecStart` 正指向它）→ 追加两行否定规则 `!/scripts/run/out/`、`!/scripts/run/build/`；`git check-ignore` 复查：两个 `start.sh` 不再命中，真实构建目录 `out/`、`build/` 仍被忽略；`config/2.mp4`（33 MB）与 `config/test.nv12`（556 MB）为本机素材，保持未跟踪、不入库 | `f0b7899` / `c6d040c` |
-
-
-
-
-
+| 2026-11-14 | **新增通信层 `src/comm/` → `libcomm_api.so`（本提交，已入库）**：`CommBase`（模板方法 `Init/Start/Stop/Send` + 接收线程 + 状态机 + `last_error()`；纯虚 `DoInit/DoStart/DoStop/DoSend/ReceiveLoop`）、`UdpComm`（POSIX `socket`+`poll`，server 记住最近对端，`shutdown` 唤醒使 Start 可重复，零第三方依赖）、`MqttComm`（libmosquitto C API + pimpl，`mosquitto_lib_init` 进程级引用计数，`NO_CONN`/`CONN_LOST` 按 `reconnect_delay_ms` 重连并重订阅，通配订阅时发布主题自动落到 `evs/v1/comm/evt/{server,client}`）、`CommManager`（`getInstance()` 单例 + `recursive_mutex`、`Create` 工厂 + `udp-server-1` 式自动命名、`Find/Destroy/Start/Stop/StartAll/StopAll/Clear/names/size`、统一回调注入通道名）。新增 `cmake/FindMosquitto.cmake`（`NO_DEFAULT_PATH` 只认 `install/<平台>`，缺失 `FATAL_ERROR`）与 `scripts/tests/{t6_comm.cpp,run_t6_comm.sh}`（`BUILD=${BUILD:-out}`）。`src/CMakeLists.txt` 启用 `add_subdirectory(comm)`；`src/main/test` 仍未构建，故 `test_comm` 定义在 `src/comm/CMakeLists.txt`。验证：`make` RC=0（新增 `libcomm_api.so` + `bin/test_comm`，主程序不受影响）；`run_t6_comm.sh` → 43 项 PASS、`fail=0`（MQTT 分支临时起 `mosquitto -c /tmp/evs_mosq_test.conf -d` 实跑 pub/sub 回环，broker 日志确认真实连接）；`timeout 12 make run` 4 路出帧 23.9~29.9fps、`FreeMem: 释放 50 块`、正常退出。★ 澄清：**UDP 不需要 zltoolkit**（`install/` 无 ZLToolKit 头，只有 `ZLMediaKit/*.h` C API 与 `libmk_api.so`/`libzlmediakit.a`），引它既编不过也违反红线 2。详见 TESTLOG §5.21 | 本次提交 |
+| 2026-11-14 | **进程拆分（媒体 / 通信）+ 进程可选编译（本提交，已入库）**：`src/main/` 下设两个进程目录 —— `main/media/`（`evs_media`：把 `main.cpp` 的编排抽成 `media_service.{h,cpp}`，`main_media.cpp` 只做入口）与 `main/comm/`（`evs_comm`：读 `config/comm.json` → `CommManager` 建通道 → 统一收包/状态回调打印 → 信号 → `StopAll`+`Clear`，只链 `common_api`+`comm_api`）；`main/main.cpp` 降为兼容壳（`EdgeVisionService` 调同一个 `evs::media::Run()`，日志前缀仍是 `[main]`，既有 TESTLOG 期望不变）。构建：`src/main/CMakeLists.txt` 新增 `EVS_PROCESS`（`all\|media\|comm\|media,comm`，默认 all）→ `EVS_WITH_MEDIA`/`EVS_WITH_COMM`，未选中的 target 用 `EXCLUDE_FROM_ALL` 而非排除子目录（保证 `--target` 随时可用）；顶层 `Makefile` 增 `media`/`comm`（单 target）、`proc PROC=...`（改默认集 + reconfigure + 构建）、`run-media`/`run-comm`，`info` 打印当前 `EVS_PROCESS`、`help` 增「进程」段。新增 `config/comm.json`（示例通道 `mqtt`/`server`/`127.0.0.1:1883`/`evs/v1/#`）。验证：`make` rc=0（`out/bin/{evs_media,evs_comm,EdgeVisionService}` + `test_comm`）；`-DEVS_PROCESS=media` 树只产 `evs_media`+兼容壳、`comm` 树只产 `evs_comm`，且在 media-only 树里 `--target evs_comm` 仍成功；`make media`/`comm`/`proc PROC=comm`/`proc PROC=all` 全 rc=0；`make run-media` 4 路 `[print3] 实测=23.82fps` + `FreeMem: 释放 50 块` + 正常退出，`make run` 输出一致（薄壳回归）；`make run-comm` 有 broker → `通道=cmd → running` 并收到 `evs/v1/media/evt/heartbeat`（`size=17`），无 broker → `Connection refused` 后继续等信号、退出码 0；非法 `-DEVS_PROCESS=foo` → configure 阶段 `FATAL_ERROR`。详见 TESTLOG §5.22 | 本次提交 |
 
 [返回 README](../README.md)
+

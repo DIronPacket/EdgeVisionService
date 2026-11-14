@@ -2,7 +2,7 @@
 
 > 记录当前代码“做到哪、哪里会坏、先修什么”，不描述未来计划。
 > 架构与扩展方式见 [ARCHITECTURE.md](ARCHITECTURE.md)；未来排期见 [ROADMAP.md](design/ROADMAP.md)；项目入口见 [README](../README.md)。
-> 最后更新：2026-11-08；适用分支：`rk3588`。
+> 最后更新：2026-11-14（§1 新增「进程入口 / 构建选择」行；其余章节仍为 2026-11-08 快照，明细见 [HANDOFF.md](HANDOFF.md) §0）；适用分支：`rk3588`。
 
 ## 1. 模块完成度总览
 
@@ -23,9 +23,11 @@
 | 流水线节点 | `pipeline/pipeline_node.*`、`moudle_vi`、`moudle_push`、`moudle_print`、`node_factory.*`、`pipeline_builder.*` | 🟡 80% | Vi→Push→Print 单链路可演示；推流分辨率/编码/协议/fps/码率已由配置驱动；各节点耗时已可采集并周期打印；**T5 新增 `NodeFactory`（type→节点）与 `PipelineBuilder`（拓扑校验 + 装配 + 连线 + 批量启停）**，装配不再靠手写（TESTLOG §5.8）；**T6 接入真实入口** —— `main_node.cpp` 只做「配置 → 进程资源 → builder → SIGINT 优雅退出」，`config/node.json` 单独决定跑几条链，SIGINT 后正序 `stop_all` + `FreeMem` + 退出码 0 已实测（TESTLOG §5.9）；**T7 采集源已配置化** —— `ViNode` 按 `vi.src` 前缀选 V4L2/FFmpeg，`config/node.json` 四路（1 摄像头 + 3 mp4）同时出帧实测 29.96 / 23.96 / 23.93 / 23.94fps（TESTLOG §5.10）；编码 QP 未配置化、错误路径丢块、无多分支引用计数 |
 | 主程序 | `main/main.cpp` | 🔴 5% | 仅打印；真实入口在 `main/test/main_node.cpp`（T6 后已是 builder 驱动的配置编排：正序停止、退出码 0、无 `while(1)`） |
 | 节点配置管理 | `common/configmgr/*` | 🟢 90% | v1 `node.json` 解析 + 字段级校验（错误带字段路径）+ `${global.*}` 引用展开 + 默认值合并 + v0 `push.json` 单链路适配；`PipelineBuilder`（T5）与真实入口 `main_node.cpp`（T6）已能消费，**入口不再手写装配**（TESTLOG §5.8 / §5.9），`global.pool.blocks/queue_depth/quota_per_channel` 仍未被内存池读取（T10a）。`config/node.json` 已按 4 路定稿（ch0 摄像头 1080p@30 + ch1~ch3 三个 mp4 实测 1024×576@24），T3 验收 `passes=104`（TESTLOG §5.7），**4 路同时出帧已实测（TESTLOG §5.10，T7）**，mp4 播完不重播待 T7b |
-| 算法/通信/流媒体扩展 | 注释中的 `algorithm/comm/streamer` | ⚪ 0% | 仅目录规划 |
+| 通信层（T6，2026-11-14） | `src/comm/{comm_types,comm_base,udp_comm,mqtt_comm,comm_manager}.{h,cpp}` | 🟡 60% | 抽象基类 `CommBase`（模板方法 + 接收线程 + 状态机 + `last_error()`）+ `UdpComm`（POSIX socket/poll，**零第三方依赖**；server 记住最近对端，client connect）+ `MqttComm`（libmosquitto C API + pimpl，`NO_CONN`/`CONN_LOST` 重连并重订阅，通配订阅时发布主题落到 `evs/v1/comm/evt/*`）+ 全局单例 `CommManager`（工厂/注册表/统一回调）。★ MQTT 的 `kServer` 是**订阅端角色**，broker 是独立进程（libmosquitto 只有客户端 API）。验收 `scripts/tests/run_t6_comm.sh` → 43 项 PASS（MQTT 分支真起 broker 跑通 pub/sub）。**未接主链路、无 TLS、无协议分帧**，见 `src/comm/README.md` §9 |
+| 算法 / 流媒体扩展 | 注释中的 `algorithm/streamer` | ⚪ 0% | 仅目录规划 |
 | 测试 | `main/test/*` | 🟡 30% | 有编码/推流/节点/内存池手工测试；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（`test_builder` 64 断言覆盖工厂/拓扑/装配/失败隔离）；`main_testpool.cpp` 已与当前代码脱节；无 CTest/单测框架 |
 | 文档/配置/脚本 | `README.md`、`docs/*`、`config/`、`scripts/` | 🟡 40% | README/ARCHITECTURE/STATUS/ROADMAP 已建立；`config/push.json`（v0，在用）与 `config/node.json`（v1，4 路定稿）并存；`scripts/tests/` 已有 T1/T2/T3/T5 四套可重跑验收脚本（共 239 项断言），无 CI |
+| 进程入口 / 构建选择（2026-11-14） | `src/main/media/`（`evs_media`）· `src/main/comm/`（`evs_comm`）· `src/main/main.cpp`（兼容壳 `EdgeVisionService`）· `src/main/CMakeLists.txt`（`EVS_PROCESS`）· 顶层 `Makefile` | 🟡 50% | 媒体与通信已拆成两个独立可执行，均支持选择性编译（`-DEVS_PROCESS=media\|comm`、`make media`/`comm`/`proc`），媒体行为与拆分前一致（4 路 `实测=23.82fps`）。**但两进程之间还没有消息总线通信**：`evs_media` 不建通道、`evs_comm` 不拉起/守护 broker、无命令路由与心跳判定；`evs_upgrade` 未创建 |
 
 ## 2. 已实现的主链路能力
 
@@ -56,6 +58,7 @@
 - `main.cpp` 未组装任何流水线，也没有命令行参数、配置文件加载、信号处理。
 - `config/push.json` 已驱动推流分辨率/编码/协议/端口/fps/码率；`scripts/` 为空，采集源路径与编码 QP 仍写在代码里；`docs/` 已建立架构/现状/路线图文档。
 - 没有统一日志（`printf`/`std::cout` 混用）、没有指标、没有健康检查。
+- 通信层（`src/comm/`，T6，2026-11-14）**已可用但未接入主链路**：`main.cpp` 不创建任何通道，也没有「通信进程」；UDP/MQTT 均无 TLS、无消息协议（`Send` 是裸字节）。
 - 没有 CTest/GoogleTest 单测；测试程序均为 `main()` 手工验证。
 - `main_testpool.cpp` 仍是旧 API（`GlobalMemManager`、`FrameBuffer*`、`link_to(shared_ptr)`），与当前头文件不匹配，未参与编译。
 
