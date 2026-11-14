@@ -8,7 +8,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| **能跑什么** | `config/node.json` 描述的 **4 路链路**（1 个摄像头 + 3 路 mp4）同时出帧并推 RTSP；`Ctrl+C` → 正序停线程 → 释放 ZLM 流 → `FreeMem` 归还 50 块 → 退出码 0。实测 `[print3] 实测=23.82fps` |
+| **能跑什么** | `config/node.json` 描述的 **4 路链路**（1 个摄像头 + 3 路 mp4）同时出帧并推 RTSP；`Ctrl+C` → 正序停线程 → 释放 ZLM 流 → `FreeMem` 归还 50 块 → 程序退出码 0。实测 `[print3] 实测=23.82fps` |
 | **进程形态** | **两个进程 + 一个兼容壳**（2026-11-14 拆分）：`evs_media`（媒体）/ `evs_comm`（通信）/ `EdgeVisionService`（旧名字，与 `evs_media` 共用同一份 `media_service` 逻辑） |
 | **通信** | `src/comm/` = `libcomm_api.so`：`CommBase` + `UdpComm` / `MqttComm` + 全局 `CommManager`，`scripts/tests/run_t6_comm.sh` 43 项断言。**媒体进程尚未接总线**（不建通道、不上报 `media/evt/*`） |
 | **主要缺口** | 无日志 / 指标体系、无单测 / CI、扇出拓扑不可达（T9）、池块数与队列深度未接线（T10a）、x86 依赖缺失（P0-1）；**媒体与通信两进程之间还没有消息路由** |
@@ -20,12 +20,14 @@
 # 0) 依赖不入库：FFmpeg 5.x / Rockchip MPP / ZLMediaKit / mosquitto 2.0.22 需自备到 install/rk3588/{include,lib}
 #    （OpenSSL 3.5.4 与 FreeType 可选；查找策略见 cmake/README.md）
 make                     # 首次自动 configure；产物在 out/bin、out/lib
-make run-media           # 4 路出帧；Ctrl+C → FreeMem → 退出码 0
+make run-media           # 4 路出帧；Ctrl+C → 有序停止 → FreeMem → 程序自身退出码 0
 make run-comm            # 通信进程（无 broker 只报 Connection refused，不退出）
 make info                # 看当前编哪些进程（EVS_PROCESS）与构建参数
 ```
 
 - **只编一个进程**：`make media` / `make comm`；**改默认集**：`make proc PROC=comm`（写进 `out/CMakeCache.txt`，`PROC=all` 恢复）；等价 CMake 写法 `cmake -S . -B out -DEVS_PROCESS=media,comm`。
+- **`make run` 与 `make run-media` 是同一个程序**：两者都调 `evs::media::Run()`，`EdgeVisionService` 只是历史兼容的可执行名，日志只差 ZLM 前缀（`[EdgeVisionService]` / `[evs_media]`）；通信进程请用 `make run-comm`（`[comm]` 前缀）。
+- **退出码 130 ≠ 崩溃**：`make run-*` 里 Ctrl+C 的 SIGINT 会同时打到 make，所以 **make 自身返回 130**，程序仍是 0（尾部有 `进程正常退出`）。要看程序的 rc 用 `bash scripts/run/out/start.sh` 或 `(cd out && ./bin/evs_media ../config/node.json)`。2026-11-14 起运行配方末尾加了 `exec`，**关程序后不会再出现 `make: *** [Makefile:…] Interrupt` 那一行**。
 - **播放**：`ffplay rtsp://<板端IP>:8550/live/ch0`（每路 `ch0`~`ch3`）。
 - **自检**：`bash scripts/tests/run_t6_comm.sh`（其余见 [scripts/tests/README.md](scripts/tests/README.md)）。
 - 命令细节、实测输出与踩坑：**[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)** §1 构建 / §2 运行 / §3 内存 / §11 崩溃 / §12 自启。
@@ -71,5 +73,5 @@ make info                # 看当前编哪些进程（EVS_PROCESS）与构建参
 
 ---
 
-最后更新：2026-11-14（精简为「项目介绍 + README 索引」，详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
-适用分支：`rk3588` · 代码校准点：`f0b7899` · 工作树：通信层 + 进程拆分（未提交）
+最后更新：2026-11-15（补「两个进程 / 运行目标 / 退出码」语义；详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
+适用分支：`rk3588`（已推送 `origin/rk3588`）· 代码校准点：`0117907`（通信层 + 进程拆分，2026-11-14）· 工作树干净（只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪）

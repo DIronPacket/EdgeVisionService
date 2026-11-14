@@ -804,6 +804,7 @@
 - 改动范围：只改 `Makefile`（4 个配方 + 注释）与文档，**未动 `src/`**，所以本机最后一次代码构建仍是 `0117907`，无需重编。
 - 入库与推送（用户批准「全部一起提交推送」）：本批（`Makefile` + `docs/HANDOFF.md` + `docs/history/TESTLOG.md` + `docs/ops/COMMANDS.md`，4 文件 +60/−11）提交为 **`c61dc21`**；连同 `0117907`（40 文件）与 `809c5e7`（2 文件）执行 `git push origin rk3588` → `eb46940..c61dc21  rk3588 -> rk3588`、`push_rc=0`；推送后 `origin/rk3588 = c61dc21`。
 - 追问澄清（2026-11-15）：有人怀疑「程序退出时报错是 core 采集（`crash_handler`）在退出时出错」——**不成立**：`crash_handler` 只装 `SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT/SIGQUIT` + `set_terminate`，无 `atexit` / 析构钩子，完全不碰 `SIGINT/SIGTERM`（后者由 `media_service.cpp:129` 的 `OnSignal` 接管）；直跑 `out/bin/evs_media` + `killpg(SIGINT)` 实测 **rc=0**，`out/crash/` 无新报告、`out/core.*` 无新 core（现存的 `out/core.75879` 338 MB 与 `crash_EdgeVisionService_75879_…_sig3.log` 是 §5.19 里 `timeout -s QUIT` 的验收产物，报告头写着 `signal = SIGQUIT`、栈顶 `clock_nanosleep ← main+0x574`）。
+- 文档同步（2026-11-15）：根 `README.md` §2 快速开始把 `make run-media` 注释改为「程序自身退出码 0」，并新增两条 bullet（`make run` 与 `make run-media` 是同一个程序；退出码 130 ≠ 崩溃 + `exec` 后不再出现 `*** Interrupt`）；页脚代码校准点由 `f0b7899` 更正为 `0117907`、状态改为已推送。`HANDOFF.md` §2 第 8 条「长跑验证」同步纠正（原写 `timeout … make run-media` 得 `EXIT=0`，实测 make 自身 130；要看程序 rc 用 `start.sh` 或直跑二进制）。链接体检 `links=25 missing=0`、代码围栏成对。
 - 结论：✅ 通过。
 
 ## 6. 维护约定
