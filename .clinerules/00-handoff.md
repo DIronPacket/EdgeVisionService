@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **代码校准点 `0117907`**（2026-11-14 `comm:` 通信层 + 进程拆分，**尚未推送**；`origin/rk3588` 仍为 `c6d040c`）· 工作树只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库）· 前一校准点 `f0b7899` = 崩溃采集；再前 `45a070c` / `12f5480` / `15cf975` / `114c94d` / `c557d89` / `eac4bb0` / `29ab58b`） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **HEAD `c61dc21` 已推送，与 `origin/rk3588` 同步** · **代码校准点 `0117907`**（2026-11-14 `comm:` 通信层 + 进程拆分；其后 `809c5e7` 回写校准点、`c61dc21` 只改 `Makefile` + 文档）· 工作树只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库）· 前一校准点 `f0b7899` = 崩溃采集；再前 `45a070c` / `12f5480` / `15cf975` / `114c94d` / `c557d89` / `eac4bb0` / `29ab58b`） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录）。**进程可选编**（2026-11-14）：`-DEVS_PROCESS=media\|comm\|media,comm`（不指定 = 全编）、`make media` / `make comm`（单 target）、`make proc PROC=comm`（改默认集，持久）、`make info` 查当前值 |
 | 冒烟运行 | 媒体 **`make run-media`**（`./bin/evs_media ../config/node.json`，4 路出帧 + `FreeMem` 后退出）；通信 **`make run-comm`**（`./bin/evs_comm ../config/comm.json`，无 broker 只告警不退出）；兼容壳 `make run`（`EdgeVisionService`，同 `evs_media`）。三者都等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/<目标>` |

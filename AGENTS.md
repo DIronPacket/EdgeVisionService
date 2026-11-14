@@ -15,7 +15,7 @@
 - **不要全仓扫描**：文件清单看 §1.4，构建/运行命令看 §0 与附录 A
 - 行号会漂移，读之前先跑 `grep -nE '^#{1,2} ' docs/HANDOFF.md` 一次拿行号，再定向读区间
 
-基线：分支 `rk3588` / 已推送至 `origin/rk3588`（HEAD `c6d040c`）/ 代码校准点 `f0b7899`（崩溃现场采集：`common/crash/crash_handler` 信号→报告→解除屏蔽重抛→core；构建默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic`；`scripts/coredump/*` 全套诊断脚本；`scripts/run/{out,build}/start.sh`）/ 前一校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）/ 再前 `12f5480`（帧内存改由 MPP DRM 缓冲提供：`common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` 走 `mpp_buffer_get`+`mmap`、`Release()` 走 `mpp_buffer_put`，`FreeMem()` 末尾 `FrameMemDeinit()`）/ 再前 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）/ C++14 / aarch64 板端本机编译 / `make`（= `cmake -S . -B out && cmake --build out -j8`）。
+基线：分支 `rk3588` / 已推送至 `origin/rk3588`（HEAD `c61dc21`）/ 代码校准点 `0117907`（通信层 `src/comm/` + 进程拆分 `evs_media` / `evs_comm`，2026-11-14）/ 前一校准点 `f0b7899`（崩溃现场采集：`common/crash/crash_handler` 信号→报告→解除屏蔽重抛→core；构建默认 `RelWithDebInfo` + `-fno-omit-frame-pointer` + `-rdynamic`；`scripts/coredump/*` 全套诊断脚本；`scripts/run/{out,build}/start.sh`）/ 再前 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）/ 再前 `12f5480`（帧内存改由 MPP DRM 缓冲提供：`common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` 走 `mpp_buffer_get`+`mmap`、`Release()` 走 `mpp_buffer_put`，`FreeMem()` 末尾 `FrameMemDeinit()`）/ 再前 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）/ C++14 / aarch64 板端本机编译 / `make`（= `cmake -S . -B out && cmake --build out -j8`）。
 
 Cline 专用入口（内容一致，自动加载）：`.clinerules/00-handoff.md`。
 

@@ -91,6 +91,7 @@
 | 2026-11-14 | 入库并推送（`f0b7899` 崩溃采集 · `c6d040c` 目录分类+README） | `git push origin rk3588` → `547ab3a..c6d040c rk3588 -> rk3588`、`rc=0`；两个 commit 分别 18 文件 / 40 文件；`git status` 提交后仅剩 `?? config/2.mp4`、`?? config/test.nv12`（本机素材，有意不入库） | ✅ 通过 |
 | 2026-11-14 | **T6 通信层**（`src/comm/` → `libcomm_api.so`） | `make` → 0 error，新增 `out/lib/libcomm_api.so` + `out/bin/test_comm`；`run_t6_comm.sh` → **43 项 PASS / fail=0**（MQTT 分支临时起 broker 真跑 pub/sub）；`timeout 12 make run` → 4 路 23.9~29.9fps、`FreeMem: 释放 50 块`、正常退出（见 5.21） | ✅ 通过（未接主链路） |
 | 2026-11-14 | **两进程拆分 + 进程可选编译**（`evs_media` / `evs_comm` + 兼容壳 `EdgeVisionService`） | `make` → 0 error（`out/bin/{evs_media,evs_comm,EdgeVisionService}`）；`-DEVS_PROCESS=media` / `comm` 两棵独立构建树产物正确，未选中的 target 仍可 `--target` 构建；`make media` / `comm` / `proc PROC=comm` / `proc PROC=all` 全 rc=0；`make run-media` → 4 路 `实测=23.82fps` + `FreeMem: 释放 50 块` + 正常退出；`make run-comm` → 有 broker `cmd → running` 且收到 `evs/v1/media/evt/heartbeat size=17`，无 broker `Connection refused` 后正常退出（见 5.22） | ✅ 通过 |
+| 2026-11-14 | **入库并推送（`0117907` 通信层+进程拆分 · `809c5e7` 校准点回写 · `c61dc21` run 目标 `exec`）** | `git push origin rk3588` → `eb46940..c61dc21  rk3588 -> rk3588`、`push_rc=0`；三笔分别 40 / 2 / 4 文件；推送后 `origin/rk3588 = c61dc21`，`git status -sb` → `## rk3588...origin/rk3588`（无领先/落后），工作树只剩 `?? config/2.mp4`、`?? config/test.nv12`（本机素材，有意不入库） | ✅ 通过（本地与远端同步） |
 
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
@@ -801,6 +802,8 @@
 - 顺带纠正文档旧结论：`timeout --preserve-status -s INT … make run-*` **不可能**是 0（SIGINT 打在 make 上），`docs/ops/COMMANDS.md` §2.1 / §2.3 / §10 已改为「make 形式 130、程序自身 0、要看程序 rc 用 `start.sh` 或直跑二进制」，§9 踩坑表加了三行（Interrupt / 130 / `make run` 与 `run-media` 输出相同）。
 - 用户提问澄清：`make run` 与 `make run-media` 输出逐行相同，是因为两者调用**同一个** `evs::media::Run()`（`EdgeVisionService` 只是历史兼容名），差异只有崩溃报告里的 `app_name`（`EdgeVisionService` / `evs_media`）与 ZLM 日志前缀；`evs_comm` 是另一个进程，打 `[comm]` 前缀。
 - 改动范围：只改 `Makefile`（4 个配方 + 注释）与文档，**未动 `src/`**，所以本机最后一次代码构建仍是 `0117907`，无需重编。
+- 入库与推送（用户批准「全部一起提交推送」）：本批（`Makefile` + `docs/HANDOFF.md` + `docs/history/TESTLOG.md` + `docs/ops/COMMANDS.md`，4 文件 +60/−11）提交为 **`c61dc21`**；连同 `0117907`（40 文件）与 `809c5e7`（2 文件）执行 `git push origin rk3588` → `eb46940..c61dc21  rk3588 -> rk3588`、`push_rc=0`；推送后 `origin/rk3588 = c61dc21`。
+- 追问澄清（2026-11-15）：有人怀疑「程序退出时报错是 core 采集（`crash_handler`）在退出时出错」——**不成立**：`crash_handler` 只装 `SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT/SIGQUIT` + `set_terminate`，无 `atexit` / 析构钩子，完全不碰 `SIGINT/SIGTERM`（后者由 `media_service.cpp:129` 的 `OnSignal` 接管）；直跑 `out/bin/evs_media` + `killpg(SIGINT)` 实测 **rc=0**，`out/crash/` 无新报告、`out/core.*` 无新 core（现存的 `out/core.75879` 338 MB 与 `crash_EdgeVisionService_75879_…_sig3.log` 是 §5.19 里 `timeout -s QUIT` 的验收产物，报告头写着 `signal = SIGQUIT`、栈顶 `clock_nanosleep ← main+0x574`）。
 - 结论：✅ 通过。
 
 ## 6. 维护约定
