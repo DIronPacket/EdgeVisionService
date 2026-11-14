@@ -71,7 +71,7 @@ static void ReleaseServerRef(const RtspServerCtxPtr &srv)
         // 注意：mk_stop_all_server() 停的是本进程所有 RTSP 服务，
         // 单进程多端口场景会误伤其他端口 —— 由 M1 T4 的 MediaServer 收敛。
         // 另注：监听 socket 由 ZLM 的 TcpServer 析构异步关闭，stop 返回瞬间端口
-        // 可能仍被占用，同端口立刻重新 start 会 bind 失败（实测见 docs/TESTLOG.md T1）。
+        // 可能仍被占用，同端口立刻重新 start 会 bind 失败（实测见 docs/history/TESTLOG.md T1）。
         mk_stop_all_server();
         g_server_map.erase(srv->key);
     }
@@ -252,7 +252,7 @@ void zlm_rtsp_stop(ZlmServerStreamHandle h)
 // ===== 自检接口（只读）=====
 // 存在的理由：T1 的验收标准是"stop 之后 g_stream_map / g_server_map 均为空"，
 // 这两张表是文件内 static，外部只能通过下面的函数断言，否则验收无法复现。
-// 补充（见 docs/TESTLOG.md T1）：端口监听状态不能当判据 —— stop 之后监听 socket
+// 补充（见 docs/history/TESTLOG.md T1）：端口监听状态不能当判据 —— stop 之后监听 socket
 // 由 ZLM 的 TcpServer 析构异步关闭，短时内 connect 仍可能成功。
 int zlm_rtsp_stream_count(void)
 {

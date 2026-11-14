@@ -3,7 +3,7 @@
 > 边缘视觉服务原型：**配置驱动装配 → 采集 → 统一内存池 → 节点流水线 → 硬件/软件编码 → RTSP 推流**。
 > 主平台 RK3588（MPP / V4L2 / RGA），x86_64（FFmpeg）作为开发调试目标。
 > 当前阶段：**4 路（1 摄像头 + 3 路 mp4）已在真机同时出帧并优雅退出（T2 / T3 / T5 / T6 / T7 已落地）**；P0 共 14 项、已修 10 项（最近一批 2026-11-10：P0-9 池块泄漏 · P0-11 `MemMeta` 槽位泄漏 · P0-10 `FrameBuffer` RAII），剩 P0-1 / P0-8 / P0-10 残余（`capacity` 语义）。详细现状见 [docs/STATUS.md](docs/STATUS.md)。
-> **下一步演进（规划，未落地）**：单进程 → **媒体 / 通信 / 升级 三进程 + 共享通信对象 `libcomm_api`**，设计见 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)。
+> **下一步演进（规划，未落地）**：单进程 → **媒体 / 通信 / 升级 三进程 + 共享通信对象 `libcomm_api`**，设计见 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)。
 
 ## 目录
 
@@ -35,9 +35,9 @@
 - 池块按 `width*height*3` 分配（1080p NV12 实需 2.97 MB、实给 6.22 MB，约 2× 过分配，P0-10 残余），且池块数 / 队列深度仍硬编码为 `MemInit(50)` / 队列 20（**T10a**）。
 - RGA 预处理、OSD、录像、统一日志 / 指标 / 健康检查均未落地；媒体服务仍由 `PushNode` 内部启停（**T4** 才上提到 `MediaServer`）。
 - x86 本机构建仍会失败（`install/x86_64` 为空，P0-1）；FFmpeg 软编/软解未完成。
-- **仍是单进程**：媒体 / 通信 / 升级尚未拆分，进程间也没有消息总线。三进程 + 共享 MQTT 通信对象（`libcomm_api`）的目录结构、分层决策、接口草案与 4 步落地顺序已写成 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)，**代码未动**。
+- **仍是单进程**：媒体 / 通信 / 升级尚未拆分，进程间也没有消息总线。三进程 + 共享 MQTT 通信对象（`libcomm_api`）的目录结构、分层决策、接口草案与 4 步落地顺序已写成 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)，**代码未动**。
 
-> 模块完成度、P0–P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)；多链路的决策与任务清单见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md)。
+> 模块完成度、P0–P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)；多链路的决策与任务清单见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md)。
 
 ## 2. 架构一图流
 
@@ -66,7 +66,7 @@ PipelineBuilder ──── 拓扑校验(R1–R5) → NodeFactory 造节点 →
 
 > 顺序是硬约定：`stop_all` 之后必须 `sets.clear()`（析构节点、释放队列）再 `FreeMem`（销毁池）；反过来会用到已销毁的块。详见 [docs/HANDOFF.md](docs/HANDOFF.md) §1.7。
 
-当前每条链是**独立源**（一链一个 `ViNode`）；一源多下游（主/子码流、算法、录像）还要补**扇出拓扑**（T9：`PipelineBuilder` 目前只连 `i→i+1`；块级引用计数本身已完整，P0-5 核实为假阳性）。分层、内存模型、线程/背压与平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；多链路方案取舍见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md)。
+当前每条链是**独立源**（一链一个 `ViNode`）；一源多下游（主/子码流、算法、录像）还要补**扇出拓扑**（T9：`PipelineBuilder` 目前只连 `i→i+1`；块级引用计数本身已完整，P0-5 核实为假阳性）。分层、内存模型、线程/背压与平台接口详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)；多链路方案取舍见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md)。
 
 ## 3. 快速开始
 
@@ -100,7 +100,7 @@ make                       # 首次自动 configure，之后增量；= cmake -S 
 | `EdgeVisionService` | `src/main/main.cpp` | 空壳，只打印一行（冒烟用，`make run`） |
 | `testnode` | `src/main/test/main_node.cpp` | **真实主链路**：配置 → builder → SIGINT 优雅退出；⚠ **当前未启用**——`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 处于注释状态 |
 | `test_builder` | `scripts/tests/t5_builder.cpp` | T5 装配自检（只 build 不 start，不碰硬件）；与 `testnode` 同属被注释的 `test/` 子目录 |
-| `evs_media` / `evs_comm` / `evs_upgrade` | `src/media/` · `src/comm/` · `src/upgrade/` | **规划中，尚未创建**：三进程拆分的产物名（见 [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md) §2 / §7） |
+| `evs_media` / `evs_comm` / `evs_upgrade` | `src/media/` · `src/comm/` · `src/upgrade/` | **规划中，尚未创建**：三进程拆分的产物名（见 [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md) §2 / §7） |
 
 `out/bin/` 只会出现上面启用的目标。历史 `build/bin/` 里的 `testnode` / `test_builder` / `test_encoder` / `test_pushStream` / `test_decoder` / `testpool` 都是旧产物（`add_subdirectory(test)` 现已注释），**别用、别当基线**。
 
@@ -193,7 +193,7 @@ timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EX
 - **不需要摄像头/采集设备**，也不起业务流水线；T2/T3/T5 纯逻辑与配置。
 - **T1 例外**：它真的会起停一个 ZLMediaKit RTSP 服务（默认端口 `18550`，避开现场 8550），并用 `ss` 观察端口是否释放。
 
-每次真实验证的结论都记在 [docs/TESTLOG.md](docs/TESTLOG.md)（L1 一行 / L2 小节），**没记录的"已通过"视为未验证**。
+每次真实验证的结论都记在 [docs/history/TESTLOG.md](docs/history/TESTLOG.md)（L1 一行 / L2 小节），**没记录的"已通过"视为未验证**。
 
 ## 4. 当前状态
 
@@ -207,19 +207,19 @@ timeout --preserve-status -s INT 12 make run-node CFG=config/push.json; echo "EX
 | RTSP 推流 | 🟡 65% | 单路可演示；P0-6 / P0-7 已修（T1）；多路并存与"停一路不影响其他路"待 T4 |
 | 测试 / 文档 | 🟡 35–40% | `scripts/tests/` 四套可重跑验收脚本（共 239 项断言）+ TESTLOG 留痕制度；仍无 CTest / CI |
 | 预处理 / OSD / 录像 / 算法 | 🔴 10–40% | `VpssNode` 骨架、预处理框架（转码 / 叠加 / 绘制）有代码；业务逻辑与 RGA 未落地 |
-| 进程模型（三进程） | 🔴 规划中 | 当前单进程（`testnode`）。媒体 / 通信 / 升级拆分 + 共享 `libcomm_api` 已出设计，**代码未落地**（[docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)） |
+| 进程模型（三进程） | 🔴 规划中 | 当前单进程（`testnode`）。媒体 / 通信 / 升级拆分 + 共享 `libcomm_api` 已出设计，**代码未落地**（[docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)） |
 
 > P0 共 14 项：**已修 10 项**（P0-2 / 3 / 4 / 6 / 7 / 9 / 11 / 12 / 13 / 14）、**核实假阳性 1 项**（P0-5 引用计数）、**剩 3 项**（P0-1 x86 缺依赖 · P0-8 解码器往栈上 `FrameBuffer` 写 · P0-10 残余 `capacity` 语义）。完整模块表、P0/P1/P2 明细与优化建议见 [docs/STATUS.md](docs/STATUS.md)。
 
 ## 5. 路线图
 
-任务编号（T1~T19）与验收标准见 [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md) §7。
+任务编号（T1~T19）与验收标准见 [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md) §7。
 
 | 里程碑 | 目标 | 任务与进度 |
 | --- | --- | --- |
 | **M1**（P0 必做） | 4 路能跑、媒体服务脱节点 | T1 ✅ · T2 ✅ · T3 ✅ · T5 ✅ · T6 ✅ · T7 ✅ → **下一个 T7b**（循环 + 缩放）→ T4（`MediaServer`）→ T10a（池参数可配）→ T8（删 `push.json`）|
 | **M2**（P1） | 多路真正稳定 | T9 扇出拓扑 / 多下游用例 · T10b 池规格化 · T11 `Logger` · T12 `MetricsRegistry` · T13 `DeviceRegistry` · T14 `ResourceBudget` · T15 校验器增强 |
-| **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进 → **设计已出**：[docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)（媒体 / 通信 / 升级 + `libcomm_api`，分 4 步落地） |
+| **M3**（P2，可选） | 可测试、可运维 | T16 `ServiceKernel` · T17 配置热加载 · T18 `Supervisor` · T19 多进程演进 → **设计已出**：[docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)（媒体 / 通信 / 升级 + `libcomm_api`，分 4 步落地） |
 
 M1 的三条硬验收（当前**未**全部满足）：
 
@@ -227,23 +227,25 @@ M1 的三条硬验收（当前**未**全部满足）：
 2. 停掉 ch0 的推流**不影响** ch1~ch3 的 RTSP 服务。
 3. `Ctrl+C` → `stop_all → MediaServer::shutdown() → FreeMem` 顺序正确，`valgrind --leak-check=full` 无 definite leak。
 
-> 长期 WBS、12 周排期、技术方案、验收指标与风险矩阵见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+> 长期 WBS、12 周排期、技术方案、验收指标与风险矩阵见 [docs/design/ROADMAP.md](docs/design/ROADMAP.md)。
 
 ## 6. 文档导航
 
 | 想了解什么 | 看哪里 |
 | --- | --- |
 | **接手项目：现状快照、必须遵守的规定、常见任务流程** | **[docs/HANDOFF.md](docs/HANDOFF.md)**（新接手先读这篇） |
+| **不知道该读哪篇文档 / 文档放在哪个子目录** | **[docs/README.md](docs/README.md)**（总索引：按场景导航 + 目录分区判据 + 维护规则） |
+| 脚本怎么用 / cmake 依赖怎么找 / 配置字段含义 / 源码分层 | [scripts/README.md](scripts/README.md) · [cmake/README.md](cmake/README.md) · [config/README.md](config/README.md) · [src/README.md](src/README.md) |
 | AI 助手自动加载入口（Cline / 其他 agent） | [`.clinerules/00-handoff.md`](.clinerules/00-handoff.md)、[`AGENTS.md`](AGENTS.md)（均指向 `docs/HANDOFF.md`） |
 | 当前架构、目录、数据流、内存/线程模型、平台接口 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | 模块完成度、已实现/占位、P0–P2、优化建议 | [docs/STATUS.md](docs/STATUS.md) |
-| 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/DESIGN_MULTI_PIPELINE.md](docs/DESIGN_MULTI_PIPELINE.md) |
-| **三进程拆分（媒体 / 通信 / 升级）+ 进程间通信对象 `libcomm_api` 的设计与落地顺序** | [docs/DESIGN_PROCESS_SPLIT.md](docs/DESIGN_PROCESS_SPLIT.md)（状态：**规划**；含目录结构、分层决策、`MqttClient` 接口草案、topic 命名、依赖现状、4 步落地） |
-| **测试怎么做、某条"已通过"当初怎么验的** | **[docs/TESTLOG.md](docs/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
-| **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/BUG_CASES.md](docs/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
-| **某条命令怎么敲、怎么看内存、怎么写一次性探针** | **[docs/COMMANDS.md](docs/COMMANDS.md)**（分类命令手册：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 踩坑表，均带实测输出） |
-| **面试怎么讲、哪里碰过内核、哪里能练 C** | **[docs/INTERVIEW.md](docs/INTERVIEW.md)**（高频 20 题 · 核心 15 题 · 深入 12 题 + 内核接触面与不能吹的边界 + C 语言 8 个落点 + 诚实清单） |
-| 长期 WBS、排期、技术方案、风险与待确认项 | [docs/ROADMAP.md](docs/ROADMAP.md) |
+| 多链路（一进程多 RTSP）的方案取舍、决策记录、任务与验收标准 | [docs/design/DESIGN_MULTI_PIPELINE.md](docs/design/DESIGN_MULTI_PIPELINE.md) |
+| **三进程拆分（媒体 / 通信 / 升级）+ 进程间通信对象 `libcomm_api` 的设计与落地顺序** | [docs/design/DESIGN_PROCESS_SPLIT.md](docs/design/DESIGN_PROCESS_SPLIT.md)（状态：**规划**；含目录结构、分层决策、`MqttClient` 接口草案、topic 命名、依赖现状、4 步落地） |
+| **测试怎么做、某条"已通过"当初怎么验的** | **[docs/history/TESTLOG.md](docs/history/TESTLOG.md)**（L1 冒烟表 + L2/L3 明细） |
+| **某个 bug 为什么发生、怎么定位、面试怎么讲** | **[docs/history/BUG_CASES.md](docs/history/BUG_CASES.md)**（B 编号案例：现象 → 函数级位置 → 根因原理 → 修复 → 为何难发现 → 面试说法） |
+| **某条命令怎么敲、怎么看内存、怎么写一次性探针** | **[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)**（分类命令手册：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 踩坑表，均带实测输出） |
+| **面试怎么讲、哪里碰过内核、哪里能练 C** | **[docs/interview/INTERVIEW.md](docs/interview/INTERVIEW.md)**（高频 20 题 · 核心 15 题 · 深入 12 题 + 内核接触面与不能吹的边界 + C 语言 8 个落点 + 诚实清单） |
+| 长期 WBS、排期、技术方案、风险与待确认项 | [docs/design/ROADMAP.md](docs/design/ROADMAP.md) |
 | 源码入口 | `src/`；真实主链路在 `src/main/test/main_node.cpp`，节点在 `src/pipeline/` |
 | 配置 | `config/node.json`（v1，4 路，当前主用）、`config/push.json`（v0 单链路，T8 删除） |
 
@@ -254,8 +256,8 @@ M1 的三条硬验收（当前**未**全部满足）：
 1. **C++14**：`set(CMAKE_CXX_STANDARD 14)`。不用 `std::any` / `if constexpr` / 结构化绑定等 C++17+ 特性。
 2. **不引入 `install/` 里没有的新第三方库**；不重命名既有目录（`moudle_vi` / `moudle_push` / `moudle_print` 是历史拼写，改名属独立任务）。
 3. **取块必有释放**：`acquire()` / `getBlock()` 之后，所有失败分支都必须 `release()`，否则池子会被几帧内耗干。
-4. **`FrameBuffer` 不可拷贝**：它已改为 RAII（`owned_mem` + 析构 `Release()`，拷贝/赋值 `= delete`）——要共享块只能传指针，别写按值传参或赋值（P0-10，[docs/TESTLOG.md](docs/TESTLOG.md) §5.15）。
-5. **改了代码/配置必须留测试记录**：按 [docs/TESTLOG.md](docs/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
+4. **`FrameBuffer` 不可拷贝**：它已改为 RAII（`owned_mem` + 析构 `Release()`，拷贝/赋值 `= delete`）——要共享块只能传指针，别写按值传参或赋值（P0-10，[docs/history/TESTLOG.md](docs/history/TESTLOG.md) §5.15）。
+5. **改了代码/配置必须留测试记录**：按 [docs/history/TESTLOG.md](docs/history/TESTLOG.md) 分级写（L1 一行冒烟 / L2 任务小节 / L3 里程碑）；没记录的"已通过"视为未验证。
 6. **不提交** `out/`、`build/`、`install/`、`3rdparty/`、`.vscode/`（已在 `.gitignore`）；不 `git push --force`、不 `git reset --hard`、不碰 `main`。
 
 **写法约定**

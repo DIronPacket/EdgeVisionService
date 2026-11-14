@@ -1,7 +1,7 @@
 # EdgeVisionService 路线图
 
 > 本文档描述 EdgeVisionService 的未来扩展计划：H.264 编码推流、RGA 预处理、OSD、录像、Ubuntu 交叉编译、Docker 容器化与 OTA。
-> 当前架构与扩展方式见 [ARCHITECTURE.md](ARCHITECTURE.md)；模块完成度与已知问题见 [STATUS.md](STATUS.md)；项目入口见 [README](../README.md)。本文档侧重目标、方案与排期。
+> 当前架构与扩展方式见 [ARCHITECTURE.md](../ARCHITECTURE.md)；模块完成度与已知问题见 [STATUS.md](../STATUS.md)；项目入口见 [README](../../README.md)。本文档侧重目标、方案与排期。
 > **进程形态演进（单进程 → 媒体 / 通信 / 升级 三进程 + 共享通信对象）单独记录在 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)**（当前状态：规划，尚未落地）。
 > 最后更新：2026-11-04；适用分支：`rk3588`。
 
@@ -69,7 +69,7 @@ RTSP Sink       Record Sink（MP4/fMP4）
 
 1. **编码包只产生一次**：RTSP 与录像共享 `EncodedPacket`，不做二次编码。
 2. **OSD 必须在编码前**：只叠加一次，直播与录像看到同一画面。
-3. **多下游依赖扇出拓扑**：`MemBlock` 的 `user_cnt` 计数链路是完整的（P0-5 于 2026-11-10 核实为假阳性），但 `PipelineBuilder` 只连 `i→i+1`，多分支从未被触发——启用前先补多分支用例 + "下游只读 / 不就地改写"约定（[STATUS.md](STATUS.md) §4.2 第 24 条）。
+3. **多下游依赖扇出拓扑**：`MemBlock` 的 `user_cnt` 计数链路是完整的（P0-5 于 2026-11-10 核实为假阳性），但 `PipelineBuilder` 只连 `i→i+1`，多分支从未被触发——启用前先补多分支用例 + "下游只读 / 不就地改写"约定（[STATUS.md](../STATUS.md) §4.2 第 24 条）。
 4. **OSD 输出独立块**：不能原地修改与 AI/录像共享的源块。
 5. **AI 节点后置**：AI 输出检测结果，OSD 只读取最新结果，二者不直接耦合。
 
@@ -324,6 +324,6 @@ docker run -d --name edgevision \
 | 2026-11-04 | 文档重构：README 精简为入口页，架构与扩展约定迁至 `ARCHITECTURE.md`，现状与问题迁至 `STATUS.md`；6 周稳定性 MVP 排期并入本文 6.1 |
 | 2026-11-12 | 新增 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)：三进程（媒体 / 通信 / 升级）+ 共享通信对象 `libcomm_api` 的拆分规划；本文头部补充指引 |
 
-> 维护约定：本路线图随优先级与板端约束调整同步更新；完成一个里程碑后，在“变更记录”中登记，并回写 [STATUS.md](STATUS.md) 的现状章节。
+> 维护约定：本路线图随优先级与板端约束调整同步更新；完成一个里程碑后，在“变更记录”中登记，并回写 [STATUS.md](../STATUS.md) 的现状章节。
 
-[返回 README](../README.md)
+[返回 README](../../README.md)

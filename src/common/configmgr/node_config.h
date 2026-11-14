@@ -2,7 +2,7 @@
 #define EVS_NODE_CONFIG_H
 
 // ============================================================
-// 多链路配置模型（v1 schema，见 docs/DESIGN_MULTI_PIPELINE.md §5.4）
+// 多链路配置模型（v1 schema，见 docs/design/DESIGN_MULTI_PIPELINE.md §5.4）
 // 只放"纯数据"，不含解析与校验逻辑（那些在 NodeConfigManager）。
 // 所有字符串/数值都用 C++14 可用的类型；除 common/json.hpp 外不引入新依赖。
 // ============================================================

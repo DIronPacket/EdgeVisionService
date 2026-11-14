@@ -2,7 +2,7 @@
 
 > **状态：规划（未落地）**。本文只记录设计决策与落地顺序，代码尚未拆分。
 > 最后更新：2026-11-12；适用分支：`rk3588`；校准提交：`ee046a3`。
-> 相关文档：[ARCHITECTURE.md](ARCHITECTURE.md)（当前单进程架构）· [ROADMAP.md](ROADMAP.md)（功能路线与 OTA）· [STATUS.md](STATUS.md)（完成度与问题）· [TESTLOG.md](TESTLOG.md)（验证记录）· [HANDOFF.md](HANDOFF.md)（接手规范）
+> 相关文档：[ARCHITECTURE.md](../ARCHITECTURE.md)（当前单进程架构）· [ROADMAP.md](ROADMAP.md)（功能路线与 OTA）· [STATUS.md](../STATUS.md)（完成度与问题）· [TESTLOG.md](../history/TESTLOG.md)（验证记录）· [HANDOFF.md](../HANDOFF.md)（接手规范）
 
 ## 1. 背景与目标
 
@@ -104,7 +104,7 @@ src/upgrade/ ──依赖──▶ src/media/pipeline/
 rtsp ──(BUILD_RTSP_MODULE=ON)──▶ platform_api(INTERFACE) ──PUBLIC──▶ pipeline_api ──▶ 可执行文件
 ```
 
-`src/platform/CMakeLists.txt:18` 的注释已写明：这条链断一次，`moudle_push`/`moudle_vi` 立即编译失败（历史坑见 `docs/TESTLOG.md` §5.18）。搬家要改 `src/CMakeLists.txt`、`pipeline/CMakeLists.txt` 里 `${PROJECT_SOURCE_DIR}/src/pipeline`、4 个 `moudle_*` 的相对路径，改完必须换新构建目录全量验证 —— 成本真实、收益为零。
+`src/platform/CMakeLists.txt:18` 的注释已写明：这条链断一次，`moudle_push`/`moudle_vi` 立即编译失败（历史坑见 `docs/history/TESTLOG.md` §5.18）。搬家要改 `src/CMakeLists.txt`、`pipeline/CMakeLists.txt` 里 `${PROJECT_SOURCE_DIR}/src/pipeline`、4 个 `moudle_*` 的相对路径，改完必须换新构建目录全量验证 —— 成本真实、收益为零。
 
 ### 3.4 判断规则（以后加目录直接套）
 
@@ -256,7 +256,7 @@ find_package(OpenSSL REQUIRED)          # 需要静态时再加 OPENSSL_USE_STAT
 | 3 | `src/comm/` 落地 `evs_comm`：拉起/守护 broker + 订阅 `evs/v1/+/evt/#` 打印 | 起 `evs_comm` 后 `mosquitto_sub -t 'evs/#'` 能看到心跳 |
 | 4 | `src/upgrade/` 落地骨架：订阅 `upgrade/cmd/check`，回 `upgrade/evt/done` | 手动 `mosquitto_pub` 一条 cmd，观察 evt 回包 |
 
-每步完成后：按 [TESTLOG.md](TESTLOG.md) 写 L2 记录（改代码/改配置没记录 = 未验证），并同步 [HANDOFF.md](HANDOFF.md) §1.4 目录地图与 §1.9 任务索引、[ARCHITECTURE.md](ARCHITECTURE.md) 的进程拓扑一节。
+每步完成后：按 [TESTLOG.md](../history/TESTLOG.md) 写 L2 记录（改代码/改配置没记录 = 未验证），并同步 [HANDOFF.md](../HANDOFF.md) §1.4 目录地图与 §1.9 任务索引、[ARCHITECTURE.md](../ARCHITECTURE.md) 的进程拓扑一节。
 
 ## 8. 已确认的构建坑（避免重复踩）
 
@@ -282,4 +282,4 @@ find_package(OpenSSL REQUIRED)          # 需要静态时再加 OPENSSL_USE_STAT
 | --- | --- |
 | 2026-11-12 | 初版：记录三进程拆分目标、目标目录结构、`platform`/`pipeline` 不迁入 `media/` 的三条理由与判断规则、通信对象接口草案、topic 与 payload 约定、OpenSSL 3.5.4 / mosquitto 2.0.22 实测现状、4 步落地顺序与已知构建坑 |
 
-[返回 ROADMAP](ROADMAP.md) · [返回 README](../README.md)
+[返回 ROADMAP](ROADMAP.md) · [返回 README](../../README.md)

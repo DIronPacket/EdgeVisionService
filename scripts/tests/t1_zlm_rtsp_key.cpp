@@ -1,6 +1,6 @@
 // T1 验收程序：P0-6（stop 的 key 与注册一致 + ref_cnt 不泄漏）+ P0-7（入参校验顺序）
 // 用 scripts/tests/run_t1_zlm_rtsp_key.sh 编译并运行（会真的起/停 RTSP 服务）。
-// 记录见 docs/TESTLOG.md §5.5（L2 · T1）。
+// 记录见 docs/history/TESTLOG.md §5.5（L2 · T1）。
 #include "zlm_push_server.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>

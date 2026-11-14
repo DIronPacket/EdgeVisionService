@@ -3,7 +3,7 @@
 #
 # 用法：./scripts/tests/run_t2_node_config.sh
 # 特点：不碰硬件、不起 RTSP 服务、不需要板端设备；只读 config/*.json 与 fixtures/。
-# 记录见 docs/TESTLOG.md §5.6（L2 · T2）。
+# 记录见 docs/history/TESTLOG.md §5.6（L2 · T2）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -1,7 +1,7 @@
 # EdgeVisionService 架构设计
 
 > 描述当前代码的分层、目录、数据流、内存/线程模型、平台接口与扩展方式。
-> 当前现状与已知问题见 [STATUS.md](STATUS.md)；未来计划见 [ROADMAP.md](ROADMAP.md)；项目入口见 [README](../README.md)。
+> 当前现状与已知问题见 [STATUS.md](STATUS.md)；未来计划见 [ROADMAP.md](design/ROADMAP.md)；项目入口见 [README](../README.md)。
 > 最后更新：2026-11-05；适用分支：`rk3588`。
 
 ## 1. 目录结构

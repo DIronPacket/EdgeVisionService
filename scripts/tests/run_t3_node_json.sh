@@ -3,7 +3,7 @@
 #
 # 用法：./scripts/tests/run_t3_node_json.sh
 # 特点：不碰硬件、不起 RTSP 服务、不推流；只读 config/*.json，并用 ffprobe 探测 ch1~ch3 的素材。
-# 记录见 docs/TESTLOG.md §5.7（L2 · T3）。
+# 记录见 docs/history/TESTLOG.md §5.7（L2 · T3）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

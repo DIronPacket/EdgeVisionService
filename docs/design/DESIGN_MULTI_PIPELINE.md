@@ -2,7 +2,7 @@
 
 > 状态：**设计提案，尚未实现**（本文不含代码改动）
 > 编写日期：2026-11-08 · 适用分支：`rk3588` · 基线提交：`7a2055b` + 工作树（含 `moudle_vpss`、`common/preprocess`）
-> 相关：[ARCHITECTURE.md](ARCHITECTURE.md)（现状架构）· [STATUS.md](STATUS.md)（P0/P1 清单）· [ROADMAP.md](ROADMAP.md)（WBS B「媒体框架收敛」）· [HANDOFF.md](HANDOFF.md)（红线与构建）
+> 相关：[ARCHITECTURE.md](../ARCHITECTURE.md)（现状架构）· [STATUS.md](../STATUS.md)（P0/P1 清单）· [ROADMAP.md](ROADMAP.md)（WBS B「媒体框架收敛」）· [HANDOFF.md](../HANDOFF.md)（红线与构建）
 
 ---
 
@@ -470,7 +470,7 @@ int main(int argc, char **argv) {
 5. `Ctrl+C` 后：`stop_all` → `MediaServer::shutdown()` → `FreeMem()` 顺序正确，`valgrind --leak-check=full` 无 definite leak（P0-9 于 2026-11-10 修复，TESTLOG §5.13；P0-11 `MemMeta` 槽位生命周期同日修复，TESTLOG §5.14 —— 「反复启停」这条 M2 验收已可执行）。
 6. 板端资源实测并记录：4 路时 `top -H` 的 CPU 占用、`free -m` 的 RSS、`cat /sys/class/thermal/*/temp`（阈值见 §11.4）。
 7. 代码里**没有**任何 `while(1)` 与硬编码节点名/设备路径。
-8. 上述每条验收都在 **`docs/TESTLOG.md`** 留有对应记录：每个 Tn 完成时写一条 L2（命令 + 结果摘要 + 结论 + 未做项），M1 收尾写 L3；**没有记录的项不算通过**（记录粒度见该文档 §1）。
+8. 上述每条验收都在 **`docs/history/TESTLOG.md`** 留有对应记录：每个 Tn 完成时写一条 L2（命令 + 结果摘要 + 结论 + 未做项），M1 收尾写 L3；**没有记录的项不算通过**（记录粒度见该文档 §1）。
 
 
 **回滚点**：M1 全程只新增文件 + `main_node.cpp` 改写 + `moudle_push`/`moudle_vi` 小改。回滚 = `git revert` main 与 push 的两个 commit，或临时用 `config/push.json` + 旧装配分支。
@@ -758,12 +758,12 @@ int main(int argc, char **argv) {
 | --- | --- |
 | 2026-11-08 | 初版：需求分析（F1–F5 / N1–N6）、现状 18 项事实盘点、三条判据与 16 项上提清单、7 类行业方案调研、四方案比选、`node.json` v1 schema、接口草案、M1–M3 分期计划与风险表 |
 | 2026-11-08 | 二次（用户确认 8 项）：新增 §1.4 决策表 D1–D8（**4 路 × 30fps = 1 路 `/dev/video0` + 3 路 mp4**、共用 8550 端口只分 `stream`、不做热加载/鉴权/子码流、保持单进程、**迁移后删除 `push.json`**）；schema 样例改为 4 路并新增 `vi.src` 前缀与 `vi.loop`；新增 §10 概念详解（主/子码流、热加载、鉴权 vs rtsps）、§11 4 路容量估算与验收阈值；任务表新增 **T7b**（文件源循环+缩放）、**T10a**（池块数/队列深度可配），T10 → T10b；风险新增 R11–R15；M1 工期 3–5 → **5–8 人日** |
-| 2026-11-08 | 三次（纯文档）：M1 验收标准新增第 8 条——**每条验收必须在 `docs/TESTLOG.md` 留记录**（每个 Tn 一条 L2，M1 收尾一条 L3，"没有记录的项不算通过"）；配套新建 `docs/TESTLOG.md`（分级 L1/L2/L3 + 模板 + 必填项 + token 成本评估） |
+| 2026-11-08 | 三次（纯文档）：M1 验收标准新增第 8 条——**每条验收必须在 `docs/history/TESTLOG.md` 留记录**（每个 Tn 一条 L2，M1 收尾一条 L3，"没有记录的项不算通过"）；配套新建 `docs/history/TESTLOG.md`（分级 L1/L2/L3 + 模板 + 必填项 + token 成本评估） |
 | 2026-11-08 | 四次（纯文档，回答"池要不要按链路分"）：新增 **§11.6 内存池归属**——① 现状事实（进程级单例 / 块尺寸统一硬编码 1080p / **一块挂所有 profile**（加 profile 会爆内存）/ 单一 `free_list_` / `acquire(name)` 无归属语义）；② 三方案对比（**A 共享池+每路配额** 推荐 / A+ 按 profile 分组池 / B 每路独立池 不建议）；③ 共享池三个风险与对策（一路拖垮全局、混分辨率浪费 56%、软上限缺位）；④ 内存账 199MB vs 92MB vs 63MB；⑤ 业界对照（DeepStream / GStreamer / ZLMediaKit / SRS / NVR 惯例 = 共享池 + 每路配额）；⑥ `node.json` v1.1 增补 `quota_per_channel`；⑦ 实施要点并入 T10a（0.5 → 1.5 人日）。§9 新增第 6 项待确认（默认按 A 实施） |
 | 2026-11-08 | 五次（纯文档，用户确认池方案 = **A**）：**记为 D9**——§1.4 决策表新增 **D9**（A = 共享池 + 每路配额；不按链路分池、不做"块→链路归属 map"；A+ 不实施）；§9 第 6 项标记已确认；§11.6.2 标注 A 为 M1 采用 / A+ 暂不实施；§11.6.4 注明 M1 实际常驻 ≈199MB；§11.6.6 收敛为方案 A 的"三处配置"；§11.6.7 第 5 项（A+）标记不实施；**T10a 描述与验收同步扩展**（块数 + 队列深度 + `quota_per_channel`；验收新增"配额隔离"与"`free + Σinflight == total`"），人日 0.5 → 1.5 |
 
 
-> 维护约定：M1 落地后回写 [STATUS.md](STATUS.md)（模块完成度、P0 清单）与 [HANDOFF.md](HANDOFF.md)（§1.2 关键坐标、§1.4 目录地图、附录 B），并把本文"状态"改为"已实现（M1）"。
+> 维护约定：M1 落地后回写 [STATUS.md](../STATUS.md)（模块完成度、P0 清单）与 [HANDOFF.md](../HANDOFF.md)（§1.2 关键坐标、§1.4 目录地图、附录 B），并把本文"状态"改为"已实现（M1）"。
 
 ---
 

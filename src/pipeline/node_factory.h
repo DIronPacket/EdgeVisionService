@@ -2,7 +2,7 @@
 #define NODE_FACTORY_H
 
 // ============================================================
-// NodeFactory —— 节点类型注册表（M1 / T5，见 docs/DESIGN_MULTI_PIPELINE.md §5.3）
+// NodeFactory —— 节点类型注册表（M1 / T5，见 docs/design/DESIGN_MULTI_PIPELINE.md §5.3）
 //
 // 职责：把「配置里写的 type 字符串」翻译成「一个刚构造好的节点对象」。
 // 不做：灌配置（set_data）、连线（link_to）、起线程（start）—— 那些在

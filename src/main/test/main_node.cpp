@@ -9,7 +9,7 @@
 //   5. 退出      SIGINT / SIGTERM → 有序停止 → FreeMem → return 0
 //
 // 旧版那 20 行手写装配、`while(1)` 死循环、永不执行的 stop() 已删除：
-// 加一路只改 config/node.json（见 docs/DESIGN_MULTI_PIPELINE.md §5.5）。
+// 加一路只改 config/node.json（见 docs/design/DESIGN_MULTI_PIPELINE.md §5.5）。
 //
 // 用法：
 //   ./build/run.sh testnode                       # 自动找 node.json → 回退 push.json

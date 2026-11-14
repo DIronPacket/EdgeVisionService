@@ -61,7 +61,7 @@
 | 2026-11-08 | config/node.json 新增 | `python3 -m json.tool config/node.json` → exit=0，236 行 | ✅ |
 | 2026-11-08 | 提交前构建（preprocess + VpssNode + 文档） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`，10 个 target 全部 built；configure 打印 `preprocess OSD: FreeType disabled`（新开关生效） | ✅ 编译通过（`preprocess` 像素实现仍为 `ERR_NOT_IMPL`，无功能验证） |
 | 2026-11-08 | 提交入库 | `e82e39e`（代码 22 文件）+ `d9f5ca2`（文档 6 文件）；提交后 `git status --short` 为空 | ✅ 工作树干净 |
-| 2026-11-08 | 内存池归属方案（纯文档 + `node.json` 增补字段） | `python3 -m json.tool config/node.json` → `JSON_OK`（239 行）；`git diff --stat` 仅 `config/node.json`(+5/-1) 与 `docs/DESIGN_MULTI_PIPELINE.md`(+102)；**未改 C++ 源码，未重新编译** | ✅ 文档/配置一致（`quota_per_channel` 尚未被二进制读取，随 T10a 生效） |
+| 2026-11-08 | 内存池归属方案（纯文档 + `node.json` 增补字段） | `python3 -m json.tool config/node.json` → `JSON_OK`（239 行）；`git diff --stat` 仅 `config/node.json`(+5/-1) 与 `docs/design/DESIGN_MULTI_PIPELINE.md`(+102)；**未改 C++ 源码，未重新编译** | ✅ 文档/配置一致（`quota_per_channel` 尚未被二进制读取，随 T10a 生效） |
 | 2026-11-08 | 池方案决策 **D9 = A**（纯文档） | `python3 -m json.tool config/node.json` → `JSON_OK`；`D9` 已出现在 DESIGN §1.4 决策表 / §9 第 6 项 / §11.6.2 / §11.6.4 / §11.6.6 / §11.6.7 / §12 变更记录（口径一致：共享池 + 每路配额，A+ 不实施）；**未改 C++，未重新编译** | ✅ 决策沉淀完成（T10a 范围与人日同步为 1.5；`node.json` 注释标注 D9） |
 | 2026-11-08 | **T1** 修 P0-6 / P0-7 | `cmake --build build --target rtsp -j8` → `EXIT=0`；`cmake --build build -j8` 全量 → `EXIT=0`（含 `testnode`）；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`，18 项断言（见 5.5） | ✅ 代码 + 冒烟 + 验收断言全通过 |
 | 2026-11-08 | **T2** `NodeConfigManager`（v1 解析/校验/v0 适配） | `cmake -S . -B build && cmake --build build -j8` → `EXIT=0`；`./build/run.sh EdgeVisionService` → `EdgeVisionService start`；`./scripts/tests/run_t2_node_config.sh` → `ALL PASS (fails=0)`，53 项断言（见 5.6） | ✅ 代码 + 冒烟 + 验收断言全通过 |
@@ -77,12 +77,17 @@
 | 2026-11-09 | **P0-14** 池块 `FrameBuffer` 视图被跨链路改写（四路下 1080p 路下半屏全绿） | `cmake --build build -j8` → `BUILD_EXIT=0`；四路 `testnode ../config/node.json` → 四路照常出帧；拉流解码统计 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**坏帧 0/73**；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `run.sh EdgeVisionService` → `EdgeVisionService start`（见 5.12） | ✅ 通过（下半屏绿关闭，1080p/576p 两路均无坏帧） |
 | 2026-11-10 | **P0-9** `MemInit()`/`FreeMem()` 泄漏（`FrameBuffer` 堆内存从不释放） | `cmake --build build -j"$(nproc)"` → `BUILD_RC=0`；仓库外探针 `/tmp/mem_probe` 连跑 6 轮 `MemInit(2)+FreeMem()`：修复前每轮净增 12,443,648 B 且永不归还，修复后 init 12.52 MB → free 回落 82 kB、6 轮零累积（当时残余 128 B/轮 `MemSlot`，已由 P0-11 收口）；四路 `testnode` SIGINT → `FreeMem 完成` + `exit_code=0`（见 5.13） | ✅ 通过（帧内存逐轮完整回收） |
 | 2026-11-10 | **P0-11** `MemMeta` 槽位从不销毁 + `vpss_out` 槽位漏收 | `cmake --build build -j8` → `BUILD_RC=0`；仓库外探针 `/tmp/meta_probe` → 2 槽位 12.52 MB、覆盖同名不多留帧、`clear() released=2` 回落 78 kB、同一指针重复登记不双删；`/tmp/mem_probe 2 6` → `after free` 6 轮**恒定 82,080 B**（修复前每轮 +128 B）；四路 `testnode` SIGINT → `FreeMem: 释放 50 块 / 100 个槽位` + `exit_code=0`（见 5.14） | ✅ 通过（槽位结构与节点自建帧均随 `FreeMem()` 回收） |
-| 2026-11-10 | 新增 `docs/COMMANDS.md`（命令手册）+ 5 处入口同步 | 文档里每条命令逐条复跑：`g++ -fsanitize=address -I src/common /tmp/fb_real_probe.cpp` → `CC_RC=0`、`RUN_RC=0`（ASAN 无报错）；`-L build/lib -lcommon_api` 版 `mem_probe 2 3` → 每轮 `after free` 恒定 82,080 B；`meta_probe`（`-O1`）→ `clear() released=2` 回落 78,112 B；禁拷贝反证 `CC_RC=1`（2 处 `use of deleted function`）；反例探针（只加析构不禁拷贝，ASAN）→ `RUN_RC=1` + `attempting double-free`；`timeout --preserve-status -s INT 10 ./build/run.sh testnode $PWD/config/push.json` → `EXIT=0` + `ss -ltnp` 见 `*:8550` + `VmRSS=172708 kB`/`Threads=11` + 无残留；`git check-ignore -v build/bin/testnode` → `.gitignore:2:build/`；`3rdparty/rk3588/ffmpeg/bin/ffprobe -version` → 5.0.3；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 文档内命令均可复现；另记环境事实：`ffplay`、`valgrind` 未安装 |
+| 2026-11-10 | 新增 `docs/ops/COMMANDS.md`（命令手册）+ 5 处入口同步 | 文档里每条命令逐条复跑：`g++ -fsanitize=address -I src/common /tmp/fb_real_probe.cpp` → `CC_RC=0`、`RUN_RC=0`（ASAN 无报错）；`-L build/lib -lcommon_api` 版 `mem_probe 2 3` → 每轮 `after free` 恒定 82,080 B；`meta_probe`（`-O1`）→ `clear() released=2` 回落 78,112 B；禁拷贝反证 `CC_RC=1`（2 处 `use of deleted function`）；反例探针（只加析构不禁拷贝，ASAN）→ `RUN_RC=1` + `attempting double-free`；`timeout --preserve-status -s INT 10 ./build/run.sh testnode $PWD/config/push.json` → `EXIT=0` + `ss -ltnp` 见 `*:8550` + `VmRSS=172708 kB`/`Threads=11` + 无残留；`git check-ignore -v build/bin/testnode` → `.gitignore:2:build/`；`3rdparty/rk3588/ffmpeg/bin/ffprobe -version` → 5.0.3；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 文档内命令均可复现；另记环境事实：`ffplay`、`valgrind` 未安装 |
 | 2026-11-10 | **P0-10 收口**：`FrameBuffer` 改 RAII（`~FrameBuffer(){Release();}` + 删拷贝/赋值）+ 删 `slot_free<FrameBuffer*>` 特化 | `cmake --build build -j8` → `BUILD_RC=0`；`/tmp/fb_real_probe`（真实头文件 + ASAN）→ `delete` 即归还、零错误零泄漏 `REAL_RC=0`，栈视图 no-op；`/tmp/fb_copy_forbidden.cpp` → 2 处 `use of deleted function`（`CC_RC=1`，符合预期）；`/tmp/fb_raii_copy_probe`（只加析构不禁拷贝的反例，ASAN）→ `attempting double-free`；`/tmp/meta_probe` → `clear() released=2` 回落 78,112 B；`/tmp/mem_probe 2 6` → 6 轮恒定 82,080 B；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位`、无残留进程、`SMOKE3_RC=0`（见 5.15） | ✅ 通过（P0-10 的 ①② 关闭，仅剩 `capacity` 语义） |
-| 2026-11-11 | 新增 `docs/INTERVIEW.md`（面试问答手册）+ 5 处入口同步 | 文档自检脚本：`lines=581`、代码围栏 `4`（成对闭合）、TOC `17` 条锚点全部可解析（`bad=[]`）、`58` 处 `文件:行` 引用全部落在真实文件行号范围内（`bad=[]`）、相对链接 `BUG_CASES.md` / `TESTLOG.md` 均存在；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 纯文档（无代码变更） |
+| 2026-11-11 | 新增 `docs/interview/INTERVIEW.md`（面试问答手册）+ 5 处入口同步 | 文档自检脚本：`lines=581`、代码围栏 `4`（成对闭合）、TOC `17` 条锚点全部可解析（`bad=[]`）、`58` 处 `文件:行` 引用全部落在真实文件行号范围内（`bad=[]`）、相对链接 `BUG_CASES.md` / `TESTLOG.md` 均存在；**未改 C++ / CMake / config，未重新编译**（构建结论仍对 `15cf975` 有效） | ✅ 纯文档（无代码变更） |
 | 2026-11-11 | 帧内存分配切到 MPP DRM 缓冲（`FrameBuffer::Allocate()` 不再 `new[]`） | `cmake -S . -B build && cmake --build build -j"$(nproc)"` → `CONFIG_RC=0` / `BUILD_RC=0`、warning 0、configure 打印 `frame mem: MPP DRM buffer (...)`；仓库外探针 `/tmp/mpp_pool_probe 2 2` → `[FrameMem] backend: MPP DRM buffer group`、组内记账 `12441600 B`（=2×6220800）、`data[1]-data[0]=2073600`（=`stride*h`）、写满 3,110,400 B 首/末字节回读正确、`FreeMem` 后记账归零、`fds 11→11`（两轮 delta 0）；`/tmp/mpp_rss_probe 50` → 记账 296 MB → `FreeMem` 后归零、`mallinfo2.uordblks=241 kB`；四路 `testnode` 拉流解码统计 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 `126.6±10.9 / 128.2±1.7`，与 §5.11 基线一致）、ch0 `U=127.3±7.1 / V=129.8±6.7`、`hal_h265e` 报错 **0** 次、29.18 / 23.94 / 23.94 / 23.78fps、`FreeMem: 释放 50 块 / 100 个槽位`、`EXIT=0`；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`（见 5.16） | ✅ 通过（帧内存改走 DMA 缓冲，画面与 fps 零回归；编码前 `memcpy` 未动） |
 | 2026-11-11 | 探针实测：池块 MPP DRM 缓冲能否直传 RGA（缩放 / 格式转换 / 裁剪 / 粘贴 / 叠字） | 5 个仓库外探针（`/tmp/rga_probe{,2,3,4,5}.cpp`）`g++ -std=c++14 -O2 -I 3rdparty/rk3588/librga-1.9.1/include ... -lrockchip_mpp -lrga` → 全部 `EXIT=0`；`mpp_buffer_get_fd` + `importbuffer_fd` 通；`imcopy` 两帧 3,110,400 B **不一致数 0**；`imcvtcolor` NV12→RGB888 首/末像素 `(55,55,56)`（BT.601 limited）；`imresize` 1080p→720p 后 Y `min=max=64`；`imcrop`(100,50,640,480) 首/末点 `150/150`、`244/244`；crop+scale 640×360→320×180 通过；paste 64×32 **被拒**，阈值扫描：宽 `64`/`66` 失败、`68` 起成功（高度无下限，16 高可过）；`imblend`/`improcess` 混合可提交但像素语义不符（`Y(0,0)=205` 期望 ~70、`UV=(110,25)` 期望 ~(109,184)）；每轮 `group usage after put` 记账与申请字节一致 + `group cleared` + 无 fd 泄漏（见 5.17） | ⚠️ 部分通过：cvt / resize / crop / crop+scale / paste（宽 ≥ 68）可用；blend 需标定，叠字暂走 CPU |
 | 2026-11-12 | 顶层 `Makefile` + 默认构建目录 `build/` → `out/`（并修 P1-2） | `make` → `[100%] Built target EdgeVisionService`、`grep -cE 'error:|Error [0-9]'` = **0**；`out/lib` 6 个 `.so`（含 `librtsp.so`）+ `out/bin/EdgeVisionService`；`make help` / `make info` `RC=0`；`make distclean`（无 `FORCE=1`）`RC=1` 拒绝执行；`make run` → 4 条链路启动、3 路 mp4 出帧 23.7–24.0fps、`*:8550` 监听（见 5.18） | ✅ 构建 + 运行通过（`testnode` 未参与构建，属用户有意关闭） |
+
+| 2026-11-14 | 崩溃现场采集（报告 + core + 诊断脚本） | `make reconfigure && make` → 0 error；探针 `/tmp/evs_crash_probe` → `probe_rc=139` + 报告 + `core.<pid>`（589,824 B），gdb 读到 `chain_id=7` / `p=0x0` / `f={1920,1080,"vi0"}`；`timeout --preserve-status -s QUIT 6 ./bin/EdgeVisionService ../config/node.json` → `RUN_RC=131` + `out/crash/…_sig3.log` + `out/core.75879`（353,808,384 B）、`analyze_core.sh` 24 线程全解析、`.so` missing=0（见 5.19） | ✅ 通过（`enable_coredump.sh` / `gcore_now.sh` 未实跑） |
+| 2026-11-14 | **docs/ 与 scripts/ 目录分类 + README**（纯文档/脚本搬迁，无 C++ 改动） | `docs/` 分子目录：`design/`（ROADMAP·DESIGN_MULTI_PIPELINE·DESIGN_PROCESS_SPLIT）、`ops/`（COMMANDS·CRASH_DUMP）、`history/`（TESTLOG·BUG_CASES）、`interview/`（INTERVIEW），根保留 `HANDOFF`/`ARCHITECTURE`/`STATUS`；`scripts/`：`diag/`→`coredump/`、`evs-edgevision.service`→`deploy/`。新增 `docs/README.md`、`scripts/README.md`（+4 个子目录 README）、`scripts/tests/README.md`、`cmake/README.md`、`config/README.md`、`src/README.md`。验证：`bash -n` 12 个脚本全过（无输出）；markdown 相对链接体检 **missing=0**；`grep -rn 'docs/<旧名>\\.md'`、`grep -rn 'scripts/diag'` 均无残留；38 个文件（md/sh/cpp/h/cmake/service/Makefile）引用路径批量修正 | ✅ 通过（路径与文档变更，代码语义未变） |
+| 2026-11-14 | 目录分类后构建复验 | `make` → `[100%] Built target EdgeVisionService`；`grep -cE 'error:\|Error [0-9]'` = 0（`out/` 增量构建，无源码改动） | ✅ 通过（分类未影响构建） |
+| 2026-11-14 | 目录分类后冒烟运行（4 路真实出帧） | `timeout --preserve-status -s INT 8 scripts/run/out/start.sh` → `rc=0`；日志：`[main] 配置来源: …/config/node.json（v1 node.json） / 链路 4 条`、`[main] global: rtsp 端口 8550 / app "live" / pool.blocks 64 / queue_depth 8`、4 条链 `vi0→vpss0→rtsp0→print0` / `vi1→rtsp1→print1` …；实测 **30.44/23.98/23.96/23.96fps**、`[MemManager] FreeMem: 释放 50 块 / 100 个槽位`、`[main] FreeMem 完成，进程正常退出` | ✅ 通过（与 `config/README.md` §8 记录的日志逐行一致） |
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
 
@@ -670,6 +675,47 @@
   - x86 未验证（P0-1 既有失败）
 
 ---
+
+### 5.19 L2 · 崩溃现场采集：可读报告 + core（gdb 看变量）+ 诊断脚本（2026-11-14）
+- 代码基线：工作树（未提交）；构建目录 `out/`，`CMAKE_BUILD_TYPE=RelWithDebInfo`
+- 做了什么：
+  - 新增 `src/common/crash/crash_handler.{h,cpp}`：`sigaction(SA_SIGINFO|SA_RESETHAND|SA_ONSTACK)` 抓 SIGSEGV/SIGBUS/SIGILL/SIGFPE/SIGABRT（+SIGQUIT），写完报告后**先解除信号屏蔽再 `tgkill` 重抛**，让内核按 `core_pattern` 落 core；`std::set_terminate` 抓未捕获异常（demangle 类型 + `what()`）；handler 全程 async-signal-safe（无 `snprintf`/`malloc`/`cerr`）
+  - 构建：顶层 `CMakeLists.txt` 未指定时默认 `RelWithDebInfo`（`-g`）+ `-fno-omit-frame-pointer`；`src/main/CMakeLists.txt` 加 `-rdynamic`（否则 `backtrace_symbols` 只有裸偏移）；`main.cpp` 最前面安装 handler + `SetCrashTag("config", ...)`
+  - 脚本：`scripts/coredump/{enable_coredump,symbolize_report,analyze_core,gcore_now}.sh` + `evs-edgevision.service`
+- 命令与结果：
+  ```bash
+  make reconfigure && make        # 0 error；crash_handler.cpp 编进 libcommon_api.so
+  # 仓库外探针 /tmp/evs_crash_probe.cpp（-O0 -g -rdynamic）
+  ulimit -c unlimited; cd /tmp/evs_crash && /tmp/evs_crash_probe
+  ```
+  - `probe_rc=139`；生成 `crash_evs_crash_probe_<pid>_<epoch>_sig11.log` + `core.<pid>`（589,824 B）
+  - gdb：`#3 crash_in_worker (chain_id=7, frame=0x…)`、`p = 0x0`、`#4 main … f = {width = 1920, height = 1080, tag = "vi0"}` → **core 里能读到局部变量**
+  - `symbolize_report.sh` → `crash_in_worker(int, Frame*) /tmp/evs_crash_probe.cpp:17`、`main …:38`
+  - 真实程序：`cd out && timeout --preserve-status -s QUIT 6 ./bin/EdgeVisionService ../config/node.json` → `RUN_RC=131`（128+3）；报告 `out/crash/crash_EdgeVisionService_75879_1794659287_sig3.log` 含 `config=../config/node.json` tag、栈顶 `clock_nanosleep ← main+0x574`；core `out/core.75879` = 353,808,384 B
+  - `analyze_core.sh out/core.75879 out/bin/EdgeVisionService` → gdb 退出码 0、24 个线程全列、`libpipeline_api.so`/`libcommon_api.so` 等 14 个 `.so` 全部 `Yes`（修 solib 顺序后 `Could not load shared library symbols` = 0）
+- 结论：✅ 通过（报告 / core / 符号化 / 活进程快照四环打通；修掉两处坑：handler 内信号屏蔽导致无 core、`backtrace_symbols` 偏移语义导致 `?? ??:0`，见 BUG_CASES B12/B13）
+- 未做 / 受限：`enable_coredump.sh` 未执行（需 root；本机 `core_pattern` 仍为 `core`，core 落在进程 cwd）；`gcore_now.sh` 未实跑（会 attach 活进程）；systemd 单元未部署
+
+### 5.20 崩溃采集补齐：体检 / 归档改名 / 两个 start.sh / 流程文档（2026-11-14，L2）
+
+- 任务：补上"为什么抓不到"的可执行体检、让 core 名字自动带函数名/文件/行号、给 `out` 与 `build` 各一个 `start.sh`、写全链路文档
+- 改动：新增 `docs/ops/CRASH_DUMP.md`、`scripts/coredump/check_coredump_env.sh`、`scripts/coredump/collect_core.sh`、`scripts/run/out/start.sh`、`scripts/run/build/start.sh`；`enable_coredump.sh` 的 pattern 改为 `%e.%p.%t.sig%s`；`evs-edgevision.service` 改 `ExecStart=…/scripts/run/out/start.sh`；`COMMANDS.md` 加 §2.5 / §11.7 / §11.8 / §12
+- 命令与结果：
+  ```bash
+  bash -n scripts/coredump/*.sh scripts/run/*/start.sh     # 8 个脚本全 syntax_ok
+  scripts/coredump/check_coredump_env.sh                   # PASS=5 WARN=9 FAIL=0，rc=0
+  scripts/coredump/collect_core.sh /tmp/evs_crash/core.75255 /tmp/evs_crash_probe -o /tmp/evs_arch
+  scripts/coredump/collect_core.sh out/core.75879 out/bin/EdgeVisionService
+  timeout --preserve-status -s INT 5 scripts/run/out/start.sh; echo RC=$?
+  timeout --preserve-status -s INT 4 scripts/run/build/start.sh; echo RC=$?
+  ```
+  - 体检输出：`core_pattern='core'`（相对路径 + 无 %p/%t/%e）4 条 WARN、`ulimit -c 0/unlimited`、`/var/lib/evs/coredump` 不存在、`coredump_filter=0x33` 不含代码段、无 `sysctl.d`/`limits.d`/unit；`PASS=5 WARN=9 FAIL=0`
+  - 探针 core 归档名：`core.evs_crash_probe.75255.1794659161.sig11.crash_in_worker@evs_crash_probe.cpp:17`，内含 `core`（inode 相同）/`meta.txt`/`crash_thread_bt.txt`/`backtrace_all_threads.txt`/`sharedlibs.txt`/`report.log`（按 pid 自动配对）
+  - 真实 core 归档名：`core.EdgeVisionService.75879.1794659287.sig3.std::this_thread::sleep_for_…@this_thread_sleep.h:82`，`meta.txt` 含 `exe_build_id=5f74f0ea…`、`core_pattern=core`、`ulimit_c=0/unlimited`；`backtrace_all_threads.txt` 20,855 B
+  - `out` 版 `start.sh`：打印 6 行环境（`ulimit -c=unlimited`、`EVS_CRASH_DIR=<root>/crash`、`core_pattern=core`）→ 4 路出帧（`实测=23.9~29.9fps`）→ `[crash] 崩溃处理已安装 … rlimit_core=enabled` → `RC=0`
+  - `build` 版 `start.sh`：同样 4 路出帧并 `RC=0`；日志**无 `[crash]` 行**（`build/` 是 11-12 旧产物，不含崩溃采集）
+- 结论：✅ 通过。core 名字现在可自动带「程序 + pid + 时间 + 信号 + 函数@文件:行号」，且两个构建目录都能一键启动；体检脚本能在复现前就判出"抓不到"
+- 未做 / 受限：`enable_coredump.sh` 需 root 未执行（`core_pattern` 仍为 `core`）；`gcore_now.sh` 未实跑；systemd 单元未部署（§12 只给说明与命令）
 
 ## 6. 维护约定
 

@@ -6,9 +6,9 @@
 // 边界（重要）：本测试**只 build，不 start**。
 //   build 只做 create()/set_data()/link_to()，不碰硬件、不起线程、不开 RTSP；
 //   start_all() 会让 ViNode 去拉 /dev/video0、PushNode 去开 MK 流，属于端到端
-//   行为，由 T6/T7 之后在板子上验（见 docs/TESTLOG.md §5.8 未做项）。
+//   行为，由 T6/T7 之后在板子上验（见 docs/history/TESTLOG.md §5.8 未做项）。
 //
-// 记录见 docs/TESTLOG.md §5.8（L2 · T5）。
+// 记录见 docs/history/TESTLOG.md §5.8（L2 · T5）。
 #include "node_config_manager.h"
 #include "node_factory.h"
 #include "pipeline_builder.h"

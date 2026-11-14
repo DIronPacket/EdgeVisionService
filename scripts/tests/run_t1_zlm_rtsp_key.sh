@@ -5,7 +5,7 @@
 #   默认端口 18550，避开现场正在跑的 8550。
 #
 # 注意：本脚本会**真的**起停 RTSP 服务（ZLM 会打印日志），并依赖 `ss` 观察端口。
-# 记录见 docs/TESTLOG.md §5.5（L2 · T1）。
+# 记录见 docs/history/TESTLOG.md §5.5（L2 · T1）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

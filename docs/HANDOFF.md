@@ -5,7 +5,7 @@
 > **怎么用**：先读 §0 与 **第一部分（当前项目情况）**，动手前必读 **第二部分（必须遵守的规定）**，具体任务照 **第三部分（操作规程）** 执行。
 >
 > 本文只写"接手要知道什么、不许做什么、按什么流程做"。
-> 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](ROADMAP.md)。
+> 架构细节 → [ARCHITECTURE.md](ARCHITECTURE.md)；现状与 P0–P2 问题 → [STATUS.md](STATUS.md)；未来计划 → [ROADMAP.md](design/ROADMAP.md)。
 > **事实冲突时的优先级：实际代码 > STATUS.md > ARCHITECTURE.md > 本文 > README > ROADMAP.md。**
 >
 > 最后更新：2026-11-11；适用分支：`rk3588`；校准点：`12f5480`。
@@ -17,12 +17,13 @@
 | --- | --- |
 | 项目是什么 | RK3588S 边缘视觉原型：采集 → 内存池 `MemBlock`（块内像素内存 2026-11-11 起由 `common/frame_mem.*` 分配，rk3588 上是 MPP DRM 缓冲）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP 推流 |
 | 主线状态 | 单链路出帧可跑通、进程编排已配置驱动（T5/T6）、**采集源已配置化**（T7：`vi.src` 前缀选后端，4 路同时出帧已实测），未产品化（仍无日志 / 单测 / CI）；mp4 loop 待 T7b |
-| 最新进展（2026-11-12，构建入口） | **新增顶层 `Makefile`（薄包装）+ 默认构建目录 `build/` → `out/`**：`make` / `make run` / `make clean`（保留手写 `run.sh`）/ `make distclean FORCE=1`；`.gitignore` 增 `out/`。换目录当场暴露 **P1-2**（`BUILD_RTSP_MODULE` 从未 `option()`，靠旧缓存掩盖）并已修 → `out/lib` 首次全量编译 0 error、含 `librtsp.so`。详见 [TESTLOG.md §5.18](TESTLOG.md)、本文附录 B |
-| RGA 实测（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](TESTLOG.md) |
+| 最新进展（2026-11-12，构建入口） | **新增顶层 `Makefile`（薄包装）+ 默认构建目录 `build/` → `out/`**：`make` / `make run` / `make clean`（保留手写 `run.sh`）/ `make distclean FORCE=1`；`.gitignore` 增 `out/`。换目录当场暴露 **P1-2**（`BUILD_RTSP_MODULE` 从未 `option()`，靠旧缓存掩盖）并已修 → `out/lib` 首次全量编译 0 error、含 `librtsp.so`。详见 [TESTLOG.md §5.18](history/TESTLOG.md)、本文附录 B |
+| 崩溃现场采集（2026-11-14，**工作树未提交**） | 新增 `src/common/crash/crash_handler.{h,cpp}`：致命信号 → 写 `crash/crash_<app>_<pid>_<epoch>_sig<N>.log`（程序 / signal / 故障地址 / `pc sp lr fp` / 业务 tag / 调用栈）→ **解除该信号屏蔽后重抛** → 内核按 `core_pattern` 落 core；`std::set_terminate` 抓未捕获异常。构建侧未指定时默认 `RelWithDebInfo`（`-g`）+ `-fno-omit-frame-pointer` + `-rdynamic`。诊断脚本 `scripts/coredump/{enable_coredump,symbolize_report,analyze_core,gcore_now}.sh` + systemd 单元。实测：探针 `probe_rc=139` 出报告 + core（gdb 读到 `chain_id=7` / `f={1920,1080,"vi0"}`）；真实 4 路 `SIGQUIT` → `RC=131` + `out/core.75879`（353 MB、24 线程全解析）。详见 [COMMANDS.md §11](ops/COMMANDS.md)、[TESTLOG.md §5.19](history/TESTLOG.md)、BUG_CASES B12/B13 |
+| RGA 实测（2026-11-11，**纯文档**） | `6d3f985`：**RGA 消费池块（MPP DRM 缓冲）的可行性已实测通过** —— `mpp_buffer_get_fd` → `importbuffer_fd` → `wrapbuffer_handle`，无需物理地址 / 无需 memcpy / 无需 flush；`imcopy`（字节不一致 0）/ `imcvtcolor` / `imresize` / `imcrop` / `improcess`（裁剪+缩放、指定位置贴图）均可用。三条硬限制：**矩形宽 < 68 被 RGA3 拒绝**（高度无下限、面积无关、宽度须偶数）、`imblend()` 无 rect 参数须改用 `improcess`、alpha 混合输出值待标定（叠字仍走 CPU）。**未改一行代码**；实现要点与落地顺序见 [STATUS.md §5.2](STATUS.md)，实测证据见 [TESTLOG.md §5.17](history/TESTLOG.md) |
 | 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 与 `origin/rk3588` 同步（`45a070c`）· 工作树有**用户未提交改动**（`src/main/CMakeLists.txt`、`src/main/main.cpp`、`config/*.mp4`、`config/*.nv12`，不属本文范围）· 本文**代码**校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2 `option(BUILD_RTSP_MODULE ... ON)`）· 前一代码校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界，`Allocate()` → `mpp_buffer_get`+`mmap` / `Release()` → `mpp_buffer_put` / `FreeMem()` 末尾 `FrameMemDeinit()`，非 rk3588 仍 `new[]`）、再前 `15cf975`（P0-9 / P0-11 修复 + P0-10 ①② RAII 收口）、`114c94d`（P0-14）、`c557d89`（P0-13）、`eac4bb0`（T7 + P0-2）、`29ab58b`（T6）；其后只改文档 / JSON 注释的 `docs:`、`config:` 提交不算漂移） |
 | 构建（已实测通过 2026-11-12） | **`make`**（顶层薄包装 → `cmake -S . -B out` + `cmake --build out -j"$(nproc)"`；默认构建目录 **`out/`**，`build/` 为历史目录）。等价手写：`cmake -S . -B out && cmake --build out -j"$(nproc)"` |
 | 冒烟运行 | **`make run`**（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`）→ 期望输出 `EdgeVisionService start` |
-| 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 只是空壳 |
+| 真实主链路 | `src/main/test/main_node.cpp`（可执行名 `testnode`）—— **T6 起由配置驱动**：`load_with_fallback` → `MemInit` → `PipelineBuilder::build_all` → SIGINT → `stop_all` → `FreeMem`；`src/main/main.cpp` 原为空壳，**工作树未提交改动已把它接上 builder**（2026-11-14 实测 `out/bin/EdgeVisionService ../config/node.json` 起 4 路并出帧） |
 | 语言 / 环境 | **C++14**（禁用 17+）· aarch64 板端本机编译 · cmake 3.22 · g++ 11.4 |
 | 最大问题 | P0 共 14 项（P0-2 / 3 / 4 / 6 / 7 / 12 / 13 / 14 已修复；**P0-5 于 2026-11-10 核实为非缺陷**；**P0-9 / P0-11 于 2026-11-10 修复**，同日 `FrameBuffer` 补 RAII 收口 P0-10 的 ①②；剩 3 项 = P0-1 x86 FFmpeg 路径 / P0-8 解码器写栈 / P0-10 残余（仅 `capacity` 语义）），见 [STATUS.md §4.1](STATUS.md) |
 | 五条硬约束 | C++14 不变 · 不引新库 · 不改目录名 · 不 force push · 取块必有 `release` |
@@ -35,9 +36,9 @@
 | 要动手改代码 | §0 + §1.2 + §1.4 目录 + §1.7 API + **§2 全部规定** | ~4k |
 | 修某个 P0/P1 | §1.9 索引表 + §1.5 构建坑 + R1 + R4 + STATUS 对应行 | ~2k |
 | 加一个新节点 | §2.4 内存规定 + R2 + §1.7 | ~1.5k |
-| **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在本文：用 **`docs/BUG_CASES.md`**（原理剖析 + 函数级位置 + 定位手法 + 面试说法；修 bug 后必须追加） | ~1k |
-| **某条命令怎么敲 / 怎么看内存 / 怎么写临时探针** | 不在本文：用 **`docs/COMMANDS.md`**（分类命令手册：构建 · 运行 · 看内存 · 临时探针 · 进程端口 · git · 坑表） | ~1.5k |
-| **准备面试：项目怎么讲、会被问什么、哪里碰过内核、哪里能练 C** | 不在本文：用 **`docs/INTERVIEW.md`**（高频/核心/深入问答 + 内核边界与不能吹的清单 + C 语言落点与练法） | ~3k |
+| **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在本文：用 **`docs/history/BUG_CASES.md`**（原理剖析 + 函数级位置 + 定位手法 + 面试说法；修 bug 后必须追加） | ~1k |
+| **某条命令怎么敲 / 怎么看内存 / 怎么写临时探针** | 不在本文：用 **`docs/ops/COMMANDS.md`**（分类命令手册：构建 · 运行 · 看内存 · 临时探针 · 进程端口 · git · 坑表） | ~1.5k |
+| **准备面试：项目怎么讲、会被问什么、哪里碰过内核、哪里能练 C** | 不在本文：用 **`docs/interview/INTERVIEW.md`**（高频/核心/深入问答 + 内核边界与不能吹的清单 + C 语言落点与练法） | ~3k |
 | 首次全量接手 / 换人 | 全文（约 450 行） | ~10k |
 
 > 章节行号自查（编辑后行号会漂移）：`grep -nE '^#{1,2} ' docs/HANDOFF.md`
@@ -72,7 +73,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`；工作树干净，**已与远程同步（无未推送提交）** |
+| 本地分支 | 只有 `rk3588`，跟踪 `origin/rk3588`；**工作树有未提交改动**（崩溃现场采集：`src/common/crash/*`、`scripts/coredump/*`、顶层与 `src/main` 的 CMake、`src/main/main.cpp`） |
 | 代码校准点 / 最近提交 | **代码校准点 = `12f5480`**（`feat(common): 帧内存改由 MPP DRM 缓冲提供（新增 frame_mem 分配边界）`）；其后均为 `docs:`（坐标回写），**不改变代码校准点**；再前 `15cf975`（`common: 修 P0-9/P0-11 并收口 P0-10`）、`114c94d`（P0-14 注释编号对齐，实际修复 `eee3b01`）、`c557d89`（P0-13）、`eac4bb0`（T7）、`29ab58b`（T6） |
 | 前几个提交 | `eac4bb0`（`pipeline:` T7 采集源解析 + P0-2）、`33d6690` / `fe48838`（`docs:` / `config:` 纯文档与注释）、`29ab58b`（`main:` T6 重写真实入口）、`3319441`（`docs:` T6 坐标回写）、`b461ece`（`pipeline:` T5 `NodeFactory` + `PipelineBuilder`）、`1402903`（`docs:` T5 坐标回写）、`0635ad1`（`docs:` T3 坐标回写）、`e0ce88f`（`docs:` 坐标回写）、`8d87731`（`config:` 新增 `NodeConfigManager`，T2）、`e9a620c`（`docs:` 坐标回写）、`87127e0`（`rtsp:` 修 P0-6/P0-7）、`e82e39e`（预处理框架 + `VpssNode`）、`d9f5ca2`（多链路设计 + `node.json` + `TESTLOG` 制度）、`7a2055b`（`docs:` 同步 fps）、`d158eca`（P0-3 修 `read_frame` 未归还）、`3ee3913`（报表加实测 fps）、`ccc305f`（`docs:`）、`9678e42`（耗时统计 + `PrintNode`）、`283bab5`（`config/push.json` 配置化），再往前 `fa082f7`、`af6b307`、`aa5846d`、`15e4438`、`e30ccb3`、`787edbd`（仓库共 25 个提交） |
 | 远程 | `origin = git@github.com:DIronPacket/EdgeVisionService.git`（SSH，密钥 `~/.ssh/id_ed25519`） |
@@ -101,16 +102,25 @@ EdgeVisionService/
 ├── .clinerules/00-handoff.md   # ★ AI 助手自动加载入口（现状卡 + 跳读表 + 硬约束）
 ├── AGENTS.md                   # ★ 跨工具 agent 入口（均指向 docs/HANDOFF.md）
 ├── CMakeLists.txt              # 平台探测、库类型、全局输出目录、add_subdirectory(src)
-├── cmake/                      # FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA / rk3588.toolchain
-├── config/                     # push.json：v0 单链路（推流宽高 / 编码 / 协议 / 端口 / print 间隔，T8 删除）；node.json：v1 多链路配置（4 路，T6 起由 testnode 直接消费，T7 起 `ViNode` 按 `vi.src` 前缀选采集实现）
-├── scripts/tests/               # 验收脚本：run_t1_zlm_rtsp_key.sh（RTSP key / ref_cnt / 入参校验，18 项断言）· run_t2_node_config.sh + fixtures/（NodeConfigManager 解析/校验/v0 适配，53 项断言）
-├── docs/                       # ARCHITECTURE · STATUS · ROADMAP · HANDOFF(本文) · DESIGN_MULTI_PIPELINE(多链路配置设计提案) · TESTLOG(测试与验证记录) · BUG_CASES(bug 原理剖析 + 面试要点存档) · COMMANDS(常用命令行手册：构建/运行/看内存/探针/git) · INTERVIEW(面试问答手册：高频 20 题 / 核心 15 题 / 深入 12 题 + 内核边界 + C 语言 8 个落点)
+├── cmake/                      # 依赖查找：FindFFMPEG / FindMPP / FindZLMediaKit / FindRGA + rk3588.toolchain.cmake（说明见 cmake/README.md）
+├── config/                     # node.json：v1 多链路（4 路，真实入口直接消费）· push.json：v0 单链路（T8 删除）；本机素材 2.mp4 / test.nv12 未跟踪（说明见 config/README.md）
+├── scripts/                    # 脚本总览见 scripts/README.md
+│   ├── tests/                  # 验收：run_t1_zlm_rtsp_key.sh（18 断言）· run_t2_node_config.sh + fixtures/（53）· run_t3_node_json.sh（104）· run_t5_builder.sh（64）
+│   ├── coredump/               # 崩溃现场：check_coredump_env（体检）· enable_coredump（root 开 core）· symbolize_report · analyze_core · collect_core（归档改名带函数名）· gcore_now
+│   ├── deploy/                 # evs-edgevision.service（systemd：LimitCORE=infinity + ExecStart=scripts/run/out/start.sh）
+│   └── run/{out,build}/start.sh# 一键启动 out/ 或 build/ 里的 EdgeVisionService（ulimit -c / LD_LIBRARY_PATH / EVS_CRASH_DIR / 前台 exec）
+├── docs/                       # 总索引 README.md；根：HANDOFF(本文) · ARCHITECTURE · STATUS；
+│                               #   design/：ROADMAP · DESIGN_MULTI_PIPELINE · DESIGN_PROCESS_SPLIT
+│                               #   ops/：COMMANDS(命令手册) · CRASH_DUMP(崩溃全链路)
+│                               #   history/：TESTLOG(测试留痕) · BUG_CASES(原理档案)
+│                               #   interview/：INTERVIEW(面试手册)
 ├── install/rk3588/             # 第三方头文件与库（不入库）
 ├── 3rdparty/{rk3588,x86_64}/   # 第三方源码包（不入库）
 ├── out/                        # 构建产物（默认，不入库；由 make 生成）
 ├── build/                      # 历史构建目录（不入库，可删；见 §1.5）
 ├── Makefile                    # 顶层薄包装：只转发给 CMake，规则不由它定义
 └── src/
+    ├── README.md               # ★ src 结构总览：构建产物 / 分层依赖 / 帧流动 / 关键类 / 改动落点
     ├── CMakeLists.txt          # add_subdirectory: common · pipeline · platform · main
     ├── common/                 #                      → libcommon_api.so
     │   ├── frame_buffer.h      # 多平面 FrameBuffer（data[3]/stride[3]/fmt/size + owned_mem + native；~FrameBuffer() 调 Release 归还，拷贝已删）
@@ -119,7 +129,8 @@ EdgeVisionService/
     │   ├── configmgr/          # 节点配置管理：node_config.h（数据模型 ImgSpec/NodeDesc/PipelineDesc/GlobalDesc…）· node_config_manager.{h,cpp}（v1 node.json 解析 + 校验 + ${global.*} 展开 + v0 push.json 适配）
     │   ├── profiler/           # 耗时统计：node_profiler.h（NodeProfiler）+ block_profiler.h（get_profiler / RAII 作用域）
     │   ├── preprocess/         # 预处理框架：image_preprocessor（门面：转码+叠加）· frame_converter（格式互转）· frame_drawer（画框/贴图/截图）· osd_renderer（字符叠加）· glyph_source + freetype_glyph_source（点阵 / FreeType 字形）
-    │   └── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
+    │   ├── MemManager/         # MemMeta.h · MemPool.{h,cpp} · MemManager.{h,cpp} · media_define.h
+    │   └── crash/              # 崩溃现场采集：crash_handler.{h,cpp}（信号 handler + terminate handler：写报告 + 触发内核 core）
     ├── pipeline/               #                      → libpipeline_api.so
     │   ├── pipeline_node.{h,cpp}   # 节点基类：link_to / push_input_pipe / push_data / m_queue
     │   ├── node_factory.{h,cpp}    # T5：type → 节点对象（单例注册表，内置 vi/vpss/push/print）
@@ -135,7 +146,7 @@ EdgeVisionService/
     │   ├── decoder/            # rk_mpp_decoder（草稿）+ ffmpeg_decoder（x86 未完成）
     │   └── rtsp/               # zlm_push_server：ZLMediaKit C API 封装
     └── main/
-        ├── main.cpp            # 只打印一行，未装配流水线
+        ├── main.cpp            # 用户工作树已接上 builder（实测 4 路出帧，未提交）；本行原描述「只打印一行」已过时
         └── test/               # main_node.cpp（testnode = 真实入口，T6 起 builder 驱动 + SIGINT 优雅退出）· main_encode/main_pushStream（CMake 中已注释）· main_testpool（旧 API，未编译）
 ```
 
@@ -274,15 +285,44 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | 加/改流水线节点 | `pipeline/pipeline_node.h`、`pipeline/moudle_*/` | `pipeline/CMakeLists.txt`、`pipeline/node_factory.cpp`（在 `RegisterBuiltins()` 里加一行 `type → creator`，否则 `create()` 认不出新 type） |
 | 改装配逻辑 / 拓扑规则（谁能接谁、第几个） | `pipeline/pipeline_builder.cpp`（`check_order` 的 R1–R5 规则、`build_one` 的 `create → node->create → set_data → link_to` 顺序） | `pipeline/pipeline_builder.h`（`PipelineSet` / `describe()` / 计数与 `errors()`）、验收脚本 `scripts/tests/run_t5_builder.sh`（64 项断言，改规则必跑）、TESTLOG §5.8 |
 | 接入 / 修改预处理节点（转码+叠加，VPSS 位置） | `pipeline/moudle_vpss/moudle_vpss.{h,cpp}`（`VpssNode::process_frame` 是唯一待填函数） | `config/push.json` 的 `vpss` 段、`common/preprocess/image_preprocessor.{h,cpp}`、`main/test/main_node.cpp`（装配位置） |
-| 做多链路 / 改配置格式 / 上提进程级资源 | `docs/DESIGN_MULTI_PIPELINE.md`（方案与分期；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**；**已落地 T2 配置 / T3 定稿 / T5 builder / T6 入口 / T7 采集源**，剩 T7b（loop + 缩放）、T8（删 `push.json`）、T10a（池参数接线）） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`pipeline/moudle_vi/moudle_vi.cpp`（T7 的 `ResolveSrc`）、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5 |
+| 做多链路 / 改配置格式 / 上提进程级资源 | `docs/design/DESIGN_MULTI_PIPELINE.md`（方案与分期；**已确认 D1–D8：4 路 = 1 摄像头 + 3 路 mp4、共用端口、不做热加载/鉴权/子码流、迁移后删 `push.json`**；**已落地 T2 配置 / T3 定稿 / T5 builder / T6 入口 / T7 采集源**，剩 T7b（loop + 缩放）、T8（删 `push.json`）、T10a（池参数接线）） | 现状事实见本文 §1.4/§1.7、`config/push.json`、`main/test/main_node.cpp`、`platform/rtsp/zlm_push_server.cpp`、`pipeline/moudle_vi/moudle_vi.cpp`（T7 的 `ResolveSrc`）、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp`（文件源不循环、不缩放）、STATUS §4.1 的 P0-5 |
 | 转码 / 画框 / 贴图 / OSD 字符叠加（预处理） | `common/preprocess/image_preprocessor.{h,cpp}`（门面） | `frame_converter`（格式互转）、`frame_drawer`（画框/贴图/截图）、`osd_renderer` + `glyph_source`（字形）、`common/preprocess/README.md`、开关 `BUILD_FREETYPE_OSD` |
 | 看每帧各节点耗时 / 调打印频率 | `config/push.json` 的 `print` 段（改完重跑即生效） | `common/profiler/*.h`、`pipeline/moudle_print/*`、`moudle_vi.cpp::run`、`moudle_push.cpp::run` |
-| 装配服务入口 | `main/test/main_node.cpp`（**T6 起是唯一真实入口**：config → `MemInit` → `build_all` → 信号 → `start_all` → `stop_all` → `FreeMem`）、`main/main.cpp`（仍是空壳） | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`、TESTLOG §5.9 |
-| 拆三进程（媒体 / 通信 / 升级）/ 加进程间通信 | `docs/DESIGN_PROCESS_SPLIT.md`（规划：目标目录、分层决策、`MqttClient` 接口草案、topic 命名、OpenSSL/mosquitto 实测现状、4 步落地顺序；**尚未落地**） | `src/CMakeLists.txt`（已预留 `# add_subdirectory(comm)`）、空目录 `src/comm`、`src/algorithm`、`install/rk3588/{sbin/mosquitto, include/mosquitto, lib/libmosquitto.so.1, lib/libssl.so.3}` |
+| 装配服务入口 | `main/main.cpp`（**T6 起的真实入口**，可执行名 `EdgeVisionService`：`InstallCrashHandler` → 配置 → `MemInit` → `build_all` → 信号 → `start_all` → 有序停止 → `FreeMem`）；`main/test/main_*.cpp`（`main_node`/`main_testpool`/`main_encode`/`main_pushStream`）是历史验证程序，`main/CMakeLists.txt` 末行 `# add_subdirectory(test)` 处于注释状态 → **当前不参与构建**（`testnode` 仅存在于旧 `build/bin`） | `pipeline/pipeline_builder.cpp`（`build_all` + `start_all`/`stop_all`）、`common/configmgr/node_config_manager.cpp`（`load_with_fallback`）、`main/CMakeLists.txt`、TESTLOG §5.9 |
+| 拆三进程（媒体 / 通信 / 升级）/ 加进程间通信 | `docs/design/DESIGN_PROCESS_SPLIT.md`（规划：目标目录、分层决策、`MqttClient` 接口草案、topic 命名、OpenSSL/mosquitto 实测现状、4 步落地顺序；**尚未落地**） | `src/CMakeLists.txt`（已预留 `# add_subdirectory(comm)`）、空目录 `src/comm`、`src/algorithm`、`install/rk3588/{sbin/mosquitto, include/mosquitto, lib/libmosquitto.so.1, lib/libssl.so.3}` |
 | 改构建/依赖查找 | 顶层 `CMakeLists.txt`、`cmake/Find*.cmake` | `src/*/CMakeLists.txt` |
 | 查"为什么跑不起来" | [STATUS.md §4](STATUS.md) | 本文 §3 排障规程 |
-| 记测试 / 查回归结果 / 证明"已修复" | [TESTLOG.md](TESTLOG.md) | §4 是 L1 冒烟汇总表，§5 是 L2/L3 明细；写完仍按本文 §2.2 顺序验证 |
+| 记测试 / 查回归结果 / 证明"已修复" | [TESTLOG.md](history/TESTLOG.md) | §4 是 L1 冒烟汇总表，§5 是 L2/L3 明细；写完仍按本文 §2.2 顺序验证 |
+| 崩溃了 / 程序卡死 / 要抓现场看变量 | `src/common/crash/crash_handler.{h,cpp}`（handler 行为、报告字段、`SetCrashTag`） | [CRASH_DUMP.md](ops/CRASH_DUMP.md)（全流程 + core 命名 + 抓不到的原因（按链路 7 段 27 条））、`scripts/coredump/`（体检 / 开 core / 符号化 / 解析 core / 归档改名 / gcore / systemd 单元）、`scripts/run/{out,build}/start.sh`、[COMMANDS.md §11–§12](ops/COMMANDS.md)、本文 §1.10、BUG_CASES B12/B13 |
 
+
+## 1.10 崩溃现场采集（2026-11-14 新增，工作树未提交）
+
+出事时同时产出两样东西：**人可读报告**（`crash/crash_<app>_<pid>_<epoch>_sig<N>.log`）与**内核 core**（位置由 `core_pattern` 决定）。报告回答「哪个函数、什么信号、哪份配置」，core 回答「变量到底是多少」。
+
+| 层 | 做了什么 | 文件 |
+| --- | --- | --- |
+| 编译 | 未指定时默认 `RelWithDebInfo`（`-g` → DWARF，gdb 才有变量）+ `-fno-omit-frame-pointer`；可执行加 `-rdynamic`（`backtrace_symbols` 才出函数名） | 顶层 `CMakeLists.txt`、`src/main/CMakeLists.txt` |
+| 进程 | `sigaction(SA_SIGINFO\|SA_RESETHAND\|SA_ONSTACK)` 抓 SEGV/BUS/ILL/FPE/ABRT（+QUIT）；写报告 → **解除该信号屏蔽** → `tgkill` 重抛 → 内核落 core；`sigaltstack` 防栈溢出二次崩；`std::set_terminate` 抓未捕获异常 | `src/common/crash/crash_handler.{h,cpp}` |
+| 系统 | `core_pattern` 绝对路径 + `%e.%p.%t.sig%s`、`sysctl.d` / `limits.d` 持久化、systemd `LimitCORE=infinity`；启动脚本里 `ulimit -c unlimited` | `scripts/coredump/enable_coredump.sh`、`evs-edgevision.service`、`scripts/run/{out,build}/start.sh` |
+| 分析 | 报告符号化、core 批量解析、活进程 `gcore`、**体检（13 项 PASS/WARN/FAIL）**、**归档改名成 `core.<app>.<pid>.<epoch>.sig<N>.<函数>@<文件>:<行>`** | `scripts/coredump/{check_coredump_env,symbolize_report,analyze_core,collect_core,gcore_now}.sh` |
+
+**四条必须记住的约束**
+
+1. handler 只能 async-signal-safe：不用 `snprintf` / `malloc` / `std::cerr` / `localtime` / `strsignal`；数字与时间手写、路径与 tag 在安装时预格式化、写盘只用 `open`/`write`、栈用 `backtrace_symbols_fd`。
+2. **重抛前必须 `sigprocmask(SIG_UNBLOCK)`**：handler 运行期间内核自动屏蔽当前信号，否则 `tgkill` 只挂成 pending、被 `_exit` 丢掉 → 一个 core 都不会有（BUG_CASES B12）。
+3. core 只有 `-g` 编译才有变量，且必须配**当时那份二进制 / `.so`**；`-O2` 下部分变量是 `<optimized out>`（实测真实 core 的 `main(argc, argv)` 就是），要逐变量看就用 `make BUILD=out-dbg CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Debug"` 复现。
+4. 报告里「模块(符号+0x偏移)」是**符号内偏移**，符号化要先 `nm` 查符号 vaddr 再加（BUG_CASES B13）。
+
+命令与脚本用法见 [COMMANDS.md §11](ops/COMMANDS.md)（崩溃）/ §12（开机自启）；**全流程（信号 → 内核 → core → 归档）、`core_pattern` 格式符全表、"为什么抓不到"的原因（按链路 7 段 27 条）见 [CRASH_DUMP.md](ops/CRASH_DUMP.md)**；实测证据见 [TESTLOG.md §5.19–§5.20](history/TESTLOG.md)。
+
+**已知限制（当前实现没覆盖的）**
+
+1. `sigaltstack` 是**按线程**生效：`InstallCrashHandler()` 只给调用它的线程（主线程）装了备用栈。工作线程栈溢出触发的 SIGSEGV，handler 仍会跑在坏栈上 —— 要在每个工作线程入口各调一次 `sigaltstack`（或提供 `InstallCrashHandlerOnThread()`）才能完全覆盖。普通空指针/越界崩在哪个线程都能抓。
+2. 报告里的调用栈是**崩溃线程**的，不含其它线程；要看全线程现场必须靠 core（`analyze_core.sh` 的 `thread apply all bt full`）。
+3. `core_pattern` 未改（仍为 `core`）时 core 落在进程 cwd：`start.sh` 会 `cd` 到构建目录 → `out/core.<pid>`；systemd 下用 `LimitCORE` + `enable_coredump.sh` 的绝对路径。
+4. 报告目录优先级 `cfg.report_dir` → `EVS_CRASH_DIR` → `./crash`；两个 `start.sh` 把 `EVS_CRASH_DIR` 固定成 `<仓库根>/crash`，所以脚本启动时报告不在 `out/crash`。
+5. 内核 `%e` 最多 16 字节：`EdgeVisionService` 会截成 `EdgeVisionServic`。名字要完整/带函数名，用 `collect_core.sh` 归档（它从 exe 与 gdb 取全名、函数、文件、行号）。
 
 ---
 
@@ -319,8 +359,8 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 6. `testnode` 需要真实 `/dev/video0` 与 ZLMediaKit 端口；**无设备时崩溃属于已知 P0-2，不算你改坏**，但必须说明"未做运行验证及原因"。
 7. x86 构建当前**必然失败**（P0-1）。若任务涉及 x86，必须先补 `install/x86_64` 或给 `FindFFMPEG.cmake` 加 `pkg-config` fallback，而不是靠改代码绕过。
 8. 长跑类验证一律套 `timeout`，既避免挂死终端，又顺带验证优雅退出（`EXIT=0` + 无残留进程）：`timeout --preserve-status -s INT 20 make run-node`（`testnode` 需先取消 `src/main/CMakeLists.txt` 的 `# add_subdirectory(test)`）。
-9. **每次验证都要留痕**：跑完按 [TESTLOG.md](TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
-10. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug —— ① 现象与根因不在同一层 ② 只在特定并发/时序/内存残留下复现 ③ 涉及资源所有权、生命周期、跨组件共享状态 ④ 曾被误判过方向 —— 修完必须在 **[BUG_CASES.md](BUG_CASES.md)** 追加案例（固定顺序：现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误 / 单行空指针且无连带语义的，只在 [STATUS.md](STATUS.md) 标注。
+9. **每次验证都要留痕**：跑完按 [TESTLOG.md](history/TESTLOG.md) 分级记录（L1 一行 / L2 任务小节 / L3 里程碑），必须含命令、结果摘要、结论、未做项；提交代码时同一 commit 带上对应记录。没有记录的"已通过"按 §2.1 第 9 条处理。
+10. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug —— ① 现象与根因不在同一层 ② 只在特定并发/时序/内存残留下复现 ③ 涉及资源所有权、生命周期、跨组件共享状态 ④ 曾被误判过方向 —— 修完必须在 **[BUG_CASES.md](history/BUG_CASES.md)** 追加案例（固定顺序：现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误 / 单行空指针且无连带语义的，只在 [STATUS.md](STATUS.md) 标注。
 
 
 ## 2.3 C++ 代码规定
@@ -398,7 +438,7 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 - [ ] 新文件已加入 CMake、头文件 guard 符合规范
 - [ ] 行为/开关变化已同步 README、ARCHITECTURE、STATUS 中受影响的部分
 - [ ] 提交信息符合 `<模块>: <动词> <对象>`
-- [ ] 若修的是"有原理含量"的 bug：已在 **`docs/BUG_CASES.md`** 追加案例（含根因原理与函数级位置），并更新其 §1 索引表
+- [ ] 若修的是"有原理含量"的 bug：已在 **`docs/history/BUG_CASES.md`** 追加案例（含根因原理与函数级位置），并更新其 §1 索引表
 - [ ] 没有提交被忽略目录的内容
 
 ---
@@ -456,11 +496,11 @@ PrintNode::create(0, "print") → start()      // 终点：按 print.interval �
 | [README.md](../README.md) | 项目定位、能做什么、快速开始、状态摘要、文档导航 | 细节问题清单 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 稳定的分层、数据流、模型、扩展方式、规范 | 临时问题 |
 | [STATUS.md](STATUS.md) | 现状、完成度、P0–P2、优化建议 | 未来排期 |
-| [ROADMAP.md](ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
-| [TESTLOG.md](TESTLOG.md) | **只有测试证据**：命令、结果摘要、结论、未做项（L1 冒烟 / L2 任务 / L3 版本三级） | 方案、现状盘点、规矩 |
-| [BUG_CASES.md](BUG_CASES.md) | **已定案 bug 的原理剖析**：现象 / 函数级位置 / 根因 / 修复 / 定位手法 / 面试说法，附 §1 索引表 | 未修问题的跟踪（在 STATUS）、测试命令与结果（在 TESTLOG） |
-| [COMMANDS.md](COMMANDS.md) | **常用操作手法**：分类命令 + 作用 + 为什么这么写 + 实测输出（构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 坑表） | 结论（在 STATUS）、测试证据（在 TESTLOG）、规矩（在本文） |
-| [INTERVIEW.md](INTERVIEW.md) | **对外讲述口径**：高频/核心/深入问答、内核接触面与"不能吹的边界"、C 语言落点与练法、诚实清单 | 新的 bug 原理（在 BUG_CASES）、测试证据（在 TESTLOG）、规矩（在本文） |
+| [ROADMAP.md](design/ROADMAP.md) | 目标、WBS、排期、验收、风险 | 现状细节 |
+| [TESTLOG.md](history/TESTLOG.md) | **只有测试证据**：命令、结果摘要、结论、未做项（L1 冒烟 / L2 任务 / L3 版本三级） | 方案、现状盘点、规矩 |
+| [BUG_CASES.md](history/BUG_CASES.md) | **已定案 bug 的原理剖析**：现象 / 函数级位置 / 根因 / 修复 / 定位手法 / 面试说法，附 §1 索引表 | 未修问题的跟踪（在 STATUS）、测试命令与结果（在 TESTLOG） |
+| [COMMANDS.md](ops/COMMANDS.md) | **常用操作手法**：分类命令 + 作用 + 为什么这么写 + 实测输出（构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git / 坑表） | 结论（在 STATUS）、测试证据（在 TESTLOG）、规矩（在本文） |
+| [INTERVIEW.md](interview/INTERVIEW.md) | **对外讲述口径**：高频/核心/深入问答、内核接触面与"不能吹的边界"、C 语言落点与练法、诚实清单 | 新的 bug 原理（在 BUG_CASES）、测试证据（在 TESTLOG）、规矩（在本文） |
 | **HANDOFF.md（本文）** | **接手所需的事实快照 + 红线规定 + 操作规程** | 重复上面四份的内容 |
 | `.clinerules/00-handoff.md` / `AGENTS.md` | 入口索引：现状卡（与本文 §0 一致）、跳读表、硬约束 7 条 | 任何细节展开 |
 
@@ -517,9 +557,9 @@ make run
 | 2026-11-05 | 修复 P0-3：`read_frame` 失败分支未归还 `MemBlock`，fps 配得比采集端高时几十帧后池子耗尽、链路静默停摆（gdb 栈定位到 `MemPool::acquire`）。校准点前移 | `d158eca` |
 | 2026-11-08 | 新增预处理框架 `src/common/preprocess/`（`pre::ImagePreprocessor` 门面 + `FrameConverter` / `FrameDrawer` / `OsdRenderer` / `glyph_source`；像素级实现留 TODO，未实现分支返回 `ERR_NOT_IMPL`）；新增开关 `BUILD_FREETYPE_OSD`（默认 OFF，`install/` 无 freetype，OSD 先用内置点阵字体）；同步 ARCHITECTURE §1/§3、README §3.1、本文 §1.4/§1.9。**已入库，见右列 commit** | `e82e39e` |
 | 2026-11-08 | 新增中间节点 `pipeline/moudle_vpss/`（`VpssNode`）：生命周期/配置解析/槽位挂载/耗时统计/失败归还等样板代码已实现并实测通过（透传、输出帧、池子不泄漏），`process_frame()` 留空返回 true（等价透传）由使用者填；`pipeline/CMakeLists.txt` 加源文件与 `common/preprocess` 头路径；同步 ARCHITECTURE §1、本文 §1.4/§1.9。**尚未接入 `main_node.cpp`**（装配留到 M1 T5/T6） | `e82e39e` |
-| 2026-11-08 | 新增设计文档 `docs/DESIGN_MULTI_PIPELINE.md`（提案，无代码改动）：`push.json` → 多链路 `node.json` + 全局配置对象 `NodeConfigManager` + 进程级资源上提（`MediaServer` 等 16 项）；含行业方案调研、四方案比选（A 轻量装配 → B 内核注入）、M1–M3 分期与人日、风险表、M1 文件级改动清单。同步本文 §1.4/§1.9 | `d9f5ca2` |
+| 2026-11-08 | 新增设计文档 `docs/design/DESIGN_MULTI_PIPELINE.md`（提案，无代码改动）：`push.json` → 多链路 `node.json` + 全局配置对象 `NodeConfigManager` + 进程级资源上提（`MediaServer` 等 16 项）；含行业方案调研、四方案比选（A 轻量装配 → B 内核注入）、M1–M3 分期与人日、风险表、M1 文件级改动清单。同步本文 §1.4/§1.9 | `d9f5ca2` |
 | 2026-11-08 | `DESIGN_MULTI_PIPELINE.md` 二次修订（纯文档）：与用户确认 8 项决策 D1–D8（**目标 4 路 × 30fps = 1 路 `/dev/video0` + 3 路 mp4 循环**；RTSP 共用 8550 端口只分 `stream`；不做热加载/鉴权/子码流；保持单进程；**迁移完成后删除 `config/push.json`**）；新增 §10 概念详解（主/子码流必要性、热加载边界、鉴权 vs rtsps）、§11 4 路容量估算与板端验收阈值；任务表加 **T7b**（`FfmpegCapture` 循环 + 缩放，当前 EOF 即停、且不缩放）、**T10a**（池块数 50 / 队列深度 20 配置化，4 路必做），M1 工期 5–8 人日。**无代码改动，仍为提案** | `d9f5ca2` |
-| 2026-11-08 | 新增 `docs/TESTLOG.md`（测试与验证记录）：按 **L1 冒烟 / L2 任务 / L3 版本** 三级粒度记录「命令 + 结果摘要 + 结论 + 未做项」，含模板、必填项、维护约定与 token 成本评估；归档既有三项结论（基线冒烟、`VpssNode` 验证、`node.json` 语法校验）。同步本文 §1.4/docs 行、§1.9 跳读表、R5 文档分工表 | `d9f5ca2` |
+| 2026-11-08 | 新增 `docs/history/TESTLOG.md`（测试与验证记录）：按 **L1 冒烟 / L2 任务 / L3 版本** 三级粒度记录「命令 + 结果摘要 + 结论 + 未做项」，含模板、必填项、维护约定与 token 成本评估；归档既有三项结论（基线冒烟、`VpssNode` 验证、`node.json` 语法校验）。同步本文 §1.4/docs 行、§1.9 跳读表、R5 文档分工表 | `d9f5ca2` |
 | 2026-11-08 | 提交入库：`e82e39e`（预处理框架 + `VpssNode`，22 文件；提交前构建 `EXIT=0`）+ `d9f5ca2`（多链路设计 + `config/node.json` + `TESTLOG` 制度，6 文件）。同时回写 §0 事实卡、§1.2 坐标（HEAD / 代码校准点）、`.clinerules/00-handoff.md` 与 `AGENTS.md` 现状卡，并把附录 B 里标「未提交」的行补上实际 commit | `e82e39e` / `d9f5ca2` |
 | 2026-11-08 | **T1 修 P0-6 / P0-7**（`src/platform/rtsp/zlm_push_server.{cpp,h}` + 新增 `scripts/tests/`）：流/服务 key 改为 ctx 自带并由 `ServerKey` / `StreamKey` 唯一生成（原 `bind_ip` 从未赋值，stop 拼出 `":8550"` 故停止路径静默失效）；新增 `ReleaseServerRef()` 收敛三处 `ref_cnt` 释放（原重复注册分支 `ref_cnt++` 后直接 return，导致 server 永久滞留、`mk_stop_all_server()` 永不执行）；stop / 送帧改为先按句柄在表内定位再解引用（避免已停句柄 UAF）；`!out_code` 判空移到最前；新增只读自检 `zlm_rtsp_stream_count` / `zlm_rtsp_server_count`。验收：`./scripts/tests/run_t1_zlm_rtsp_key.sh` → `ALL PASS (fails=0)`（18 项），全量构建 `EXIT=0`、冒烟 `EdgeVisionService start`，详见 TESTLOG §5.5 | `87127e0` |
 | 2026-11-08 | 内存池归属定案（两次纯文档提交，**无代码改动、无需重新编译**）：`f87211f` 新增 `DESIGN_MULTI_PIPELINE.md` **§11.6**（现状事实：池为进程级单例、块尺寸统一硬编码 1080p、**一块挂所有 profile**、单一 `free_list_`、`acquire(name)` 无归属语义；A/A+/B 三方案对比；共享池三风险；内存账 199MB/92MB/63MB；DeepStream、GStreamer、ZLMediaKit、SRS、NVR 业界对照）+ `node.json` 增补 `global.pool.quota_per_channel`；`b6c639c` 把结论记为 **D9 = A（共享池 + 每路配额）**，A+ 不实施，**T10a 范围与人日扩为 1.5**（块数 + 队列深度 + 配额计数 + 丢帧分类计数 + 健康指标） | `f87211f` / `b6c639c` |
@@ -529,15 +569,17 @@ make run
 | 2026-11-09 | **T7 `ViNode` 按 `vi.src` 前缀选采集后端 + 修 P0-2**（`pipeline/moudle_vi/moudle_vi.{h,cpp}`）：新增匿名命名空间 `ResolveSrc()`（`dev:`→`CAPTURE_V4L2`；`file:` / `rtsp://` / `rtmp://` / `http://` / `udp://`→`CAPTURE_FFMPEG`；无前缀按老规则兜底。`dev:` 只写设备路径时补成 V4L2 契约的 5 段 `设备:宽:高:格式:fps`，写一半直接报错）；`set_data()` 优先读 `vi` 段、回落 `push` 段，`src` 解析失败只告警、不静默降级；`run()` 改用 `CreateCapture(m_capture_type)`，工厂返回 `nullptr` 时报错并退出该节点线程（**P0-2 不再空指针解引用**），`open()` 失败分支补 `m_queue.release(block)`；`vi.src` 缺省时行为与 T7 前一致（v0 `push.json` 不变）。实测：v0 单链路不变（29.6–30fps）→ `EXIT=0`；v1 四路 = `dev:/dev/video0`（V4L2, 1920×1080）+ 3 个 `file:...mp4`（FFmpeg, 1024×576）全部 open 成功、**四路同时出帧** 29.96/23.96/23.93/23.94fps → SIGINT → 逐链正序停止 → `FreeMem` → `EXIT=0`；设备/文件打不开时只 `[vi0] open failed` 并干净退出（无段错误）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS` 回归通过，详见 TESTLOG §5.10 | `eac4bb0` |
 | 2026-11-09 | **修 P0-13：`MppEncoder` 按平面拷贝 NV12**（`platform/encoder/rk_mpp_encoder.cpp`，+26/−1）：`encode()` 原先把 `fb->data[0]` 起 `data_size` 字节一次性 `memcpy` 进 MPP buffer，但 `FrameBuffer::BindDataPointers()` 里 `data[1]`（UV）偏移按**池块分辨率**算（`base + stride[0] * 池块高`），本帧比池块小时（1024×576 的 mp4 跑在 1920×1080 池块上）UV 段拷到的是本帧 Y 之后的内存残影 → 播放端 Y 正常、UV 大块绿斑/花屏（T7 让四路出现不同分辨率后暴露）。改为 Y、UV 分别从 `data[0]`/`data[1]` 拷贝（UV 紧接 Y，offset = `hor_stride * ver_stride`），`data_size == 0` 按 `stride * height * 3 / 2` 兜底，`data[0]`/`data[1]` 为空时归还 buffer 并返回 false。实测：四路 45s → 编码错误 0、29.82/23.94/23.93/23.96fps、SIGINT 正序停止 `EXIT=0`；拉流 UV 统计 `U=128.1±10.9 / V=128.0±1.6`（修复前 `105.4±41.1 / 105.5±41.2`，源 `126.6±11.0 / 128.2±1.7`），ch0 1080p 无回归；T5/T3/T2 回归通过，详见 TESTLOG §5.11 | `c557d89` |
 | 2026-11-09 | **修 P0-14：两个采集后端写块前按本链路分辨率重绑 `FrameBuffer` 视图**（`platform/capture/v4l2_source/v4l2_capture.cpp` +24/−1、`platform/capture/ffmpeg_source/ffmpeg_capture.cpp` +9）：`MemMeta` 里的 `FrameBuffer` 是**块级共享视图**（`data[0]/data[1]/width/height/stride` 存在块上，四条链路共用同一个全进程池块），`FfmpegCapture::transfer_frame()` 写完自己那帧就把视图改成自己的分辨率（1024×576 / `hw_stride=1024`）再随块归还池子；`V4l2Capture::read_frame()` 取到这种块后**直接沿用** `frame->stride[0]` 去开 `sws_scale`，于是 1080p 路按 `stride=1024` 写 1080 行、Y 平面只覆盖 `1024×1080` 字节（= 576 行 × 1920），剩余部分保持旧数据/0 → 播放端**上半屏正常、下半屏（约 47% 以下）全绿**，且随块复用**间歇出现**（单跑 ch0 时 176 帧全好）。改为两个采集后端在 `sws_scale` 之前各自 `BindMemory(data[0], 本链路宽, 本链路高, FMT_NV12[, 128])`（`data[0]` 恒为块首地址；V4L2 侧固定 NV12 因 `sws_getContext` 输出恒为 `AV_PIX_FMT_NV12`，ffmpeg 侧 `align=128` 与原 `hw_stride` 算法一致，Y/UV 指针改取重绑后的 `data[0]/data[1]`），V4L2 侧另补 `sws_scale` 返回行数校验（异常则 `VIDIOC_QBUF` 归还并丢帧）。实测：四路并发拉流解码 ch0（1920×1080）**坏帧 0/166**（修复前四路 51/64、两路 63/129）、ch1（1024×576）**0/73**；四路 fps 照常（29.9 / 23.9×3）；T5 `passes=64` / T3 `passes=104` / T2 `ALL PASS`；冒烟 `EdgeVisionService start`，详见 TESTLOG §5.12 | `eee3b01` |
-| 2026-11-09 | 新增 **`docs/BUG_CASES.md`（bug 档案 · 面试要点）**：收录 9 个已定案缺陷（B1 RTSP key/ref_cnt、B2 出参判空、B3 漏 release 抽干池、B4 atomic 未初始化、B5 工厂 nullptr、B6 UV 平面错位、B7 池块视图被改写、B8 `while(1)` 挡停止、B9 配置值与素材不符），每案含**现象 / 函数级位置 / 根因原理 / 修复 / 为什么难发现 / 面试怎么讲**，另附 10 条排查方法论（M1–M10）。同时把「**修掉有原理含量的 bug 必须追加档案**」写成强制规定：本文 **§2.2 第 10 条**、§2.9 自检清单、R5 文档分工表、§0.1 跳读表，以及 `.clinerules/00-handoff.md` 硬约束第 9 条与 `AGENTS.md` 入口清单（用户 2026-11-09 要求） | 本文纯文档，不改变代码校准点 |
+| 2026-11-09 | 新增 **`docs/history/BUG_CASES.md`（bug 档案 · 面试要点）**：收录 9 个已定案缺陷（B1 RTSP key/ref_cnt、B2 出参判空、B3 漏 release 抽干池、B4 atomic 未初始化、B5 工厂 nullptr、B6 UV 平面错位、B7 池块视图被改写、B8 `while(1)` 挡停止、B9 配置值与素材不符），每案含**现象 / 函数级位置 / 根因原理 / 修复 / 为什么难发现 / 面试怎么讲**，另附 10 条排查方法论（M1–M10）。同时把「**修掉有原理含量的 bug 必须追加档案**」写成强制规定：本文 **§2.2 第 10 条**、§2.9 自检清单、R5 文档分工表、§0.1 跳读表，以及 `.clinerules/00-handoff.md` 硬约束第 9 条与 `AGENTS.md` 入口清单（用户 2026-11-09 要求） | 本文纯文档，不改变代码校准点 |
 | 2026-11-10 | **修 P0-9：`MemInit()`/`FreeMem()` 每轮净漏 12.44 MB**（`common/frame_buffer.h`、`common/MemManager/MemManager.cpp`，并删除已无引用的 `common/type_registry.h`）：`FrameBuffer` 头注释写「只是视图、不负责释放」，`Allocate()` 却 `new[]` 了一块，`FreeMem()` 只 `delete` `MemMeta`/`MemBlock` → 每块 6.22 MB 像素缓冲无人认领。现 `FrameBuffer` 增 `owned_mem`（`Allocate()` 记录的基址）+ `Release()`（`delete[]` 后清 `data[]`/`native`），`BindMemory()` 视图的 `owned_mem` 恒为 `nullptr`、`Release()` 不碰别人的内存；`MemInit()` 删掉残留的 `new MemBlock`、`Allocate()` 失败时 `delete` + 继续；`FreeMem()` 逐槽 `Release()` → `delete`。实测（`mallinfo2().uordblks + hblkhd` 口径）：修复前每轮 +12,443,648 B，修复后 init 12.52 MB → free 82 kB、6 轮零增长；四路 29.9/23.9fps → SIGINT → `FreeMem 完成`、退出码 0。详见 TESTLOG §5.13 / BUG_CASES §2.10 | 工作树（2026-11-10） |
 | 2026-11-10 | **P0-10 收口：`FrameBuffer` 改 RAII + 禁拷贝**（`common/frame_buffer.h` +15/−3、`common/MemManager/MemMeta.h` −12）：P0-9 加的 `Release()` 仍"靠调用方记得调"，且结构体可拷贝（`Allocate()` 来的两份 `owned_mem` → 双释放）。现 `~FrameBuffer()` 调 `Release()`、拷贝构造/赋值 `= delete`，`MemMeta` 里 `slot_free<FrameBuffer*>` 特化随之删除（主模板 `delete t` 一句即归还），槽位侧不再需要认识 `FrameBuffer`。**加了析构必须连拷贝一起禁**——ASAN 反证：只加析构不禁拷贝＝隐式拷贝必双释放（`attempting double-free`，两次 `Release()`）。栈上视图（`BindMemory()`）`owned_mem == nullptr`，析构 no-op，实测外部缓冲不受影响。验证：`BUILD_RC=0`；`/tmp/meta_probe` 与 `/tmp/mem_probe 2 6` 数值与 P0-11 一致（6 轮恒定 82,080 B）；`/tmp/fb_real_probe`（真实头文件 + ASAN）零错误零泄漏；拷贝探针 2 处 `use of deleted function`；四路 `testnode` SIGINT → `释放 50 块 / 100 个槽位` + 退出码 0。详见 TESTLOG §5.15 / BUG_CASES §2.10 后续段 | 工作树（2026-11-10） |
 | 2026-11-10 | **修 P0-11：`MemMeta` 槽位从不销毁 + 节点自建槽位漏收**（`common/MemManager/MemMeta.h`、`MemManager.cpp::FreeMem`、`pipeline/moudle_vpss/moudle_vpss.cpp` 注释）：`data_map_` 存 `void*`，而 `void*` 既不能安全 `delete`（UB、不调析构）也调不到 `MemSlot<T>::freeObj()` —— `set_ptr()` 覆盖同名即丢旧槽位（实测 32 B/次）、`FreeMem()` 只能按 `imgMap` 点名、`VpssNode` 懒创建的 `vpss_out` 帧整块 6.22 MB 漏收。现 `MemSlot` 继承 `MemSlotBase`（虚析构）+ `~MemSlot(){ freeObj(); }`，`MemMeta` 存 `MemSlotBase*` 并补 `clear()` / 析构 / 删拷贝，`set_ptr` 覆盖前先释放旧槽位（同一指针重复登记则保留在用对象），`slot_free<FrameBuffer*>` 先 `Release()` 再 `delete`，`data<T>` 改 `dynamic_cast` 校验（同修 P1-10）；`FreeMem()` 统一 `clear()`。实测：`MemMeta` 探针 2 槽位 12.52 MB → 覆盖同名不增帧 → `clear() released=2` → 回落 78 kB；`MemInit(2)+FreeMem()` 6 轮恒定 82,080 B（修复前每轮 +128 B）；四路 `testnode` SIGINT 打印 `FreeMem: 释放 50 块 / 100 个槽位`、退出码 0。详见 TESTLOG §5.14 / BUG_CASES §2.11 | 工作树（2026-11-10） |
-| 2026-11-10 | **README 按 2026-11-10 状态重写 + P0-5「引用计数未实现」假阳性全仓纠正**（`README.md` 10 处、`docs/HANDOFF.md` §1.2/§2.4/R2/R4、`docs/ARCHITECTURE.md` §2.3/§2.4、`docs/DESIGN_MULTI_PIPELINE.md` 6 处、`docs/ROADMAP.md` 5 处）：阶段卡 P0 计数改为「14 项 / 已修 10 项 / 剩 3 项」；限制段改为真实缺口（扇出拓扑不可达 `pipeline_builder.cpp:156-159` 只连 `i→i+1`、下游就地改写）；补池块过分配（`capacity = w*h*3`：1080p NV12 实需 2.97 MB / 实分 6.22 MB）与编码器按平面拷贝（P0-13）；文档导航补 `BUG_CASES.md`；红线补「`FrameBuffer` 不可拷贝」。**P0-5 经代码核实为假阳性**：`acquire→addUser`、`MemQueue::push→MemPool::pushBlock→addUser`、`release→subUser`、`userCnt()==0→reset` 整链完整，与 STATUS §4.1 第 5 条一致 | `bd2077f` |
-| 2026-11-10 | **新增 `docs/COMMANDS.md`（常用命令手册）**：按「构建 / 运行与优雅退出 / 看内存 / 临时探针 / 进程·端口·线程·设备 / 自检脚本 / Git / 文档一致性体检 / 踩坑表 / 一屏自检」10 类归档本机实操命令，每条给**作用 + 为什么这么写 + 实测输出**，并标注 ✅ 实测项与日期；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 目录行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 跳读表与 `AGENTS.md` 入口清单）。实测依据：ASAN 探针 `CC_RC=0/RUN_RC=0`、`mem_probe 2 3` 每轮回落 82,080 B、`meta_probe clear() released=2`、禁拷贝反证 `CC_RC=1`、`timeout --preserve-status -s INT 10 testnode` → `EXIT=0` + `ss` 见 `*:8550` + `VmRSS=172708 kB`、`git check-ignore` 命中 `build/`；另记环境事实「`ffplay` / `valgrind` 未安装，`ffprobe` 在 `3rdparty/rk3588/ffmpeg/bin/`」 | 本次提交（纯文档，不改变代码校准点） |
-| 2026-11-11 | **新增 `docs/INTERVIEW.md`（面试问答手册）**：三档问答（高频 20 题 / 核心 15 题 / 深入 12 题）+ **§5 内核接触面**（直接：V4L2 `ioctl`+`mmap` 全时序；间接：MPP `/dev/mpp_service`、DMA 堆、ZLM epoll、procfs；并给出"不能吹的边界"对照表）+ **§6 C 语言 8 个落点**（每个给文件/行号、C 概念、练法与面试问法）+ §7 4 周准备路线 + §8 诚实清单/简历 bullet + §9 问题→代码位置速查。全部结论对齐 STATUS §4.1/§4.2、DESIGN §11、TESTLOG §5 与 BUG_CASES B1–B11；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 与 `AGENTS.md`） | 本次提交（纯文档，不改变代码校准点） |
+| 2026-11-10 | **README 按 2026-11-10 状态重写 + P0-5「引用计数未实现」假阳性全仓纠正**（`README.md` 10 处、`docs/HANDOFF.md` §1.2/§2.4/R2/R4、`docs/ARCHITECTURE.md` §2.3/§2.4、`docs/design/DESIGN_MULTI_PIPELINE.md` 6 处、`docs/design/ROADMAP.md` 5 处）：阶段卡 P0 计数改为「14 项 / 已修 10 项 / 剩 3 项」；限制段改为真实缺口（扇出拓扑不可达 `pipeline_builder.cpp:156-159` 只连 `i→i+1`、下游就地改写）；补池块过分配（`capacity = w*h*3`：1080p NV12 实需 2.97 MB / 实分 6.22 MB）与编码器按平面拷贝（P0-13）；文档导航补 `BUG_CASES.md`；红线补「`FrameBuffer` 不可拷贝」。**P0-5 经代码核实为假阳性**：`acquire→addUser`、`MemQueue::push→MemPool::pushBlock→addUser`、`release→subUser`、`userCnt()==0→reset` 整链完整，与 STATUS §4.1 第 5 条一致 | `bd2077f` |
+| 2026-11-10 | **新增 `docs/ops/COMMANDS.md`（常用命令手册）**：按「构建 / 运行与优雅退出 / 看内存 / 临时探针 / 进程·端口·线程·设备 / 自检脚本 / Git / 文档一致性体检 / 踩坑表 / 一屏自检」10 类归档本机实操命令，每条给**作用 + 为什么这么写 + 实测输出**，并标注 ✅ 实测项与日期；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 目录行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 跳读表与 `AGENTS.md` 入口清单）。实测依据：ASAN 探针 `CC_RC=0/RUN_RC=0`、`mem_probe 2 3` 每轮回落 82,080 B、`meta_probe clear() released=2`、禁拷贝反证 `CC_RC=1`、`timeout --preserve-status -s INT 10 testnode` → `EXIT=0` + `ss` 见 `*:8550` + `VmRSS=172708 kB`、`git check-ignore` 命中 `build/`；另记环境事实「`ffplay` / `valgrind` 未安装，`ffprobe` 在 `3rdparty/rk3588/ffmpeg/bin/`」 | 本次提交（纯文档，不改变代码校准点） |
+| 2026-11-11 | **新增 `docs/interview/INTERVIEW.md`（面试问答手册）**：三档问答（高频 20 题 / 核心 15 题 / 深入 12 题）+ **§5 内核接触面**（直接：V4L2 `ioctl`+`mmap` 全时序；间接：MPP `/dev/mpp_service`、DMA 堆、ZLM epoll、procfs；并给出"不能吹的边界"对照表）+ **§6 C 语言 8 个落点**（每个给文件/行号、C 概念、练法与面试问法）+ §7 4 周准备路线 + §8 诚实清单/简历 bullet + §9 问题→代码位置速查。全部结论对齐 STATUS §4.1/§4.2、DESIGN §11、TESTLOG §5 与 BUG_CASES B1–B11；同步 5 处入口（本文 §0.1 跳读表、§1.4 `docs/` 行、R5 文档分工表、`README.md` §6 导航、`.clinerules/00-handoff.md` 与 `AGENTS.md`） | 本次提交（纯文档，不改变代码校准点） |
 | 2026-11-11 | **帧内存改由 MPP DRM 缓冲提供**（新增 `common/frame_mem.{h,cpp}`；改 `common/frame_buffer.h`、`common/MemManager/MemManager.cpp`、`common/CMakeLists.txt`，其余零改动）：`FrameBuffer::Allocate()` 不再 `new[]`，改为 `pool::FrameMemAlloc()`（懒建 `MppBufferGroup(MPP_BUFFER_TYPE_DRM)` → `mpp_buffer_get` → `mpp_buffer_get_ptr`），句柄存新字段 `FrameBuffer::native`，`Release()` 对称走 `pool::FrameMemFree()`（`mpp_buffer_put`）；`MemManager::FreeMem()` 末尾加一行 `pool::FrameMemDeinit()`（`group_clear` + `group_put`），因为 `mpp_buffer_put` 只把缓冲挂回组的 unused 链表、不还系统。MPP 头只在 `frame_mem.cpp` 里（`EVS_FRAME_MEM_MPP` 宏隔离），**x86 / 离线探针仍走 `new[]`，`FrameBuffer` 的字段、`BindMemory()`、RAII、禁拷贝全未动**。依赖面：`common_api` 从此 `find_package(MPP REQUIRED)` 并 `PUBLIC` 链 `librockchip_mpp`（仅 rk3588 分支）。验证：`BUILD_RC=0` / warning 0；探针 `/tmp/mpp_pool_probe 2 2` → 记账 12,441,600 B、`data[1]-data[0]=2073600`、`FreeMem` 后归零、fd `11→11`（delta 0）；`/tmp/mpp_rss_probe 50` → 296 MB → 归零；四路 `testnode` 拉流 ch1 `U=128.1±10.9 / V=128.0±1.6`（源 126.6±10.9 / 128.2±1.7）、`hal_h265e` 0 报错、29.18/23.94/23.94/23.78fps、`EXIT=0`；T5/T3/T2 全通过。详见 TESTLOG §5.16 | 本次提交 |
 | 2026-11-12 | **新增顶层 `Makefile`（薄包装）+ 默认构建目录改为 `out/`，并修 P1-2**：`Makefile` 只转发给 CMake（无源码/依赖规则），目标 `all`/`build` `configure` `reconfigure` `rebuild` `clean`（走 CMake `--target clean`，保留手写 `run.sh`）`distclean`（需 `FORCE=1`）`run` `run-node` `run-sh` `test` `test-t5` `info` `help`；变量 `BUILD ?= out`、`JOBS`、`CMAKE_FLAGS`、`PLATFORM`、`APP`、`NODE`、`CFG`、`ARGS` 均可覆盖；`RUN_ENV` 内联 `run.sh` 的 `LD_LIBRARY_PATH`，所以不依赖未入库脚本。`.gitignore` 增 `out/`。**换目录立刻暴露 P1-2**：`BUILD_RTSP_MODULE` 从未 `option()` 声明（旧 `build/CMakeCache.txt` 手工设过 ON 掩盖了它），新目录默认关 → `rtsp` 不加入 → `pipeline` 缺 `avformat.h` / `zlm_push_server.h` 编译失败；已在 `src/platform/CMakeLists.txt` 补 `option(BUILD_RTSP_MODULE "..." ON)`。实测：`make` → `[100%] Built target EdgeVisionService` 0 error、`out/lib` 出 6 个 `.so`（含 `librtsp.so`）；`make help` / `make info` RC=0；`make distclean` 无 `FORCE=1` 时 RC=1 拒绝执行。详见 TESTLOG §5.18 | `本次提交` |
+| 2026-11-14 | **崩溃采集补齐（流程 / 命名 / 体检 / 启动脚本）**：新增 `docs/ops/CRASH_DUMP.md`（信号→handler→`do_coredump` 七步时序、`core_pattern` 格式符全表、`%e` 16 字节截断、抓不到的原因（按链路 7 段 27 条）按链路分段、本机实测结论表）；新增 `scripts/coredump/check_coredump_env.sh`（13 项 PASS/WARN/FAIL 只读体检）、`scripts/coredump/collect_core.sh`（gdb 解析崩溃帧 → 归档目录 `core.<app>.<pid>.<epoch>.sig<N>.<函数>@<文件>:<行>/`，内含 core 硬链 + `meta.txt`（build-id/core_pattern/ulimit）+ 崩溃线程栈 + 全线程栈 + `.so` 列表 + 自动配对的 `report.log`）；新增 `scripts/run/{out,build}/start.sh`（`ulimit -c` / `LD_LIBRARY_PATH` / `EVS_CRASH_DIR` / 前台 `exec`）；`enable_coredump.sh` pattern 改 `%e.%p.%t.sig%s`；`evs-edgevision.service` 改 `ExecStart=…/scripts/run/out/start.sh`。文档：`COMMANDS.md` §2.5/§11.7/§11.8/**§12（开机自启）**、本文 §1.4/§1.9/§1.10、`TESTLOG.md` §5.20、`AGENTS.md` 与 `.clinerules` 入口。实测：8 脚本 `bash -n` 全过；体检 `PASS=5 WARN=9 FAIL=0`；探针 core → `…sig11.crash_in_worker@evs_crash_probe.cpp:17`；真实 core → `…sig3.std::this_thread::sleep_for_…@this_thread_sleep.h:82`；两个 start.sh 各 4 路出帧且 `RC=0` | 工作树（未提交） |
+| 2026-11-14 | **目录分类（docs/ 与 scripts/ 分子目录）+ 五份 README**（纯文档/脚本搬迁，无 C++ 改动）：`docs/` 根保留 `HANDOFF`/`ARCHITECTURE`/`STATUS`，新增 `design/`（ROADMAP·DESIGN_MULTI_PIPELINE·DESIGN_PROCESS_SPLIT）、`ops/`（COMMANDS·CRASH_DUMP）、`history/`（TESTLOG·BUG_CASES）、`interview/`（INTERVIEW）；`scripts/` 的 `diag/` 改名 `coredump/`、`evs-edgevision.service` 移入 `deploy/`；新增 `docs/README.md`（总索引）、`scripts/README.md` + `coredump/`/`deploy/`/`run/`/`tests/` 四份子 README、`cmake/README.md`、`config/README.md`、`src/README.md`。同步：38 个文件的 `docs/<旧名>.md` 与 `scripts/diag/` 引用改为新路径、markdown 相对链接按文件新位置重算（`../README.md` → `../../README.md`）；本文 §1.4 目录树、§1.9「装配服务入口」行（更正为 `main/main.cpp` 是真实入口、`main/test/` 当前不参与构建）、根 `README.md` §6 导航。验证：`bash -n` 12 脚本全过、链接体检 `missing=0`、无旧路径残留、`make` 0 error | 工作树（未提交） |
 
 
 

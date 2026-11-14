@@ -1,6 +1,6 @@
 // T2 验收程序：NodeConfigManager（v1 解析 / 校验 / v0 适配 / 引用展开 / 快照语义）
 // 用 scripts/tests/run_t2_node_config.sh 编译并运行（不碰硬件、不起 RTSP 服务）。
-// 记录见 docs/TESTLOG.md §5.6（L2 · T2）。
+// 记录见 docs/history/TESTLOG.md §5.6（L2 · T2）。
 #include "node_config_manager.h"
 
 #include <json.hpp>

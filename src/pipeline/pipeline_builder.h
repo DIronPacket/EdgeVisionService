@@ -3,7 +3,7 @@
 
 // ============================================================
 // PipelineBuilder —— 把配置里的 pipelines[] 变成「已就绪、可 start」的节点集合
-// （M1 / T5，见 docs/DESIGN_MULTI_PIPELINE.md §5.3）
+// （M1 / T5，见 docs/design/DESIGN_MULTI_PIPELINE.md §5.3）
 //
 //   config/node.json ──NodeConfigManager──> vector<PipelineDesc>
 //                                                  │  PipelineBuilder

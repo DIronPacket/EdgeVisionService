@@ -111,9 +111,9 @@ run-sh:
 # ------------------------------------------------------------------ 测试
 # ⚠ 已知不一致：scripts/tests/run_t*.sh 内部写死 build/（-B build、--build build、
 #   -L build/lib、./build/bin/xxx），与默认 BUILD=out 不同；统一路径属待办
-#   （见 docs/TESTLOG.md §5.18「未做/受限」）。因此 test 会操作 build/。
+#   （见 docs/history/TESTLOG.md §5.18「未做/受限」）。因此 test 会操作 build/。
 test: build
-	@echo "⚠ 验收脚本写死 build/（非 $(BUILD)/），见 docs/TESTLOG.md §5.18 未做项"
+	@echo "⚠ 验收脚本写死 build/（非 $(BUILD)/），见 docs/history/TESTLOG.md §5.18 未做项"
 	@set -e; for s in scripts/tests/run_t*.sh; do \
 		echo "=== $$s ==="; \
 		bash "$$s"; \

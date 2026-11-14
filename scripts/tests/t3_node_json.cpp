@@ -3,7 +3,7 @@
 // 用法：t3_node_json <node.json> [expect_w expect_h expect_fps]
 //   后三个参数由 run_t3_node_json.sh 用 ffprobe 探测 ch1~ch3 的 mp4 后传入；
 //   文件不存在时脚本不传，相关断言打印 SKIP。
-// 记录见 docs/TESTLOG.md §5.7（L2 · T3）。
+// 记录见 docs/history/TESTLOG.md §5.7（L2 · T3）。
 #include "node_config_manager.h"
 
 #include <json.hpp>

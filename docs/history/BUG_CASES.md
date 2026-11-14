@@ -24,6 +24,8 @@
 | B9 | 播放端**加速/抖动**，或小分辨率素材花屏 | 配置的 `fps` / 宽高与素材真实值不符：`PushNode` 用 `1000000/fps` 推 PTS，`FfmpegCapture` 不缩放 | T3 | §2.9 |
 | B10 | 每次 `MemInit`/`FreeMem` 都整块漏 12.44 MB，日志全绿、退出码 0 | `FrameBuffer` 注释写「不拥有内存」，`Allocate()` 却在 `new[]`；`FreeMem()` 只删 `MemMeta` → 6.22 MB/块无人认领。**同日收口**：`~FrameBuffer(){Release();}` + 删拷贝（RAII），漏放/双放两条路径一起关 | 工作树（2026-11-10，P0-9 → P0-10 ①②） | §2.10 |
 | B11 | 反复启停仍每轮漏 128 B，且 vpss 自建的 `vpss_out` 帧整块 6.22 MB 永不回收 | 容器用 `void*` 存槽位：`void*` 不能安全 `delete`（UB、不调析构）也调不到 `freeObj()` → 槽位只增不减、`FreeMem()` 只能按 `imgMap` 点名 | 工作树（2026-11-10，P0-11） | §2.11 |
+| B12 | 崩溃报告写得好好的，**一个 core 都不产生**（`ulimit -c unlimited`、`core_pattern` 都正常） | 信号 handler 执行期间内核自动屏蔽当前信号（无 `SA_NODEFER`）：`tgkill` 只把信号挂成 pending，随后 `_exit()` 把 pending 一起丢掉 → 内核 `do_coredump()` 从未被调用 | 工作树（2026-11-14，崩溃采集） | §2.12 |
+| B13 | 崩溃报告里的帧换算出 `?? ??:0`（地址明明在二进制范围内） | `backtrace_symbols` 的 `模块(符号+0x偏移)` 是**符号内偏移**，直接喂 `addr2line` 等于把「符号内」当「模块内」；只有 `模块(+0x偏移)` 才是模块内偏移 | 工作树（2026-11-14，symbolize 脚本） | §2.13 |
 
 **读法建议**：面试前只看 §1 索引 + 每案末尾的「面试怎么讲」；要复盘细节再读中间的定位过程。
 
@@ -406,6 +408,80 @@ size_t clear() {  // swap 出 map → 锁外逐个 delete → 虚析构 → free
 4. **`FreeMem()` 的"点名"写法看着很负责**：它确实逐个 `Release()`+`delete` 了，只是名单之外的东西它一无所知——按名单回收永远只是"已知集合"的回收。
 
 **面试怎么讲**：*"我们那个数据池容器用 `void*` 做类型擦除，挂什么东西都行，看着很灵活。但我后来发现它把销毁那条路也擦掉了：`delete` 一个 `void*` 是 UB 而且不调析构，唯一会释放对象的 `freeObj()` 是模板成员，运行期没有 `T` 就调不到。结果槽位只能建不能销——同名覆盖就漏 32 B，节点自己挂上去的 6 MB 输出帧干脆整块漏，因为释放路径只能按初始化的名单点名。修法是给槽位补一个带虚析构的基类、容器改存基类指针并加 `clear()`，`delete` 时通过虚析构触发 `freeObj()`；`FrameBuffer*` 单独走先 `Release()` 再 `delete`。经验是：**类型擦除本身不难，难的是擦掉类型之后还得留下一条能正确销毁的通道**——虚函数或存一份删除器，二选一，别只留 `void*`。另外验证要算到字节级，128 B/轮也是漏。"*
+
+---
+
+## 2.12 B12 · 崩溃报告有了，core 却一个都没有（信号 handler 内的屏蔽语义）
+
+**现象**：装上 `crash_handler` 后触发 SIGSEGV：报告 `.log` 正常写出、退出码 `139`、终端甚至没有 `(core dumped)`；`ulimit -c` 是 `unlimited`、`/proc/sys/kernel/core_pattern` 是 `core`、`PR_SET_DUMPABLE` 也在 handler 里设过 —— **但 `ls core*` 是空的**。
+
+**位置**：`src/common/crash/crash_handler.cpp` — `OnFatalSignal()` 里「报告写完 → 重抛信号 → 产生 core」那段（`SYS_tgkill` 调用前一行）。
+
+**根因原理（Linux 信号递送语义）**：
+1. 内核递送信号、调用 handler 时，除非 `sigaction` 带了 `SA_NODEFER`，**会把"正在处理的这个信号"自动加入该线程的阻塞信号集**，handler 返回时才恢复。
+2. 因此在 handler 里 `tgkill(getpid(), gettid(), SIGSEGV)` 并不会立刻杀死进程 —— 它只是把该信号放进该线程的 **pending** 集（blocked ∧ pending）。
+3. 紧接着执行 `_exit(128 + sig)`：进程**正常退出**，pending 信号随线程销毁一起被丢弃 → 内核根本没有走到「按 `core_pattern` 写 core」的 `do_coredump()` 路径。
+
+> 一句话：**信号"被处理过"不等于"递送完成"**。要自己再触发一次默认动作，必须先解除屏蔽。
+
+**修复**：重抛前显式解除该信号屏蔽：
+
+```cpp
+sigset_t one; sigemptyset(&one); sigaddset(&one, sig);
+sigprocmask(SIG_UNBLOCK, &one, NULL);          // ← 缺这一行就没有 core
+syscall(SYS_tgkill, getpid(), gettid(), sig);  // SA_RESETHAND 已恢复 SIG_DFL
+// 正常情况下内核在 tgkill 返回用户态前就终止进程，这里走不到
+_exit(128 + sig);                              // 仅兜底 tgkill 失败
+```
+
+实测对比（同一探针、同一 `ulimit -c unlimited`）：
+
+| | `ls core*` | 终端 |
+| --- | --- | --- |
+| 修复前 | 空 | 无 `(core dumped)` |
+| 修复后 | `core.75255`（589,824 B） | `bash: ... Segmentation fault (core dumped)` |
+
+**为什么难发现**
+- 三个"经典嫌疑"（`RLIMIT_CORE=0`、`core_pattern` 是相对路径、`dumpable=0`）**都排查过且都正常**，很容易下结论「内核不让写」。
+- 失败是**静默**的：报告成功、退出码正确、进程确实死了 —— 只有"core 文件不存在"这一个阴性证据，容易归咎于环境。
+- 该规则在 `man 7 signal`（"the signal being delivered is added to the mask"）和内核 `signal.c` 里，但**不在 `sigaction(2)` 的 flags 说明里**，只看 API 文档读不出来。
+- 顺带解释了一个常见困惑：`SA_RESETHAND` 只重置 **disposition**（处置函数），**不动 signal mask** —— 两件事在 `sigaction` 结构里相邻，语义完全不同。
+
+**面试怎么讲**：*"我要在信号 handler 里重抛信号产生 core，结果报告有、core 没有 —— 因为 handler 执行期间内核会屏蔽当前信号，`tgkill` 只是挂 pending，被我随后的 `_exit` 丢掉了。修法是先 `sigprocmask(SIG_UNBLOCK)` 再 `tgkill`。"*
+可延伸：`pending` vs `blocked` 的区别、`SA_NODEFER` 的用途（handler 内允许同信号嵌套）、多线程下必须 `tgkill` 到**崩溃线程**（`gettid()`）而不是 `kill(getpid())`，否则 core 的 `NT_PRSTATUS` 记录的是别的线程。
+
+---
+
+## 2.13 B13 · 栈帧地址换算成 `?? ??:0`（`backtrace_symbols` 的偏移语义）
+
+**现象**：`symbolize_report.sh` 对 `crash_handler` 自身那一帧能解析出 `crash_handler.cpp:297`，但对 `crash_in_worker` / `main` 全部输出 `?? ??:0` —— 地址明明是有效地址、二进制也没被换过。
+
+**位置**：`scripts/coredump/symbolize_report.sh` 的帧解析循环。
+
+**根因**：`backtrace_symbols()` 输出有两种形态，**偏移的参照点不同**：
+
+| 输出形态 | 偏移的含义 | 送 `addr2line` 前要做的事 |
+| --- | --- | --- |
+| `模块(符号+0x24)` | **符号内**偏移 | 先查符号 vaddr，`vaddr + 0x24` |
+| `模块(+0x3618)` | **模块内**偏移（相对加载基址） | 直接可用（PIE 下 = 文件 vaddr） |
+
+原脚本一律 `addr2line 0x<偏移>`，于是：
+- 无符号那一帧（`+0x3618`）恰好对了 → 误以为"脚本没问题"；
+- 有符号那几帧（`+0x24`）把"符号起点之后 0x24"当成"文件偏移 0x24" → 落在 header/空洞里 → `?? ??:0`。
+
+**修复**：有符号名时用 `nm`（先 `-D`，再退回 `.symtab`）查该符号的 vaddr，加上偏移再送 `addr2line`：
+
+```bash
+sym_vaddr="$(nm -D --defined-only "$mod" | awk -v s="$sym" '$3 == s {print $1; exit}')"
+[ -n "$sym_vaddr" ] || sym_vaddr="$(nm --defined-only "$mod" | awk -v s="$sym" '$3 == s {print $1; exit}')"
+target="$(printf '0x%x' "$(( 16#$sym_vaddr + 16#$off ))")"   # 查不到就退回 0x$off
+```
+
+修复后：`crash_in_worker(int, Frame*) /tmp/evs_crash_probe.cpp:17`、`main …:38`。
+
+**另一个同源坑（gdb 侧）**：`gdb exe core -ex "set solib-search-path ..."` 里 core 在**所有 `-ex` 之前**就被读进来，于是 14 个 `.so` 全部 `Could not load shared library symbols`；同时 `solib-search-path` 里的**相对路径**会被 gdb 再按 cwd 拼一次。修法：用绝对路径 + `-ex "file $EXE" -ex "core-file $CORE"` 显式加载，`missing=0`。
+
+**面试怎么讲**：*"符号化失败的根因是偏移的参照点：`模块(符号+0x24)` 是符号内偏移，直接用会落到文件头变成 `??`；要先 `nm` 查符号地址再加。"* 可延伸：PIE/ASLR 下 `dladdr` 的 `dli_fbase` 与文件 vaddr 的关系、`-rdynamic` 只影响 `.dynsym` 不影响 DWARF、以及"为什么必须保存崩溃当时那份二进制"。
 
 ---
 

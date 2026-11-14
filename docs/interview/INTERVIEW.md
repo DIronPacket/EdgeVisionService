@@ -1,7 +1,7 @@
 # 面试问答手册（高频 · 核心 · 深入 · 内核 · C 语言落点）
 
 > 用途：把这个仓库**真实做过什么、为什么这么做、哪里还没做完**讲清楚。
-> 分工：[BUG_CASES.md](BUG_CASES.md) 是「单个 bug 的原理档案」，[TESTLOG.md](TESTLOG.md) 是「证据」，本文是「**别人问起来怎么答**」。
+> 分工：[BUG_CASES.md](../history/BUG_CASES.md) 是「单个 bug 的原理档案」，[TESTLOG.md](../history/TESTLOG.md) 是「证据」，本文是「**别人问起来怎么答**」。
 > 原则：**只讲代码里能指到行号的东西**。凡本文写「已验证」的，都能在 TESTLOG 找到对应记录；凡是没做完的，§8.2 有一张诚实清单——面试时说「这块我还没做/只知道思路」比编一个实现要安全得多。
 > 基线：分支 `rk3588`、代码校准点 `15cf975`、C++14、aarch64 板端本机编译（2026-11-10 快照）。
 
@@ -405,7 +405,7 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 7. **"设备树（DT）跟你有什么关系？"**
    关系只在"设备节点是谁"：`/dev/video0` 由 DT 里的 camera/CSI 节点 + 驱动 probe 出来。**改 DT 不在本项目范围**，但要知道"换一路 CSI 摄像头可能换的是 `/dev/videoN`"，所以配置里 `vi.src` 是**可配**的（`dev:/dev/video0`）。
 8. **"怎么确认摄像头真的在出 YUYV 1080p30？"**
-   `v4l2-ctl --list-devices` 找节点、`v4l2-ctl -d /dev/video0 --list-formats-ext` 看支持项、`v4l2-ctl -d /dev/video0 --get-fmt-video` 看当前格式；`dmesg | tail` 看驱动 probe/带宽报错。这些命令在 `docs/COMMANDS.md` §6 有。
+   `v4l2-ctl --list-devices` 找节点、`v4l2-ctl -d /dev/video0 --list-formats-ext` 看支持项、`v4l2-ctl -d /dev/video0 --get-fmt-video` 看当前格式；`dmesg | tail` 看驱动 probe/带宽报错。这些命令在 `docs/ops/COMMANDS.md` §6 有。
 9. **"用户态怎么知道自己用的内存有没有泄漏到内核？"**
    用户态泄漏看 `mallinfo2`；内核侧看 `/proc/meminfo` 的 `Slab`/`SUnreclaim` 与 DMA 预留（`/proc/meminfo` 的 `CmaTotal/CmaFree`）。DMA 缓冲泄漏的典型表现是 `CmaFree` 单调下降——MPP `mpp_buffer_put` 漏调就会这样。
 10. **"实时性怎么保证？要不要 `SCHED_FIFO`？"**
@@ -578,5 +578,5 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 | 逐帧耗时 | `node_profiler.h:55-193` | TESTLOG §5.11 |
 | 未修的越界 | `rk_mpp_decoder.cpp:41-121` | 本文 §4.11 |
 
-> 本文只做"怎么讲"。要**证据**去 `docs/TESTLOG.md`，要**原理长文**去 `docs/BUG_CASES.md`，要**命令**去 `docs/COMMANDS.md`。
+> 本文只做"怎么讲"。要**证据**去 `docs/history/TESTLOG.md`，要**原理长文**去 `docs/history/BUG_CASES.md`，要**命令**去 `docs/ops/COMMANDS.md`。
 

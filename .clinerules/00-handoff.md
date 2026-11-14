@@ -3,11 +3,11 @@
 > 本文件只是**索引 + 事实卡**，完整内容在 **`docs/HANDOFF.md`**（唯一权威接手文档）。
 > **不要用 `search_codebase` 全仓扫描来"重新了解项目"**：文件清单在 HANDOFF §1.4，现状在 §0/§1.2，限制在 §2，任务→文件在 §1.9。
 
-## 现状卡（2026-11-11 基线；若与 git 实际不符，以 git 为准并回写文档）
+## 现状卡（2026-11-14 基线；若与 git 实际不符，以 git 为准并回写文档）
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 与远程同步（`45a070c`）· 工作树有用户未提交改动（`src/main/*`、`config/*`）· 本文**代码**校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）；前一校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；再前 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口；再前 `114c94d` = P0-14；`c557d89` = P0-13；`eac4bb0` = T7 + P0-2；`29ab58b` = T6） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· 与远程同步（`45a070c`）· 工作树有未提交改动（`src/common/crash/*`、`scripts/coredump/*`、`scripts/run/{out,build}/start.sh`、顶层与 `src/main` 的 CMake、`src/main/main.cpp`、`config/*`、`docs/ops/CRASH_DUMP.md`、`.gitignore`、docs 多篇）· 本文**代码**校准点 `45a070c`（顶层 `Makefile` 薄包装 + 默认构建目录 `out/` + 修 P1-2）；**工作树新增崩溃现场采集（`crash_handler` + 诊断脚本 + `CRASH_DUMP.md` 流程文档 + 体检/归档/启动脚本，未提交）**；前一校准点 `12f5480`（帧内存改由 MPP DRM 缓冲提供：新增 `common/frame_mem.{h,cpp}` 唯一分配边界；`Allocate()` → `mpp_buffer_get`+`mmap`、`Release()` → `mpp_buffer_put`、`FreeMem()` 末尾 `FrameMemDeinit()` 释放缓冲组；非 rk3588 仍 `new[]`；再前 `15cf975` = P0-9 / P0-11 修复 + P0-10 ①② RAII 收口；再前 `114c94d` = P0-14；`c557d89` = P0-13；`eac4bb0` = T7 + P0-2；`29ab58b` = T6） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录） |
 | 冒烟运行 | `make run` → 期望 `EdgeVisionService start`（等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/EdgeVisionService`） |
@@ -23,16 +23,19 @@ grep -nE '^#{1,2} ' docs/HANDOFF.md     # ~150 token，一次拿全部章节行�
 
 | 我要做的事 | 读 `docs/HANDOFF.md` 的哪些章节 |
 | --- | --- |
+| 不知道读哪篇 / 找某个子目录的说明 | 先看 **`docs/README.md`**（文档总索引）+ 各目录 `README.md`：`docs/` `scripts/` `cmake/` `config/` `src/` |
 | 只想了解现状 | §0（30 秒事实卡）+ §1.2（关键坐标） |
 | 动手改代码前 | §1.4（目录地图）+ §1.7（内存池/节点 API 速查） |
 | **规定 / 红线（任何改动都必须读）** | §2 全部（2.1–2.9） |
 | 修某个 P0/P1 | §1.5（构建坑）+ §1.9（任务→文件）+ R1 + R4 |
 | 加一个新节点 | §2.4（流水线与内存池）+ R2 |
+| **崩溃了 / 卡死 / 要看崩溃变量** | **`docs/ops/CRASH_DUMP.md`**（全流程 + core 命名 + 抓不到的原因（按链路 7 段 27 条））+ §1.10（四层与四条约束）+ `docs/ops/COMMANDS.md` §11（体检 / 归档改名 / 解析）+ `docs/history/BUG_CASES.md` B12/B13 |
+| **程序开机自启** | `docs/ops/COMMANDS.md` §12（systemd unit；`LimitCORE=infinity` 决定 core 能不能落盘） |
 | 排障 | R4（口诀） |
-| **记测试 / 查回归结果 / 证明"已修复"** | 不在 HANDOFF：用 **`docs/TESTLOG.md`**（L1 冒烟表 + L2/L3 明细，含模板与必填项） |
-| **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在 HANDOFF：用 **`docs/BUG_CASES.md`**（原理剖析 + 代码位置 + 定位手法 + 面试说法；修 bug 后必须追加） |
-| **命令怎么敲（构建 / 运行 / 看内存 / 临时探针 / git）** | 不在 HANDOFF：用 **`docs/COMMANDS.md`**（分类命令手册，每条带作用与实测输出，末尾有踩坑表） |
-| **准备面试（怎么讲 / 内核问到哪 / 练 C 去哪练）** | 不在 HANDOFF：用 **`docs/INTERVIEW.md`**（高频 · 核心 · 深入问答，附内核边界与 C 语言落点） |
+| **记测试 / 查回归结果 / 证明"已修复"** | 不在 HANDOFF：用 **`docs/history/TESTLOG.md`**（L1 冒烟表 + L2/L3 明细，含模板与必填项） |
+| **复盘某个 bug 为什么发生 / 面试怎么讲** | 不在 HANDOFF：用 **`docs/history/BUG_CASES.md`**（原理剖析 + 代码位置 + 定位手法 + 面试说法；修 bug 后必须追加） |
+| **命令怎么敲（构建 / 运行 / 看内存 / 临时探针 / git）** | 不在 HANDOFF：用 **`docs/ops/COMMANDS.md`**（分类命令手册，每条带作用与实测输出，末尾有踩坑表） |
+| **准备面试（怎么讲 / 内核问到哪 / 练 C 去哪练）** | 不在 HANDOFF：用 **`docs/interview/INTERVIEW.md`**（高频 · 核心 · 深入问答，附内核边界与 C 语言落点） |
 | 全量接手 / 换人 | 全文（约 450 行，~10k token，仅必要时代价） |
 
 > 这套跳读法把常任务的上下文成本压到 1–4k token；只有"第一次全量接手"才需要读全文。
@@ -46,8 +49,8 @@ grep -nE '^#{1,2} ' docs/HANDOFF.md     # ~150 token，一次拿全部章节行�
 5. 内存池取块（`acquire` / `getBlock`）之后，**所有失败分支都必须 `release`**。
 6. 没有实际执行编译/运行，不许声称"已修复 / 已通过"。
 7. 不做任务范围之外的"顺手修"（格式化、改名、重构）。
-8. **测试必须留痕**：改代码/改配置后按 `docs/TESTLOG.md` 的分级写记录（L1 一行冒烟 / L2 任务小节 / L3 里程碑），无记录的"已通过"视为未验证。
-9. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug（现象与根因跨层 / 只在并发时序内存残留下复现 / 涉及资源所有权与跨组件共享状态 / 曾被误判方向），修完必须在 **`docs/BUG_CASES.md`** 追加案例（现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误只在 `STATUS.md` 标注。
+8. **测试必须留痕**：改代码/改配置后按 `docs/history/TESTLOG.md` 的分级写记录（L1 一行冒烟 / L2 任务小节 / L3 里程碑），无记录的"已通过"视为未验证。
+9. **修 bug 必须写档案**（用户 2026-11-09 明确要求）：凡是"有原理含量"的 bug（现象与根因跨层 / 只在并发时序内存残留下复现 / 涉及资源所有权与跨组件共享状态 / 曾被误判方向），修完必须在 **`docs/history/BUG_CASES.md`** 追加案例（现象 → 位置到函数级 → 根因原理 → 修复 → 为什么难发现 → 面试怎么讲），并更新其 §1 索引表；与代码同一批提交。纯笔误只在 `STATUS.md` 标注。
 
 
 ## 会话收尾
@@ -55,6 +58,6 @@ grep -nE '^#{1,2} ' docs/HANDOFF.md     # ~150 token，一次拿全部章节行�
 代码/构建/依赖发生变化时（新的代码提交 / 构建方式改了 / 修掉某个 P0；**纯 `docs:` 提交不算**），同步更新：
 `docs/HANDOFF.md` 的 §0 事实卡、§1.2 关键坐标、附录 B 变更记录，以及本文件的现状卡。
 
-任何构建/运行/测试之后，把结论追加到 `docs/TESTLOG.md`（L1 一行式即可；修 P0/P1 或完成一个任务时写 L2 小节），提交时与代码同一 commit。
+任何构建/运行/测试之后，把结论追加到 `docs/history/TESTLOG.md`（L1 一行式即可；修 P0/P1 或完成一个任务时写 L2 小节），提交时与代码同一 commit。
 
-修掉"有原理含量"的 bug（见硬约束第 9 条）时，同时追加 `docs/BUG_CASES.md` 案例并更新其 §1 索引表。
+修掉"有原理含量"的 bug（见硬约束第 9 条）时，同时追加 `docs/history/BUG_CASES.md` 案例并更新其 §1 索引表。

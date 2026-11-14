@@ -1,7 +1,7 @@
 # EdgeVisionService 常用命令手册（分类 · 作用 · 实测输出）
 
 > 本文只回答一件事：**想干某件事，该敲哪条命令**。每条命令都写明「作用 + 为什么这么写 + 实测输出」。
-> 分工：**规矩**在 [HANDOFF.md](HANDOFF.md) §2 · **测试证据**在 [TESTLOG.md](TESTLOG.md) · **bug 原理**在 [BUG_CASES.md](BUG_CASES.md) · **命令**在本文。
+> 分工：**规矩**在 [HANDOFF.md](../HANDOFF.md) §2 · **测试证据**在 [TESTLOG.md](../history/TESTLOG.md) · **bug 原理**在 [BUG_CASES.md](../history/BUG_CASES.md) · **命令**在本文。
 >
 > 适用：分支 `rk3588`、板端 aarch64 本机编译（cmake 3.22 / g++ 11.4 / 8 核）。
 > **所有命令默认从仓库根执行**：`cd /mnt/nvme/workspace/EdgeVisionService`。
@@ -20,6 +20,8 @@
 - [8. 文档一致性体检](#8-文档一致性体检)
 - [9. 踩过的坑速查表](#9-踩过的坑速查表)
 - [10. 一屏自检（复制粘贴）](#10-一屏自检复制粘贴)
+- [11. 崩溃现场：报告 / core / 符号化](#11-崩溃现场报告--core--符号化)
+- [12. 部署 / 开机自启（systemd）](#12-部署--开机自启systemd)
 
 ## 0. 三条通用套路（先读这段，后面的命令都靠它读结果）
 
@@ -134,6 +136,29 @@ export LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
 ./out/bin/testnode "$PWD/config/node.json"
 ```
 
+### 2.5 两个一键启动脚本（`out/` 与 `build/` 各一个，同名 `start.sh`）
+
+```bash
+scripts/run/out/start.sh                      # out/bin/EdgeVisionService + config/node.json
+scripts/run/out/start.sh config/push.json     # 指定配置（相对仓库根或绝对路径）
+scripts/run/build/start.sh                    # build/bin/EdgeVisionService（11-12 旧产物）
+
+timeout --preserve-status -s INT 5 scripts/run/out/start.sh; echo "RC=$?"   # 自动化验证
+```
+
+脚本做的事（每次启动都可复查，已打印出来）：
+
+| 项 | 值 | 为什么 |
+| --- | --- | --- |
+| `ulimit -c` | `unlimited`（失败只告警） | 本机 soft=0，不抬就没有 core |
+| `LD_LIBRARY_PATH` | `<构建目录>/lib` + `install/rk3588/lib` | 与 `make run` 完全一致 |
+| `EVS_CRASH_DIR` | 默认 `<仓库根>/crash` | 报告集中一处，不随 cwd 漂移 |
+| cwd | `<构建目录>` | 与历史实测行为一致（相对资源路径按 `out/` 解析）；`core_pattern=core` 时 core 也落这里 |
+| 前台 `exec` | — | `Ctrl+C` 直接送到程序；`kill -QUIT <pid>` 能命中 handler |
+
+✅ 实测（2026-11-14）：`out` 版 4 路出帧、`ulimit -c=unlimited`、`[crash] 崩溃处理已安装 ... rlimit_core=enabled`，`timeout -s INT` 后 `RC=0`（优雅退出）。
+⚠️ `build/` 是 11-12 的旧产物：能跑（实测 4 路），但**里面没有崩溃采集代码**（日志无 `[crash]` 行）。要抓现场请用 `out` 版。
+
 
 ## 3. 看内存（进程级 / 堆级 / 泄漏）
 
@@ -217,7 +242,7 @@ grep -A6 -E 'mpp|heap' /proc/$PID/smaps | head -40      # 带 Rss/Pss 的明细
 
 ## 4. 临时探针：写文件、编译、运行（不污染仓库）
 
-**原则**：一次性验证代码放在 `/tmp`，**不进 `src/`、不进 `out/`、不进 git**。文件名要说明它证明什么，验证完把结论写进 `docs/TESTLOG.md` 并附探针路径。
+**原则**：一次性验证代码放在 `/tmp`，**不进 `src/`、不进 `out/`、不进 git**。文件名要说明它证明什么，验证完把结论写进 `docs/history/TESTLOG.md` 并附探针路径。
 
 ### 4.1 写一个临时源文件（heredoc，防变量展开）
 
@@ -451,7 +476,7 @@ git --no-pager diff --cached --name-only   # 暂存区里到底有什么
 ### 7.2 暂存 + 提交（多行中文消息用文件）
 
 ```bash
-git add README.md docs/COMMANDS.md docs/HANDOFF.md
+git add README.md docs/ops/COMMANDS.md docs/HANDOFF.md
 git commit -F /tmp/commit_msg.txt
 ```
 
@@ -461,7 +486,7 @@ git commit -F /tmp/commit_msg.txt
 提交消息文件长这样（本仓库约定：`type: 一句话` + 正文写「改了什么/为什么/验证」）：
 
 ```text
-docs: 新增 docs/COMMANDS.md 常用命令手册
+docs: 新增 docs/ops/COMMANDS.md 常用命令手册
 
 - 归档今晚实测通过的命令：构建 / 运行 / 看内存 / 临时探针 / 进程端口 / git
 - 每条给「作用 + 为什么这么写 + 实测输出」，标注 ✅ 实测项
@@ -571,12 +596,195 @@ pgrep testnode || echo '无残留'
 
 ---
 
+## 11. 崩溃现场：报告 / core / 符号化
+
+> 代码：`src/common/crash/crash_handler.{h,cpp}`（信号 handler + `std::terminate` handler）
+> 脚本：`scripts/coredump/`（体检 / 开 core / 符号化 / 解析 core / 归档改名 / 抓活进程 / systemd 单元）
+> **完整流程、core 命名机制、抓不到的原因（按链路 7 段 27 条）见 [CRASH_DUMP.md](CRASH_DUMP.md)**；踩过的坑见 [BUG_CASES.md](../history/BUG_CASES.md) §2.12
+
+### 11.1 一次性打开系统侧 core（root，两台机器都要做）
+
+```bash
+sudo scripts/coredump/enable_coredump.sh
+cat /proc/sys/kernel/core_pattern      # 期望 /var/lib/evs/coredump/core.%e.%p.%t.sig%s
+ulimit -c                              # 期望 unlimited
+scripts/coredump/check_coredump_env.sh     # 逐项 PASS/WARN/FAIL 体检（只读，不需要 root）
+```
+- `core_pattern` 必须是**绝对路径**（或以 `|` 开头的管道），相对路径会落到进程 cwd —— 服务化后 cwd 常是 `/`，写不进去就等于没抓。
+- **systemd 服务不读 `/etc/security/limits.d`**，必须 `LimitCORE=infinity`（见 `scripts/deploy/evs-edgevision.service`），否则 `RLIMIT_CORE=0`，`core_pattern` 设了也不落盘。
+- 容器里改 `core_pattern` 无效：它是 host 级参数。
+
+### 11.2 崩了先看什么
+
+```bash
+ls -lt out/crash | head                # 报告：crash_<app>_<pid>_<epoch>_sig<N>.log
+ls -lt /var/lib/evs/coredump | head    # core：core.<app>.<pid>.<epoch>（本机未装该脚本时是 ./core.<pid>）
+```
+报告已经给的：程序 / exe / pid / tid / UTC 时间 / 信号+描述 / `si_code`+故障地址 / `pc sp lr fp` / 业务 tag / 调用栈。**先看 tag**（例如 `config=../config/node.json`）确认是哪份配置的现场。
+
+### 11.3 报告地址 → 函数 + 文件:行号
+
+```bash
+scripts/coredump/symbolize_report.sh out/crash/crash_EdgeVisionService_75879_1794659287_sig3.log
+# 报告里是运行时相对路径（./bin/xxx、./lib/xxx.so），不在同一 cwd 时给部署根：
+EVS_MODROOT=/opt/EdgeVisionService scripts/coredump/symbolize_report.sh <报告>
+```
+输出形如：
+
+```
+./bin/EdgeVisionService(main+0x574)[0x558f2c2574]
+    -> main /mnt/.../src/main/main.cpp:129
+```
+**语义要点**：`backtrace_symbols` 的「模块(符号+0x偏移)」里偏移是**符号内偏移**，脚本先用 `nm` 查符号 vaddr 再加；「模块(+0x偏移)」才是模块内偏移（PIE 下等于文件 vaddr）。搞错这两种会得到 `?? ??:0`。
+
+### 11.4 上 core 看变量（**只有 `-g` 编译才有**）
+
+```bash
+scripts/coredump/analyze_core.sh out/core.75879 out/bin/EdgeVisionService
+# → out/core.75879.gdb.txt：info threads + thread apply all bt full + 寄存器 + 已加载 .so
+```
+交互式：
+
+```bash
+gdb -q out/bin/EdgeVisionService out/core.75879
+(gdb) info threads                 # 哪个线程崩的
+(gdb) thread apply all bt          # 全线程栈（卡死类问题靠这个）
+(gdb) frame 3                      # 切到崩溃帧（前 2 帧是 handler 与 sigreturn）
+(gdb) info args                    # 函数入参
+(gdb) info locals                  # 局部变量
+(gdb) p *this                      # 对象成员
+(gdb) p frame->width               # 具体字段
+```
+- `bt full` 能打印变量，靠的是 DWARF（`-g`），所以**没 `-g` 就只有 `??`**；本项目默认 `RelWithDebInfo` 已带 `-g`。
+- 变量显示 `<optimized out>` = 被 `-O2` 优化掉：`make BUILD=out-dbg CMAKE_FLAGS="-DCMAKE_BUILD_TYPE=Debug"` 重编复现。
+- core 必须配**当时那份二进制与 `.so`**；重编后地址错位，用 `readelf -n` 记 build-id 归档。
+
+### 11.5 进程没崩但卡住 / 无输出 / CPU 100%
+
+```bash
+scripts/coredump/gcore_now.sh EdgeVisionService     # 按名字找 pid → /proc 快照 + gcore + 解析
+scripts/coredump/gcore_now.sh 12345 crash           # 按 pid，输出到 crash/
+kill -QUIT <pid>                                # 也走同一 handler（装了 SIGQUIT）
+```
+- `wchan` 判据：`futex` / `do_wait` = 卡锁；`poll` / `epoll` = 等 IO；`nanosleep` = 在自己的循环里。
+- `gcore` 用 `ptrace` attach，**不杀进程**，但 attach 期间目标进程短暂暂停。
+
+### 11.6 主动触发一次（自动化验证用）
+
+```bash
+cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" \
+  timeout --preserve-status -s QUIT 6 ./bin/EdgeVisionService ../config/node.json
+echo "RC=$?"    # 131 = 128+3(SIGQUIT)：handler 生效 + core 落盘
+```
+
+### 11.7 先体检「这台机器现在能不能抓到 core」（只读，不需要 root）
+
+```bash
+scripts/coredump/check_coredump_env.sh
+echo "RC=$?"      # 0 = 没有 FAIL；1 = 有 FAIL（当前一定抓不到）
+```
+
+覆盖 13 项：`core_pattern`（绝对/相对/管道、`%p`/`%t`/`%e`）、目录存在与可写、盘类型（tmpfs 会吃内存）、
+`ulimit -c` 软/硬、`ulimit -f`、`suid_dumpable`、AppArmor/SELinux、`coredump_filter`、`coredumpctl` 接管、
+容器、`sysctl.d`/`limits.d` 持久化、已装 unit 的 `LimitCORE`。每项都带「怎么修」。
+
+✅ 实测（2026-11-14 本机）：`PASS=5 WARN=9 FAIL=0`，结论是"现在能抓，但 systemd 上线前要跑 `enable_coredump.sh`"。
+
+### 11.8 把 core 归档成「名字里带函数名 / 文件 / 行号」的目录
+
+内核只能给 core 起 `core.<app>.<pid>.<epoch>.sig<N>` 这类名字（它不认识用户态符号，
+详见 [CRASH_DUMP.md §2](CRASH_DUMP.md)）。要看得到函数名的归档，用这条：
+
+```bash
+scripts/coredump/collect_core.sh out/core.75879 out/bin/EdgeVisionService
+# 不给 exe 也行：脚本会按 core 名里的程序段（%e，≤16 字节）去 out/bin、build/bin 里找
+
+scripts/coredump/collect_core.sh /var/lib/evs/coredump/core.* out/bin/EdgeVisionService -o /data/archive
+```
+
+产物（✅ 实测 2026-11-14）：
+
+```
+out/archive/core.EdgeVisionService.75879.1794659287.sig3.std::this_thread::sleep_for_...@this_thread_sleep.h:82/
+    core                       硬链接（同 inode，不占双倍空间；Link count=2）
+    meta.txt                   exe + build-id + pid/epoch/信号 + core_pattern + 内核 + ulimit
+    crash_thread_bt.txt        崩溃线程栈（tgkill 保证是崩溃现场）
+    backtrace_all_threads.txt  24 线程全栈（20 KB）
+    sharedlibs.txt             .so 加载情况（排查 ?? 帧）
+    report.log                 同 pid 的 crash_*.log（自动配对）
+```
+
+- 报告配对规则：按 `crash_*_<pid>_*_sig*.log` 找最新一份（pid 相同即同一次崩溃）。
+- 信号号缺失时（`core_pattern=core` 的 `core.75255` 没 `sig` 段）从报告名 `_sigN.log` 反推。
+- `-o` 指定归档根；默认 `<core 所在目录>/archive`。
+
+## 12. 部署 / 开机自启（systemd）
+
+> 结论：**只改 systemd unit 一处**。不要用 `rc.local` / `crontab @reboot`：
+> 它们不设 `LimitCORE`（服务模式 hard=0 → core 永远抓不到）、cwd 不可控、没有重启策略、日志也不进 journal。
+
+### 12.1 安装单元（一次性，需要 root）
+
+```bash
+sudo cp scripts/deploy/evs-edgevision.service /etc/systemd/system/
+sudo systemctl daemon-reload
+systemctl cat evs-edgevision | head -30      # 复核路径 / User / LimitCORE
+```
+
+单元里必须对的六行（其余见文件内注释）：
+
+```ini
+[Service]
+WorkingDirectory=/mnt/nvme/workspace/EdgeVisionService      # 直接跑二进制时 core 相对名的落点（start.sh 会 cd 到 out/）
+ExecStart=/mnt/nvme/workspace/EdgeVisionService/scripts/run/out/start.sh
+Restart=on-failure
+RestartSec=3
+LimitCORE=infinity                                         # 不写这行 = 服务模式永远没有 core
+# User=orangepi                                            # 需要时改成实际用户
+```
+
+- `LimitCORE=infinity` 是**唯一**能让服务模式抓到 core 的方式：`/etc/security/limits.d` 对 systemd 无效，
+  PID1 的 hard limit 通常是 0，进程自己无权抬高（`setrlimit` 只能抬到 hard）。
+- 用 `start.sh` 当 `ExecStart`：`ulimit -c` / `LD_LIBRARY_PATH` / `EVS_CRASH_DIR` 都在脚本里，
+  单元不用重复写（`Environment=` 也不做变量展开，写 `$PATH` 之类不会生效）。
+
+### 12.2 开机自启 / 立即启动 / 状态
+
+```bash
+sudo systemctl enable --now evs-edgevision     # 开机自启 + 现在就起
+systemctl status evs-edgevision --no-pager
+systemctl is-enabled evs-edgevision            # 期望 enabled
+systemctl show -p LimitCORE -p WorkingDirectory evs-edgevision
+```
+
+### 12.3 日志与「core 到底能不能落」
+
+```bash
+journalctl -u evs-edgevision -f                 # 实时日志（crash 报告同时打到 stderr → journal）
+PID=$(systemctl show -p MainPID --value evs-edgevision)
+grep -i 'core file' "/proc/$PID/limits"         # 期望 hard = unlimited
+cat /proc/sys/kernel/core_pattern               # 期望 /var/lib/evs/coredump/core.%e.%p.%t.sig%s
+ls -lt /var/lib/evs/coredump | head             # core 产物
+```
+
+### 12.4 替代方案（不推荐，只说明差别）
+
+| 方式 | 缺点 |
+| --- | --- |
+| `rc.local` | 不设 `LimitCORE`（core 抓不到）、cwd=`/`、无重启、日志混进 syslog |
+| `crontab @reboot` | 同上，且 crontab 环境极简（`PATH`/`HOME` 可能缺），失败无感 |
+| `~/.bashrc` / `profile` | 只对登录 shell 生效，无人登录就不启动 |
+
+临时手工启动用 `scripts/run/out/start.sh`；要服务化就按 §12.1。
+
+---
+
 ## 维护规则
 
 1. **只收验证过的命令**：新加一条，先在本机跑通，再连同输出一起写进来并标 ✅ 实测 + 日期。
 2. **必须写「作用」和「为什么这么写」**：单纯贴命令，下次还是要查 man。
 3. **本文只放操作手法**：结论放 `STATUS.md`，证据放 `TESTLOG.md`，规矩放 `HANDOFF.md`，原理放 `BUG_CASES.md`。
-4. 命令的执行环境变了（换板子 / 换工具链），先改 [HANDOFF.md](HANDOFF.md) §1.3，再回来更新本文的路径与版本相关部分。
+4. 命令的执行环境变了（换板子 / 换工具链），先改 [HANDOFF.md](../HANDOFF.md) §1.3，再回来更新本文的路径与版本相关部分。
 
 
 

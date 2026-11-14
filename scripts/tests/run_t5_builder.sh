@@ -3,7 +3,7 @@
 #
 # 用法：./scripts/tests/run_t5_builder.sh [node.json 路径]
 # 特点：只 build 不 start —— 不碰硬件、不起线程、不开 RTSP、不推流。
-# 记录见 docs/TESTLOG.md §5.8（L2 · T5）。
+# 记录见 docs/history/TESTLOG.md §5.8（L2 · T5）。
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
