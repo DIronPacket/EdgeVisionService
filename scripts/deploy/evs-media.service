@@ -1,0 +1,45 @@
+# ============================================================================
+# evs-media.service —— 进程 1（媒体主链路 evs_media）
+# ----------------------------------------------------------------------------
+# 不要手工拷贝本文件：用 scripts/deploy/install.sh 渲染 @@...@@ 占位符后再装。
+#   sudo scripts/deploy/install.sh install
+# 只装这一个单元（调试用）：sudo scripts/deploy/install.sh install --only media
+#
+# 三进程的聚合入口是 evs.target；本单元由它 Wants 拉起，不要单独 enable。
+# ============================================================================
+[Unit]
+Description=EVS media pipeline (evs_media, RK3588)
+Documentation=file://@@EVS_ROOT@@/docs/ops/COMMANDS.md
+# 摄像头 / DRM / MPP 就绪不需要网络，但 RTSP 推流需要栈起来；用 network-online 更保险
+After=network-online.target
+Wants=network-online.target
+# 媒体进程是核心：连续失败 → 交给回滚单元（P4 联调时打开，骨架期 rollback 仍是桩）
+#OnFailure=evs-rollback.service
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# 采集需要 /dev/video* 与 DRM/MPP，root 最省事；若要降权，改成
+# User=evs + SupplementaryGroups=video render 并给 /dev/dri/* 授权
+User=@@EVS_USER@@
+# 与 make run-media 保持一致（配置里的相对素材路径按 out/ 解析）
+WorkingDirectory=@@EVS_ROOT@@/out
+Environment=EVS_CRASH_DIR=@@EVS_DATA@@/crash
+Environment=LD_LIBRARY_PATH=@@EVS_ROOT@@/out/lib:@@EVS_ROOT@@/install/@@EVS_PLATFORM@@/lib
+# ZLM 日志默认只留 error（2026-11-15）；排障时临时放开：0=trace … 4=fatal
+#Environment=EVS_ZLM_LOG_LEVEL=2
+# 关键：systemd 服务不读 /etc/security/limits.d，不写这行 hard limit 通常为 0 → 一个 core 都没有
+LimitCORE=infinity
+LimitNOFILE=65536
+ExecStart=@@EVS_ROOT@@/out/bin/evs_media @@EVS_ROOT@@/config/node.json
+# 媒体进程自己捕获 SIGINT/SIGTERM 走有序停止（stop_all → FreeMem），给足时间
+KillSignal=SIGTERM
+TimeoutStopSec=20
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=evs.target

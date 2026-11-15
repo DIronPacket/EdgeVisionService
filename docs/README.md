@@ -16,7 +16,7 @@
 | **程序崩了 / 卡死 / 要抓 core 看变量** | [ops/CRASH_DUMP.md](ops/CRASH_DUMP.md) | `ops/` |
 | 记测试结果 / 证明"已修复" / 查回归 | [history/TESTLOG.md](history/TESTLOG.md) | `history/` |
 | 复盘某个 bug 为什么发生 / 面试怎么讲 | [history/BUG_CASES.md](history/BUG_CASES.md) | `history/` |
-| 看**未来做什么**、三进程拆分、多链路设计 | [design/ROADMAP.md](design/ROADMAP.md) · [design/DESIGN_MULTI_PIPELINE.md](design/DESIGN_MULTI_PIPELINE.md) · [design/DESIGN_PROCESS_SPLIT.md](design/DESIGN_PROCESS_SPLIT.md) | `design/` |
+| 看**未来做什么**、三进程拆分、多链路设计、进程通信协议 | [design/ROADMAP.md](design/ROADMAP.md) · [design/DESIGN_MULTI_PIPELINE.md](design/DESIGN_MULTI_PIPELINE.md) · [design/DESIGN_PROCESS_SPLIT.md](design/DESIGN_PROCESS_SPLIT.md) · [design/DESIGN_IPC.md](design/DESIGN_IPC.md) | `design/` |
 | 准备面试（怎么讲、内核问到哪、C 语言落点） | [interview/INTERVIEW.md](interview/INTERVIEW.md) | `interview/` |
 | 想看**代码之外**的目录怎么组织（脚本 / 依赖查找 / 配置 / 源码） | [../scripts/README.md](../scripts/README.md) · [../cmake/README.md](../cmake/README.md) · [../config/README.md](../config/README.md) · [../src/README.md](../src/README.md) | 仓库根各目录 |
 
@@ -38,7 +38,9 @@ docs/
 │   ├── README.md
 │   ├── ROADMAP.md         ← 功能路线图（H.264 / RGA / OSD / 录像 / 交叉编译 / OTA）
 │   ├── DESIGN_MULTI_PIPELINE.md  ← 多链路配置 + 进程级资源上提（T5/T6/T7 已按此落地）
-│   └── DESIGN_PROCESS_SPLIT.md   ← 单进程 → 媒体/通信/升级 三进程（未落地）
+│   ├── DESIGN_PROCESS_SPLIT.md   ← 单进程 → 媒体/通信/升级 三进程（媒体/通信已落地，升级骨架已落地）
+│   ├── DESIGN_UPGRADE.md         ← 应用级升级 evs_upgrade（A/B + 签名清单 + 自动回滚；骨架已落地，解包/systemctl 仍是桩）
+│   └── DESIGN_IPC.md             ← 三进程通信：控制面 MQTT / 高频 UDP 或 shm 环 / 大块 fd 传递（设计稿，未落代码）
 │
 ├── history/               ← 记录与证据（"发生过什么"时来这）
 │   ├── README.md

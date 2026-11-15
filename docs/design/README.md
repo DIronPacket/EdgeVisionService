@@ -3,15 +3,17 @@
 > 这个目录回答「**以后怎么做、为什么这么选**」，**不描述现状**。
 > 现状看 [../STATUS.md](../STATUS.md)，架构看 [../ARCHITECTURE.md](../ARCHITECTURE.md)，落地证据看 [../history/TESTLOG.md](../history/TESTLOG.md)。
 
-## 1. 三篇文档
+## 1. 五篇文档
 
 | 文档 | 状态 | 一句话 | 落地程度 |
 | --- | --- | --- | --- |
 | [ROADMAP.md](ROADMAP.md) | 规划 | H.264/H.265 参数化、RGA 预处理、OSD、录像、交叉编译、Docker、OTA 的目标与排期 | 功能级规划，绝大部分未开始 |
 | [DESIGN_MULTI_PIPELINE.md](DESIGN_MULTI_PIPELINE.md) | **已部分落地** | 多链路配置（`node.json`）+ 进程级资源上提（媒体服务 / 内存池 / 配置中心） | 方案 A 已实现：`NodeConfigManager`(T2/T3)、`NodeFactory` + `PipelineBuilder`(T5)、真实入口(T6)、采集源配置化(T7)；`MediaServer` 上提(T4)、`global.pool.*` 接线(T10a) 未做 |
-| [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md) | 规划（未落地） | 单进程 → 媒体 / 通信 / 升级 三进程 + 共享 `libcomm_api`（MQTT） | 只有目录、分层决策与 4 步落地顺序，代码未动 |
+| [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md) | 部分落地（2026-11-14/15） | 单进程 → 媒体 / 通信 / 升级 三进程 + 共享 `libcomm_api`（MQTT） | 媒体/通信进程与 `comm_api` 已落地；升级进程骨架已落地；broker 守护、命令路由、跨进程联调未做 |
+| [DESIGN_UPGRADE.md](DESIGN_UPGRADE.md) | 骨架已落地（2026-11-15） | 应用级升级进程 `evs_upgrade`：目录 A/B + Ed25519 签名清单 + `boot_count` 自动回滚 + Docker 可行性评估 | `libupgrade_api.so` + `evs_upgrade` 可编可跑（146 单元 + 13 CLI 全 PASS）；解包 / `systemctl` / ffprobe 帧率仍为桩 |
+| [DESIGN_IPC.md](DESIGN_IPC.md) | **设计稿（2026-11-15，未落代码）** | 三进程通信分三条通道：控制面 MQTT / 同机高频 UDP 或共享内存 / 大块数据 fd 传递；含 MQTT topic 表、UDP 32 B 帧头、shm 环布局与读写算法 | 仅有 `comm_api`（UDP/MQTT）可复用；协议头、shm 环、eventfd、DMA-BUF 跨进程传递全部未实现（P1–P5） |
 
-**读之前先看状态列**：把「设计提案」当成「已实现」是最常见的误读。三篇里只有 `DESIGN_MULTI_PIPELINE` 被真实代码引用过。
+**读之前先看状态列**：把「设计提案」当成「已实现」是最常见的误读。五篇里只有 `DESIGN_MULTI_PIPELINE` 与 `DESIGN_UPGRADE`（骨架部分）被真实代码引用过；`DESIGN_IPC` 目前**一行代码都没有**。
 
 ## 2. 设计文档的写作要求
 

@@ -1,0 +1,26 @@
+# ============================================================================
+# evs.target —— 三进程聚合入口（开机自启只 enable 这一个）
+# ----------------------------------------------------------------------------
+# 不要手工拷贝：用 scripts/deploy/install.sh（会渲染占位符）。
+#
+#   sudo systemctl enable --now evs.target      # 开机自启 + 现在全起
+#   systemctl status evs.target                 # 看聚合状态
+#   systemctl list-units 'evs-*'                # 看三个进程各自状态
+#
+# 为什么用 target 而不是三个 unit 各自 enable：
+#   1. 一次操作管三个，卸载/停服不用记三个名字；
+#   2. 顺序与依赖集中在一处（Wants + After），不会出现"改了 A 忘了 B"；
+#   3. 单独调试某个进程仍然可以 `systemctl restart evs-comm`，互不干扰。
+#
+# 注意：Wants=（不是 Requires=）——某个进程起不来不会阻止另外两个，
+#   媒体挂了通信与升级仍能上报，这是刻意的。
+# ============================================================================
+[Unit]
+Description=EVS three-process stack (evs_media + evs_comm + evs_upgrade)
+Documentation=file://@@EVS_ROOT@@/docs/ops/COMMANDS.md
+Wants=evs-media.service evs-comm.service evs-upgrade.service
+# 只要三个 unit 都被"请求"了就算是启动完成；顺序由各 unit 自己的 After= 决定
+After=evs-media.service evs-comm.service evs-upgrade.service
+
+[Install]
+WantedBy=multi-user.target

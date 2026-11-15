@@ -92,6 +92,11 @@
 | 2026-11-14 | **T6 通信层**（`src/comm/` → `libcomm_api.so`） | `make` → 0 error，新增 `out/lib/libcomm_api.so` + `out/bin/test_comm`；`run_t6_comm.sh` → **43 项 PASS / fail=0**（MQTT 分支临时起 broker 真跑 pub/sub）；`timeout 12 make run` → 4 路 23.9~29.9fps、`FreeMem: 释放 50 块`、正常退出（见 5.21） | ✅ 通过（未接主链路） |
 | 2026-11-14 | **两进程拆分 + 进程可选编译**（`evs_media` / `evs_comm` + 兼容壳 `EdgeVisionService`） | `make` → 0 error（`out/bin/{evs_media,evs_comm,EdgeVisionService}`）；`-DEVS_PROCESS=media` / `comm` 两棵独立构建树产物正确，未选中的 target 仍可 `--target` 构建；`make media` / `comm` / `proc PROC=comm` / `proc PROC=all` 全 rc=0；`make run-media` → 4 路 `实测=23.82fps` + `FreeMem: 释放 50 块` + 正常退出；`make run-comm` → 有 broker `cmd → running` 且收到 `evs/v1/media/evt/heartbeat size=17`，无 broker `Connection refused` 后正常退出（见 5.22） | ✅ 通过 |
 | 2026-11-15 | 内核中断实测（面试材料取证：4 路 12s 跑前 / 跑后取 `/proc/interrupts` 差值） | `timeout --preserve-status -s INT 12 ./bin/evs_media ../config/node.json` → `rc=0`、4 路 23.95~29.84fps、`FreeMem: 释放 50 块`；`rkvenc-core` 两核合计 **+1224**（≈1 次/帧），`vepu` / `rkvdec-core` / `rga2` / `rga3` 均 **0**；`dmesg` 确认 `mpp_rkvenc2 rkvenc-ccu`、`rockchip-mipi-csi2-hw ... v4l2_dev:mipi0-csi2-hw` probe 成功；`uname -r` = `6.1.99-rockchip-rk3588`、GICv3、8 核 | ✅ 通过（数据回填 `docs/interview/INTERVIEW.md` §5.8；纯文档改动，无代码变更） |
+| 2026-11-15 | **升级骨架落地**（`src/upgrade/` → `libupgrade_api.so` + `evs_upgrade`） | `make` → `[100%] Built target EdgeVisionService`，新增 `out/lib/libupgrade_api.so` + `out/bin/evs_upgrade` + `out/bin/test_upgrade`；`-DEVS_PROCESS=upgrade` 独立构建树 → 只出 `evs_upgrade`（media/comm 不编）；`run_t7_upgrade.sh` → 单元 **146 项 PASS** + CLI **13 项 PASS**（见 5.25） | ✅ 通过（解包 / systemctl / 帧率仍是桩，`--apply` 必以 `E_NOTIMPL` 收尾） |
+| 2026-11-15 | 升级进程真实配置冒烟 + T6 回归 | `make run-upgrade ARGS="--status"` → `rc=0`：`../config/upgrade.json` 解析成功；`/opt/edgevision` 无写权限 → 打 `目录布局不完整 … 状态将不持久化` 后继续；打印 `OpenSSL 编译期/运行期 = 3.5.4`（头库一致）+ 槽位/状态/水位全字段；`run_t6_comm.sh` 复跑仍 43 项 PASS | ✅ 通过（非 root 降级路径符合预期） |
+| 2026-11-15 | **三进程开机自启**（`scripts/deploy/` 5 个 unit + `install.sh`）+ 通信协议设计稿 `DESIGN_IPC.md` | `bash -n install.sh` rc=0；`install.sh install --dry-run` → 5/5 unit 渲染成功、`systemd-analyze verify` **0 条项目相关告警**（systemd 249，1 行系统 unit 权限噪音被过滤）；修正 `StartLimit*` 必须在 `[Unit]`（放 `[Service]` 实测告警 `Unknown key`）；**未执行真实安装**（需 sudo，属运维动作）；设计稿明确「未落代码」（见 5.26） | ✅ 通过（产物就绪，未实装） |
+| 2026-11-15 | **`make run-all`：三进程一键起停**（`scripts/run/run-all.sh` + `make run-all` / `make logs`） | `bash -n` rc=0；`make -n run-all` 展开为 `bash scripts/run/run-all.sh out`；`make run-all` → media 出帧 29.7/23.9 fps、comm/upgrade 报 broker 未起但继续 → `pkill -INT` → 三个 rc=0、`pgrep` 无残留、`MAKE_RC=0`；`kill -KILL` media → 捕获 rc=137 → `exit=1` 无残留；`make logs` 输出三份日志（见 5.27） | ✅ 通过（开发态入口；生产仍用 systemd） |
+
 
 
 ## 5. 详细记录（时间正序，新的追加在末尾）
@@ -837,6 +842,136 @@
   3. C API 无运行期改级别接口 → 改 `EVS_ZLM_LOG_LEVEL` 后必须**重启进程**。
 - 文档：`docs/ops/COMMANDS.md` 新增 **§2.6**（级别表 + 实测表 + 三条限制）、§9 踩坑表加 3 行；`docs/design/DESIGN_MULTI_PIPELINE.md` §2 第 1 行里「硬编码 `mk_env_init2(4, 2, …)`」改为指向新默认。
 - 结论：✅ 通过（默认只留 error；`EVS_ZLM_LOG_LEVEL` 覆盖与非法值回退均实测；4 路功能不受影响）。
+
+### 5.25 L2 · 升级骨架：`upgrade_api` + `evs_upgrade`（2026-11-15）
+
+- 目标：把 [DESIGN_UPGRADE.md](../design/DESIGN_UPGRADE.md) 的方案落成**能编译、能跑、关键链路真实**的骨架；重活（解包 / systemctl / ffprobe）留明确桩，**桩必须失败且报 `E_NOTIMPL`，不许假装成功**。
+- 新增库 `src/upgrade/` → `out/lib/libupgrade_api.so`：
+  `upgrade_types.{h,cpp}`（Phase 11 / ErrorCode 16+1 ↔ 字符串）、`manifest.{h,cpp}`（清单解析 + semver + §5.5 判定 + 路径穿越拦截）、`verifier.{h,cpp}`（SHA-256 + Ed25519 + OpenSSL 版本自检）、`fetcher.{h,cpp}`（file/http 取数，`fork/execvp` 调 curl，`.part` + 重试退避）、`slot_manager.{h,cpp}`（releases/current/previous + 原子写 + 水位）、`health_check.{h,cpp}`（RTSP URL + TCP 探活）。
+- 新增进程 `src/main/upgrade/` → `out/bin/evs_upgrade`：`main_upgrade.cpp` 只做 argv/崩溃 handler；`upgrade_service.{h,cpp}` 是状态机真源（CHECKING→DOWNLOADING→VERIFYING→STAGING→ACTIVATING→HEALTH_CHECKING→COMMITTED，失败 `Fail()` 落盘 + 上报，切换后不健康走 `DoRollback`）。命令分发遵守 comm_api 的硬约束：**收包线程只入队**，状态机只在主线程跑。
+- 集成（与既有 `EVS_PROCESS` 机制同一套写法，未造新机制）：`src/CMakeLists.txt` 加 `add_subdirectory(upgrade)`；`src/main/CMakeLists.txt` 把原来对 `upgrade` 抛 `FATAL_ERROR` 的分支换成 `set(EVS_WITH_UPGRADE TRUE)`，并补 `all`/错误提示/`STATUS`/`add_subdirectory(upgrade)`；`Makefile` 加 `UPGRADE`/`UPGRADE_CFG` 变量、`upgrade`/`run-upgrade` 目标、`.PHONY`、`help`/`info`。配置 `config/upgrade.json`（§10.2 全字段 + `target`/`protocol`/`curl_bin`）。
+- 头号风险（§11.2 OpenSSL 3.5.4 vs 系统 3.0.2）在 configure 阶段解决并**打出来**：
+  `-- Found OpenSSL: …/install/rk3588/lib/libcrypto.so (found version "3.5.4")`、
+  `-- upgrade_api: OpenSSL 3.5.4 (include=…/install/rk3588/include, crypto=…libcrypto.so)`；
+  进程启动与 `--status` 再打 `OpenSSL 编译期/运行期`，两者不一致即头库错配。
+- 验收（`bash scripts/tests/run_t7_upgrade.sh`，全本机、不碰 `/opt`、不需要 root）：
+
+  | 组 | 断言 | 结果 |
+  | --- | --- | --- |
+  | 1 状态码映射（含枚举值冻结 0..10、16 个正式码逐字比对） | 11 | 全 PASS |
+  | 2 semver（`1.4.10 > 1.4.9`、非法版本返回 2） | 8 | 全 PASS |
+  | 3 / 3b 清单解析（正常 + schema/version/git_commit/target.abi/sha256/size_bytes/`..`/绝对路径/files 类型/rollback 类型/非 JSON/根非对象/越界回落） | 22 | 全 PASS |
+  | 4 兼容性（hw/abi/同版本/降级/allow_downgrade/min_from/首装/abi 空） | 9 | 全 PASS |
+  | 5 SHA-256（`"abc"` / `""` 已知向量、文件摘要、HexEqual 三种） | 8 | 全 PASS |
+  | 6 Ed25519（**脚本现生成密钥对**：PEM 正例、32 字节裸公钥正例、改一字节/改签名/32 字节截断/签名文件缺失/公钥缺失反例） | 8（+1 SKIP 分支） | 全 PASS |
+  | 7 槽位（布局、首装空指针、两次换链的 current/previous、切不存在的版本失败且不留坏指针、状态往返、原子写、`DirName` 边界、四个桩返回 `E_NOTIMPL`/false） | 30 | 全 PASS |
+  | 8 取数（Resolve 拼接与绝对路径、ToString/ToFile、无 `.part` 残留、缺文件 `E_NET`、base_url 空被拒） | 11 | 全 PASS |
+  | 9 RTSP（URL 解析三种、真起 listen socket 探活→可达、关掉后→不可达、`CheckFps` 桩不假装通过） | 11 | 全 PASS |
+
+  CLI 用例（同一个 `evs_upgrade` 二进制 + 临时配置 `protocol=none`）：
+
+  | 用例 | 期望 | 实测 |
+  | --- | --- | --- |
+  | `--help` | 0 | 0 |
+  | `--status`（空槽位） | 0 | 0（打印全字段） |
+  | `--check`（首装，签名正确） | 0 + `发现新版本 1.4.2` | 0 ✅ |
+  | `--on-media-started`（无状态） | 0 + `忽略` | 0 ✅ |
+  | `--rollback`（无 previous） | 2 + `没有 previous` | 2 ✅ |
+  | `--verify`（正确签名 / 签名文件缺失） | 0 + `签名 OK` / 2 + `验签失败` | 0 / 2 ✅ |
+  | `--apply --dry-run`（走到解包桩） | 2 + `E_NOTIMPL` | 2 ✅ |
+  | 未知选项 | 1 + `不认识的选项` | 1 ✅ |
+  | 清单 `target.hw=rk3566`（**用私钥重签**后再跑） | 2 + `E_HW` | 2 ✅ |
+  | 清单改内容不重签 | 2 + `E_SIG` | 2 ✅ |
+  | 源站缺清单 | 2 + `E_NET` | 2 ✅ |
+  | 配置文件不存在 | 1（不静默用默认值） | 1 ✅ |
+
+  落盘痕迹：`data/state/upgrade.json` 生成且含 `phase`；`opt/releases`、`opt/.staging` 建出。
+- 构建回归：
+  - `make` → `[100%] Built target EdgeVisionService`，`EXIT=0`；`out/bin` 三个进程 + 两个测试；
+  - `cmake -S . -B /tmp/out_upg -DEVS_PROCESS=upgrade` → `主进程选择: EVS_PROCESS=upgrade -> media=FALSE comm=FALSE upgrade=TRUE`，构建 `EXIT=0`，`/tmp/out_upg/bin` 只有 `evs_upgrade`（+ 两个 `test_*`，它们不受 `EVS_PROCESS` 管，与 `test_comm` 既有行为一致）；
+  - `make run-upgrade ARGS="--status"` → `rc=0`（真实配置，非 root：`/opt/edgevision` 创建失败 → `持久化=关` 降级继续）；
+  - `run_t6_comm.sh` 复跑 → 43 项 PASS / fail=0（未回归）。
+- 已知限制（写进 `src/upgrade/README.md` §5）：
+  1. `--apply` 必在 STAGING 停住（`E_NOTIMPL`），`--rollback` 在切链前因「控制不了服务」中止 —— 这是**有意的安全行为**，不是 bug；
+  2. 下载无进度百分比（`percent` 只有 0/100），需要 `curl -w` 解析或自研下载器；
+  3. evt 三个子主题各占一条 MQTT 发布通道（`MqttComm` 的发布主题是通道级配置）；
+  4. 掉电后的轮转恢复（读 `state/upgrade.json` 续做）未接，§6.4 矩阵已写明动作。
+- 结论：✅ 通过（骨架可编译可运行可验收；桩的失败语义如实；未改既有媒体/通信路径）。
+
+### 5.26 L2 · 三进程开机自启（systemd target + 一键安装脚本）+ 通信协议设计稿（2026-11-15）
+
+- 目标：把「三个进程怎么开机自启」落成可执行产物（此前只有单进程 `evs-edgevision.service`），并把「UDP / MQTT / 共享内存怎么选、协议长什么样」写成设计稿。
+- 新增文件：
+  - `scripts/deploy/evs.target`（聚合，`WantedBy=multi-user.target`）
+  - `scripts/deploy/evs-media.service` / `evs-comm.service` / `evs-upgrade.service` / `evs-rollback.service`
+  - `scripts/deploy/install.sh`（`install` / `status` / `uninstall`；`--dry-run` 只渲染 + `systemd-analyze verify`）
+  - `docs/design/DESIGN_IPC.md`（设计稿，明确「未落代码」）
+- 验证（实测命令与结果）：
+
+  | 检查 | 命令 | 期望 | 实测 |
+  | --- | --- | --- | --- |
+  | 脚本语法 | `bash -n scripts/deploy/install.sh` | rc=0 | 0 ✅ |
+  | 占位符渲染 | `scripts/deploy/install.sh install --dry-run` | 5 个 unit 全部渲染到 `/tmp/evs-units.*`，`@@` 无残留 | 5/5 ✅ |
+  | unit 语法 | 同上（内部 `SYSTEMD_UNIT_PATH=<dir>: systemd-analyze verify ...`） | 0 条项目相关告警 | 0 ✅（systemd 249；1 行系统 unit 权限噪音被过滤并计数） |
+  | `StartLimit*` 段位 | verify | 不出现 `Unknown key` | 初版放 `[Service]` → 告警；**移到 `[Unit]` 后清零** ✅ |
+  | 冲突提示 | install 时检测 `evs-edgevision` enabled | 打印告警 | 逻辑已写（本机未装旧 unit，未触发） |
+  | 实装 | `sudo scripts/deploy/install.sh install` | — | **未执行**（需 sudo 改系统；属部署动作，不是本机测试项） |
+
+- 关键事实（写进 `scripts/deploy/README.md` §3）：
+  1. `StartLimitIntervalSec` / `StartLimitBurst` 属于 `[Unit]`；放 `[Service]` 会被 systemd 静默忽略（249 实测）；
+  2. `Environment=LD_LIBRARY_PATH=$ROOT/out/lib` 不展开 `$ROOT` → `install.sh` 直接渲染成绝对路径；
+  3. `ProtectHome=yes` 在部署根位于 `/home`、`/root` 下会挡住二进制 → 脚本自动注释该行；
+  4. `evs-upgrade.service` 首期 `ProtectSystem=full` 而非 `strict`（`strict` + `systemctl` 的 D-Bus 风险见 `DESIGN_UPGRADE` §11.4 的告警）；
+  5. `OnFailure=evs-rollback.service` 首期**注释**：骨架期 `--rollback` 会因 `E_NOTIMPL` 明确失败，P4 再打开。
+- 文档同步：`docs/ops/COMMANDS.md` §12 重写为三进程版（§12.1 安装 / §12.2 状态 / §12.3 日志与 core / §12.4 历史单进程壳 / §12.5 替代方案）、`scripts/README.md` §1 登记 7 行、`scripts/deploy/README.md` 重写、`docs/design/README.md`「四篇→五篇」、`docs/README.md` 树与导览行、`docs/HANDOFF.md` §1.4/§1.9 两行。
+- 通信设计稿要点（`DESIGN_IPC.md`）：控制面 MQTT（沿用 `evs/v1/<域>/<方向>/<动作>`，cmd QoS1 不 retain、heartbeat retain=1 + LWT）；同机高频用 shm 环（4 MB = 1024×4 KB，`write_seq` + 每槽 `seq` 防撕裂，慢读者 `drop_count`）；UDP 32 B 头（magic/ver/type/src/flags/len/seq/ts_us/crc16/topic_id/frag_idx/frag_cnt/reserved）+ 单包 payload ≤ 1200 B；大块数据走 DMA-BUF fd（`SCM_RIGHTS`，**跨进程 import 待实测**，未实测前返回 `E_NOTIMPL`）。
+- 构建回归：`make` → `RC=0`（增量，`[100%] Built target EdgeVisionService`，四个库 + 三进程 + 两个测试全绿）；本次改动只涉及 `scripts/` + `docs/`，未触碰 C++ 与 CMake。
+- 链接体检：全仓 md 相对链接 `checked=226 / missing=2`，两条均为历史误报（`src/comm/README.md` 里把函数签名写成链接语法 `（const std::string &name, …）` 的形式被正则当成路径），本次新增/修改的文档 **0 条失效链接**。
+- 结论：✅ 部署产物与设计稿就绪；**未在本机实装 unit**（需 sudo，属运维动作），设计稿零代码。
+
+
+
+### 5.27 L2 · `make run-all`：三进程一起跑（开发态一键入口）（2026-11-15）
+
+- 目标：回答「`make run` 为什么只起一个进程 / 三个进程怎么一起跑」，在**不装 systemd、不需要 root**的前提下给一个一键入口，同时保留 `run-media` / `run-comm` / `run-upgrade` 单独调试。
+- 新增 / 改动：
+  - `scripts/run/run-all.sh`（新，bash）
+  - 顶层 `Makefile`：`run-all`（`build` 依赖 + `bash scripts/run/run-all.sh $(BUILD)`）、`logs`（`tail -f $(BUILD)/logs/*.log`）、`.PHONY` / 头部注释 / `help` 同步
+  - 文档：`scripts/README.md`（树 + §1 表格 + §3）、`scripts/run/README.md`（新 §2.1）、`docs/ops/COMMANDS.md` §2.2/§2.3、`docs/HANDOFF.md` §0/§1.2/§1.9、`.clinerules/00-handoff.md` §0
+- 行为约定（与 systemd 对齐）：
+
+  | 项 | 实现 |
+  | --- | --- |
+  | 启动顺序 | media 先起，轮询日志出现「条链路已启动」（上限 8 s）→ comm / upgrade（对应 `After=evs-media`） |
+  | 日志 | `<build>/logs/{media,comm,upgrade}.log`，每次启动截断 |
+  | 停机顺序 | SIGINT → media 先（等 25 s 走 `stop_all` → `FreeMem`，超时 SIGKILL）→ comm / upgrade（各 5 s） |
+  | 异常 | 任一进程自己退出 → `wait` 取 rc → 打印 → 收尾其余 → 退出码 1 |
+  | 缺进程 | 二进制不存在（`EVS_PROCESS` 没编）→ 跳过 + 告警；全缺 → `exit 1` |
+
+- 实测：
+
+  | 场景 | 命令 | 结果 |
+  | --- | --- | --- |
+  | 语法 | `bash -n scripts/run/run-all.sh` | rc=0 ✅ |
+  | 目标展开 | `make -n run-all` / `make -n logs` | `bash scripts/run/run-all.sh out` / `tail -f out/logs/*.log` ✅ |
+  | 三进程起 + Ctrl+C | `timeout -s INT 20 bash scripts/run/run-all.sh out` | 3 个 pid 全起；media 出帧 29.74 / 23.78 / 23.91 / 23.94 fps；收尾 rc 全 0；`pgrep` 无残留；脚本 `exit=0`（`timeout` 自身 124） ✅ |
+  | media 日志尾部 | `tail out/logs/media.log` | `[MemManager] FreeMem: 释放 50 块 / 100 个槽位` + `[main] FreeMem 完成，进程正常退出` ✅ |
+  | comm 无 broker | `out/logs/comm.log` | `Connection refused` 后仍 `运行中`；SIGINT 后 `通道已清理，进程正常退出` ✅ |
+  | upgrade 常驻 | `out/logs/upgrade.log` | `常驻模式：等待 evs/v1/upgrade/cmd/#`；SIGINT 后 `有序退出完成` ✅ |
+  | 走 make 全链路 | `make run-all` + `pkill -INT -f 'scripts/run/run-all.sh'` | `MAKE_RC=0`，三进程 rc 全 0，无残留 ✅ |
+  | 崩溃分支 | 起三个后 `kill -KILL <media pid>` | 脚本捕获 `rc=137` → 收尾 comm/upgrade → `exit=1`，无残留 ✅ |
+  | `make logs` | `timeout 2 make logs` | 输出三份日志尾部（`RC=124` 是 timeout 到期） ✅ |
+  | 缺进程分支 | `cmake -S . -B /tmp/evs-comm-only -DEVS_PROCESS=comm` + `timeout -s INT 6 bash scripts/run/run-all.sh /tmp/evs-comm-only` | 树里只有 `evs_comm` → 跳过 media/upgrade、起 comm；SIGINT 后 `comm 已停止（rc=0）` + `全部结束（exit=0）`、无残留 ✅ |
+  | 缺构建目录 | `bash scripts/run/run-all.sh /tmp/no-such-build` / `... no-such-build` | 分别提示 `/tmp/no-such-build` 与 `<root>/no-such-build`，`rc=1` ✅ |
+  | 修 B14 后回归 | `timeout -s INT 16 bash scripts/run/run-all.sh out` | 三进程全起、media `实测=23.94fps` + `FreeMem: 释放 50 块`、三个 rc=0、无残留 ✅ |
+
+- 过程中踩到并修掉的 bug（**`docs/history/BUG_CASES.md` B14**）：`PIDS` 用 `0` 当「未启动」哨兵，而 `kill(2)` 里 `pid==0` 表示**当前进程组** → 缺进程时 `kill -0 0` 永远成功（空等 25 s）、`kill -KILL 0` 把脚本自己和外层 `timeout` 一起杀掉（表现为 `RC=137`）。修复：`wait_exit()` 先判 `pid <= 0` 直接返回。同一轮还修了「配置路径相对构建目录」的坑（`../config/*.json` → `$ROOT/config/*.json`），否则临时构建树里 comm 会被误判「配置不存在」跳过。
+- 已知限制：
+  1. `run-all.sh` 是**开发态**入口：无重启策略（进程崩了就整体收尾）、日志不轮转；生产用 systemd（`evs.target`）。
+  2. 不拉起 mosquitto broker：`comm` / `upgrade` 报 `Connection refused` 后继续（与 `evs-comm.service` 的 `Restart=always` 语义相同，但这里不重启）。
+  3. `EVS_PROCESS` 只编了部分进程时，`run-all` 只起已编的那几个（跳过 + 告警）。
+- 顺带澄清（用户提问「是不是所有进程跑的都是同一个」）：不是。四个二进制 md5 / 大小都不同 —— `evs_media` `b76675a5…` / 798 560 B、`evs_comm` `5f22a9ad…` / 2 434 952 B、`evs_upgrade` `f8d6af20…` / 3 753 824 B、`EdgeVisionService` `7684c174…` / 798 576 B。但 **`make run` 与 `make run-media` 确实是同一个程序**（`src/main/main.cpp` 只有 `return evs::media::Run();`，只差崩溃报告的 `app=` 与 ZLM 日志前缀），且 `make run` 本身**只起一个进程**；此前仓库里没有「一键起三个」的目标（`grep -nE 'run-all' Makefile` 为空）。
+- 结论：✅ 通过（三进程一键起停可用、异常路径有判据；**未改动 `src/` 与 CMake**，代码校准点不变）。
 
 ## 6. 维护约定
 

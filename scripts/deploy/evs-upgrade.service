@@ -1,0 +1,49 @@
+# ============================================================================
+# evs-upgrade.service —— 进程 3（升级进程 evs_upgrade，常驻等命令）
+# ----------------------------------------------------------------------------
+# 不要手工拷贝：用 scripts/deploy/install.sh（会渲染占位符）。
+# 设计依据：docs/design/DESIGN_UPGRADE.md §7.4 / §11.4
+#
+# 首期（骨架）行为：解包 / systemctl / 帧率检查是桩（E_NOTIMPL），
+# 所以 apply 一定停在 STAGING 并回 E_NOTIMPL —— 这是**有意的**，不是没装好。
+# ============================================================================
+[Unit]
+Description=EVS upgrade agent (evs_upgrade)
+Documentation=file://@@EVS_ROOT@@/docs/design/DESIGN_UPGRADE.md
+# 媒体进程先起（升级要知道"当前版本跑起来了"才有意义）；不硬依赖，避免媒体起不来时升级也不起
+After=network-online.target evs-media.service
+Wants=network-online.target
+# StartLimit* 必须放 [Unit]（放 [Service] 会被 systemd 249 忽略并告警 Unknown key）
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# 需要写 install_root / data_root 并（P3 起）调 systemctl，首期就是 root
+User=@@EVS_USER@@
+WorkingDirectory=@@EVS_ROOT@@/out
+Environment=EVS_CRASH_DIR=@@EVS_DATA@@/crash
+Environment=LD_LIBRARY_PATH=@@EVS_ROOT@@/out/lib:@@EVS_ROOT@@/install/@@EVS_PLATFORM@@/lib
+LimitCORE=infinity
+ExecStart=@@EVS_ROOT@@/out/bin/evs_upgrade @@EVS_ROOT@@/config/upgrade.json
+KillSignal=SIGTERM
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+# 沙箱：首期用 full（/usr 只读），**不要**用 strict —— 见文件末尾说明
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=evs.target
+
+# ----------------------------------------------------------------------------
+# 为什么首期不写 ProtectSystem=strict：
+#   DESIGN_UPGRADE §11.4 已标注风险 —— strict 会让整个文件系统只读（只放行
+#   ReadWritePaths），而 P3 的 ControlService 要通过 D-Bus 调 systemctl，
+#   某些 systemd 版本下 strict 会连带把 /run/dbus 弄成不可写，报 Access denied。
+#   顺序：先 full 跑通 → P3 打开 ReadWritePaths=install_root:data_root:/run/dbus
+#   → 实测 systemctl 能过 → 再考虑换回 strict。

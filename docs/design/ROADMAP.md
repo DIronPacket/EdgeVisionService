@@ -2,7 +2,7 @@
 
 > 本文档描述 EdgeVisionService 的未来扩展计划：H.264 编码推流、RGA 预处理、OSD、录像、Ubuntu 交叉编译、Docker 容器化与 OTA。
 > 当前架构与扩展方式见 [ARCHITECTURE.md](../ARCHITECTURE.md)；模块完成度与已知问题见 [STATUS.md](../STATUS.md)；项目入口见 [README](../../README.md)。本文档侧重目标、方案与排期。
-> **进程形态演进（单进程 → 媒体 / 通信 / 升级 三进程 + 共享通信对象）单独记录在 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)**（当前状态：规划，尚未落地）。
+> **进程形态演进（单进程 → 媒体 / 通信 / 升级 三进程 + 共享通信对象）单独记录在 [DESIGN_PROCESS_SPLIT.md](DESIGN_PROCESS_SPLIT.md)**（当前状态：媒体/通信进程已落地，升级进程骨架已落地，见 [DESIGN_UPGRADE.md](DESIGN_UPGRADE.md)）。
 > 最后更新：2026-11-04；适用分支：`rk3588`。
 
 ## 1. 背景与目标
@@ -229,6 +229,8 @@ docker run -d --name edgevision \
 ```
 
 ### 7.6 OTA 远程升级
+
+> 详细设计见 [DESIGN_UPGRADE.md](DESIGN_UPGRADE.md)：应用级 A/B 目录布局、`manifest.json` 字段、Ed25519 验签、状态机与断电矩阵、`boot_count` 自动回滚、Docker 容器化可行性评估、P0–P5 共 13 人日排期。
 
 先明确升级范围，再选型：
 

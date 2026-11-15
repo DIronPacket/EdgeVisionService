@@ -1,0 +1,32 @@
+# ============================================================================
+# evs-rollback.service —— 兜底回滚（Type=oneshot，由 evs-media 的 OnFailure 触发）
+# ----------------------------------------------------------------------------
+# 设计依据：docs/design/DESIGN_UPGRADE.md §7.4
+#   媒体进程 300 s 内失败 3 次 → systemd 判 evs-media failed → OnFailure 拉起本单元
+#   → evs_upgrade --rollback --reason=start-limit → 切回 previous 并重启媒体服务
+#
+# 首期状态（骨架）：--rollback 在切链前就会中止（解包/systemctl 是桩），
+#   所以本单元现在跑起来会"明确失败"——这比假装成功安全。
+#   因此 evs-media.service 里的 OnFailure= 首期是注释状态，P4 联调时打开。
+#
+# 手动验证：sudo systemctl start evs-rollback && journalctl -u evs-rollback -n 50
+# ============================================================================
+[Unit]
+Description=EVS auto rollback (triggered by evs-media failure)
+Documentation=file://@@EVS_ROOT@@/docs/design/DESIGN_UPGRADE.md
+
+[Service]
+Type=oneshot
+User=@@EVS_USER@@
+WorkingDirectory=@@EVS_ROOT@@/out
+Environment=EVS_CRASH_DIR=@@EVS_DATA@@/crash
+Environment=LD_LIBRARY_PATH=@@EVS_ROOT@@/out/lib:@@EVS_ROOT@@/install/@@EVS_PLATFORM@@/lib
+LimitCORE=infinity
+ExecStart=@@EVS_ROOT@@/out/bin/evs_upgrade @@EVS_ROOT@@/config/upgrade.json --rollback --reason=start-limit
+# 回滚必须尽量成功，但也不能无限重试（否则失败会静默堆积）
+TimeoutStartSec=180
+StandardOutput=journal
+StandardError=journal
+
+# 刻意不写 [Install]：本单元只由 OnFailure= 或手工 systemctl start 触发，
+# 开机不自动跑（否则每次启动都会尝试回滚）。

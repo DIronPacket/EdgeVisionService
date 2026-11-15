@@ -10,6 +10,7 @@
 | `node.json` | ✅ | **主配置（v1）**：`global` 进程级资源 + `pipelines[]` 多链路（当前 ch0 摄像头 + ch1~ch3 三个 mp4） |
 | `push.json` | ✅ | **兼容配置（v0）**：单链路 `vi → push(rtsp) → print`，`node.json` 不存在或被显式指定时才用 |
 | `comm.json` | ✅ | **通信进程（`evs_comm`）的通道配置**：`channels[]`（`type` udp/mqtt · `role` server/client · `host`/`port`/`topic` …）。媒体进程不读它（见 §11） |
+| `upgrade.json` | ✅ | **升级进程（`evs_upgrade`）的配置**：`install_root`/`data_root` · `release.*` · `source.*`（file/http） · `verify.public_key` · `target.hw/abi` · `health.*` · `rollback.boot_count_max` · `services.media` · `comm.*`（`protocol=mqtt/none`）。字段语义见 `docs/design/DESIGN_UPGRADE.md` §10.2 |
 | `2.mp4` (33 MB) | ❌ 未跟踪 | 本地测试素材（推流/解码验证用），**不入库** |
 | `test.nv12` (556 MB) | ❌ 未跟踪 | 本地 NV12 裸帧素材，**不入库** |
 

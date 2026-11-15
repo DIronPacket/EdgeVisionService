@@ -4,14 +4,16 @@
 # 目录约定：
 #   src/main/media/   进程 1 媒体处理服务 → out/bin/evs_media
 #   src/main/comm/    进程 2 通信服务     → out/bin/evs_comm
+#   src/main/upgrade/ 进程 3 升级代理     → out/bin/evs_upgrade
 #   src/main/main.cpp 历史兼容壳          → out/bin/EdgeVisionService（= evs_media 的旧名字）
 #   src/main/test/    历史调试入口（默认不构建，见文件末尾注释）
 #
 # 构建哪些进程：由 EVS_PROCESS 决定，**不指定 = 都构建**
-#   cmake -S . -B out                        # 默认 all：evs_media + evs_comm + EdgeVisionService
+#   cmake -S . -B out                        # 默认 all：media + comm + upgrade + 兼容壳
 #   cmake -S . -B out -DEVS_PROCESS=media    # 只编媒体进程
 #   cmake -S . -B out -DEVS_PROCESS=comm     # 只编通信进程
-#   cmake -S . -B out -DEVS_PROCESS=media,comm
+#   cmake -S . -B out -DEVS_PROCESS=upgrade  # 只编升级进程
+#   cmake -S . -B out -DEVS_PROCESS=media,comm,upgrade
 #   make proc PROC=media                     # 同上（顶层 Makefile 包装）
 #
 # 语义：未选中的 target **仍然定义**，只是 EXCLUDE_FROM_ALL —— 不会在默认
@@ -21,17 +23,19 @@
 
 # ---------- 1. 进程选择（EVS_PROCESS） ----------
 set(EVS_PROCESS "all" CACHE STRING
-    "要参与默认构建的进程：all（默认）| media | comm | media,comm")
+    "要参与默认构建的进程：all（默认）| media | comm | upgrade | 逗号分隔组合")
 
 string(TOLOWER "${EVS_PROCESS}" _evs_process_lower)
 string(REPLACE "," ";" _evs_process_list "${_evs_process_lower}")
 
 set(EVS_WITH_MEDIA FALSE)
 set(EVS_WITH_COMM FALSE)
+set(EVS_WITH_UPGRADE FALSE)
 
 if(_evs_process_lower STREQUAL "all")
     set(EVS_WITH_MEDIA TRUE)
     set(EVS_WITH_COMM TRUE)
+    set(EVS_WITH_UPGRADE TRUE)
 else()
     foreach(_evs_proc IN LISTS _evs_process_list)
         string(STRIP "${_evs_proc}" _evs_proc)
@@ -42,22 +46,21 @@ else()
         elseif(_evs_proc STREQUAL "comm")
             set(EVS_WITH_COMM TRUE)
         elseif(_evs_proc STREQUAL "upgrade")
-            message(FATAL_ERROR
-                "EVS_PROCESS=upgrade 尚未实现：src/upgrade/ 与升级进程还没有落地"
-                "（见 docs/design/DESIGN_PROCESS_SPLIT.md §7 第 4 步）")
+            set(EVS_WITH_UPGRADE TRUE)
         else()
             message(FATAL_ERROR
-                "EVS_PROCESS 不认识 '${_evs_proc}'；可选值：all | media | comm | media,comm")
+                "EVS_PROCESS 不认识 '${_evs_proc}'；可选值：all | media | comm | upgrade"
+                "（可用逗号组合，如 media,comm）")
         endif()
     endforeach()
 endif()
 
-if(NOT EVS_WITH_MEDIA AND NOT EVS_WITH_COMM)
+if(NOT EVS_WITH_MEDIA AND NOT EVS_WITH_COMM AND NOT EVS_WITH_UPGRADE)
     message(FATAL_ERROR "EVS_PROCESS='${EVS_PROCESS}' 没有选中任何进程")
 endif()
 
 message(STATUS
-    "主进程选择: EVS_PROCESS=${EVS_PROCESS} -> media=${EVS_WITH_MEDIA} comm=${EVS_WITH_COMM}")
+    "主进程选择: EVS_PROCESS=${EVS_PROCESS} -> media=${EVS_WITH_MEDIA} comm=${EVS_WITH_COMM} upgrade=${EVS_WITH_UPGRADE}")
 
 # ---------- 2. 历史兼容壳：EdgeVisionService ----------
 # 逻辑与 evs_media 完全相同（都调 evs::media::Run），保留旧可执行名是为了
@@ -92,8 +95,9 @@ if(NOT EVS_WITH_MEDIA)
     set_target_properties(EdgeVisionService PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
-# ---------- 3. 两个进程 ----------
+# ---------- 3. 三个进程 ----------
 add_subdirectory(media)
 add_subdirectory(comm)
+add_subdirectory(upgrade)
 
 # add_subdirectory(test)   # 历史调试入口（testnode / test_builder），当前有意关闭

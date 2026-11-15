@@ -9,17 +9,20 @@
 | --- | --- | --- | --- |
 | `out/bin/evs_media` | 可执行 | `src/main/media/{main_media.cpp,media_service.cpp}` | **媒体进程（进程 1）**：装崩溃 handler → 读配置 → `MemInit` → `build_all` → 信号 → `start_all` → 有序停止 → `FreeMem`。编排真源是 `media_service.cpp` |
 | `out/bin/evs_comm` | 可执行 | `src/main/comm/main_comm.cpp` | **通信进程（进程 2）**：读 `config/comm.json` → `CommManager` 建通道（UDP/MQTT）→ 统一收包/状态回调打印 → 信号 → `StopAll`+`Clear`。只链 `common_api`+`comm_api` |
+| `out/bin/evs_upgrade` | 可执行 | `src/main/upgrade/{main_upgrade.cpp,upgrade_service.cpp}` | **升级进程（进程 3，2026-11-15 骨架）**：`--check/--apply/--rollback/--on-media-started/--verify=/--status`（不带 = 常驻订阅 `upgrade/cmd/#`）；状态机真源 `upgrade_service.cpp`。解包 / `systemctl` / 帧率仍是桩（`E_NOTIMPL`）。只链 `common_api`+`comm_api`+`upgrade_api` |
 | `out/bin/EdgeVisionService` | 可执行 | `src/main/main.cpp` | **历史兼容壳**：与 `evs_media` 调同一个 `evs::media::Run()`，只差崩溃报告里的程序名（`make run` 仍可用） |
 | `out/lib/libcommon_api.so` | SHARED | `src/common/**` | 内存池 + 帧内存分配边界 + 配置模型/管理器 + 预处理 + 崩溃采集 |
 | `out/lib/libpipeline_api.so` | SHARED | `src/pipeline/**` | 流水线节点 + 节点工厂 + 装配器 |
 | `out/lib/libcomm_api.so` | SHARED | `src/comm/**` | 通信层：`CommBase` 抽象基类 + `UdpComm`/`MqttComm` 两种后端 + 全局单例 `CommManager`（依赖 `install/<平台>/lib/libmosquitto.so`） |
+| `out/lib/libupgrade_api.so` | SHARED | `src/upgrade/**` | 升级对象库：`upgrade_types`（状态码）+ `manifest`（清单/semver/兼容性）+ `verifier`（SHA-256 + Ed25519）+ `fetcher`（file/http 取数）+ `slot_manager`（releases/current/previous 原子切换）+ `health_check`（RTSP 探活）。依赖 `OpenSSL::Crypto`（**必须取 `install/<平台>` 的 3.5.4**） |
+| `out/bin/test_upgrade` | 可执行 | `scripts/tests/t7_upgrade.cpp` | T7 升级库验收（146 项断言；含真 Ed25519 验签，密钥由 `run_t7_upgrade.sh` 现生成） |
 | `out/bin/test_comm` | 可执行 | `scripts/tests/t6_comm.cpp` | T6 通信层验收（43 项断言；MQTT 无 broker 时 SKIP）。**`evs_media` 已链 `comm_api` 但尚未调用**（不建通道、不上报 `media/evt/*`） |
 | `capture` / `decoder` / `encoder` / `rtsp` | 子库（由 `platform_api` 以 `INTERFACE` 聚合） | `src/platform/{capture,decoder,encoder,rtsp}` | 采集 / 解码 / 编码 / 推流的具体后端实现 |
 | `src/main/test/*.cpp` | **当前不参与构建** | `main_node.cpp` / `main_testpool.cpp` / `main_encode.cpp` / `main_pushStream.cpp` | 历史验证程序（`build/bin` 里的 `testnode`/`testpool`/… 是 2026-11 的旧产物）。`src/main/CMakeLists.txt` 末尾 `# add_subdirectory(test)` 处于注释状态 |
 
-**编哪个进程由 `EVS_PROCESS` 决定（2026-11-14 起）**：不指定 = `all`（`evs_media` + `evs_comm` + 兼容壳）；`-DEVS_PROCESS=media|comm|media,comm` 只编子集；`make media` / `make comm` 只编单个 target；`make proc PROC=comm` 改默认集并写进 `out/CMakeCache.txt`。未选中的 target 仍存在（`EXCLUDE_FROM_ALL`），随时可单独构建。
+**编哪个进程由 `EVS_PROCESS` 决定（2026-11-14 起，2026-11-15 增 `upgrade`）**：不指定 = `all`（`evs_media` + `evs_comm` + `evs_upgrade` + 兼容壳）；`-DEVS_PROCESS=media|comm|upgrade`（可逗号组合）只编子集；`make media` / `make comm` / `make upgrade` 只编单个 target；`make proc PROC=comm` 改默认集并写进 `out/CMakeCache.txt`。未选中的 target 仍存在（`EXCLUDE_FROM_ALL`），随时可单独构建。
 
-> 2026-11-14 起 `src/main/` 里是三个 target：`media/main_media.cpp` → **`evs_media`**（媒体进程；编排真源是 `media/media_service.cpp`）、`comm/main_comm.cpp` → **`evs_comm`**（通信进程）、`main.cpp` → **`EdgeVisionService`**（历史兼容壳，调同一个 `evs::media::Run()`）。默认三个都编；`EVS_PROCESS` 可只选其一（见上一段）。
+> 2026-11-14 起 `src/main/` 里是四个 target：`media/main_media.cpp` → **`evs_media`**（媒体进程；编排真源是 `media/media_service.cpp`）、`comm/main_comm.cpp` → **`evs_comm`**（通信进程）、`upgrade/main_upgrade.cpp` → **`evs_upgrade`**（升级进程，2026-11-15 骨架；状态机在 `upgrade/upgrade_service.cpp`）、`main.cpp` → **`EdgeVisionService`**（历史兼容壳，调同一个 `evs::media::Run()`）。默认都编；`EVS_PROCESS` 可只选其一（见上一段）。
 
 ## 2. 目录树与职责
 
@@ -47,8 +50,8 @@ src/
 │   ├── decoder/            ffmpeg_decoder / rk_mpp_decoder
 │   ├── encoder/            ffmpeg_encoder / rk_mpp_encoder
 │   └── rtsp/               zlm_push_server（ZLMediaKit：RTSP 服务 + 推流）
-├── main/                   → 进程入口（三个 target，默认编哪些由 EVS_PROCESS 决定）
-│   ├── CMakeLists.txt      解析 EVS_PROCESS → EVS_WITH_MEDIA / EVS_WITH_COMM；未选中的 target 走 EXCLUDE_FROM_ALL
+├── main/                   → 进程入口（四个 target，默认编哪些由 EVS_PROCESS 决定）
+│   ├── CMakeLists.txt      解析 EVS_PROCESS → EVS_WITH_MEDIA / EVS_WITH_COMM / EVS_WITH_UPGRADE；未选中的 target 走 EXCLUDE_FROM_ALL
 │   ├── media/              → evs_media（进程 1）
 │   │   ├── main_media.cpp          入口：argv → app_name="evs_media" → evs::media::Run()
 │   │   ├── media_service.{h,cpp}   编排真源（配置 → MemInit → build_all → 信号 → stop_all → FreeMem，日志前缀 [main]）
@@ -56,11 +59,18 @@ src/
 │   ├── comm/               → evs_comm（进程 2）
 │   │   ├── main_comm.cpp           读 config/comm.json → CommManager 建通道 → 收包/状态打印 → 信号 → StopAll+Clear
 │   │   └── CMakeLists.txt          只链 common_api + comm_api（不碰 pipeline/platform）
+│   ├── upgrade/            → evs_upgrade（进程 3，2026-11-15 骨架）
+│   │   ├── main_upgrade.cpp        入口：argv（--check/--apply/--rollback/--on-media-started/--verify=/--status）+ 崩溃 handler
+│   │   ├── upgrade_service.{h,cpp} 状态机真源（CHECKING→…→COMMITTED / ROLLING_BACK）；收包只入队，主线程执行
+│   │   └── CMakeLists.txt          链 common_api + comm_api + upgrade_api，-rdynamic
 │   ├── main.cpp            历史兼容壳 → EdgeVisionService（同样调 evs::media::Run()）
 │   └── test/               历史验证程序（当前未构建）
 ├── algorithm/              空目录（预留：算法模块）
 └── comm/                   → comm_api（通信层）：comm_types / comm_base / udp_comm / mqtt_comm / comm_manager
                             抽象基类 + UDP/MQTT 两种后端 + 全局单例管理器；说明见 comm/README.md
+
+另：`upgrade/` → upgrade_api（升级对象库）：upgrade_types / manifest / verifier / fetcher / slot_manager / health_check
+    清单解析 + Ed25519 验签 + file/http 取数 + A/B 槽位原子切换 + RTSP 探活；说明见 upgrade/README.md
 ```
 
 ## 3. 依赖关系（谁可以 include 谁）

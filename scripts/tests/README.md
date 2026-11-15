@@ -12,6 +12,7 @@
 | `run_t3_node_json.sh` | T3：`config/node.json` v1 全量自检（JSON 语法 + `ffprobe` 探测素材分辨率/帧率/编码，缺失则跳过实测比对） | 104 | `ffprobe`（可选） | TESTLOG §5.7 |
 | `run_t5_builder.sh` | T5：`NodeFactory` 按 `type` 造节点 + `PipelineBuilder` 按配置建链路（**只 build 不 start**） | 64 | 无 | TESTLOG §5.8 |
 | `run_t6_comm.sh` | T6：通信层 —— `CommManager` 工厂/命名/查表、UDP 本机回环（server 记住对端回包）、Start/Stop 幂等、MQTT pub/sub 回环（**需要 `127.0.0.1:1883` 有 broker，没有则 SKIP**） | 43 | 无（MQTT 分支需要 broker） | TESTLOG §5.21 |
+| `run_t7_upgrade.sh` | T7：升级库 —— 状态码/清单/semver/兼容性/SHA-256/**真 Ed25519 验签**（脚本现生成密钥对）/槽位原子性/取数/RTSP 探活 + `evs_upgrade` 一次性动作（`--status`/`--check`/`--verify`/`--apply --dry-run`/`--rollback`/退出码） | 146 + 13 | 无（`openssl` 命令；不碰 /opt、不联网、不需要 root） | TESTLOG §5.25 |
 
 配套文件：
 
@@ -19,7 +20,8 @@
 scripts/tests/
 ├── t1_zlm_rtsp_key.cpp  t2_node_config.cpp  t3_node_json.cpp  t5_builder.cpp   ← 断言用 C++（各自链接被测库）
 ├── t6_comm.cpp                                                              ← T6：链 comm_api（由 src/comm/CMakeLists.txt 定义 test_comm 目标）
-├── run_t1_zlm_rtsp_key.sh  run_t2_node_config.sh  run_t3_node_json.sh  run_t5_builder.sh  run_t6_comm.sh
+├── t7_upgrade.cpp                                                           ← T7：链 upgrade_api（由 src/upgrade/CMakeLists.txt 定义 test_upgrade 目标）
+├── run_t1_zlm_rtsp_key.sh  run_t2_node_config.sh  run_t3_node_json.sh  run_t5_builder.sh  run_t6_comm.sh  run_t7_upgrade.sh
 └── fixtures/            ← T2/T3 的输入样例（正向 1 个 + 反向 6 个）
     ├── node_v1_ok_ref.json           正向基线
     ├── node_v1_missing_type.json     缺 type → 应报错

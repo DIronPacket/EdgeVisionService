@@ -26,6 +26,7 @@
 | B11 | 反复启停仍每轮漏 128 B，且 vpss 自建的 `vpss_out` 帧整块 6.22 MB 永不回收 | 容器用 `void*` 存槽位：`void*` 不能安全 `delete`（UB、不调析构）也调不到 `freeObj()` → 槽位只增不减、`FreeMem()` 只能按 `imgMap` 点名 | 工作树（2026-11-10，P0-11） | §2.11 |
 | B12 | 崩溃报告写得好好的，**一个 core 都不产生**（`ulimit -c unlimited`、`core_pattern` 都正常） | 信号 handler 执行期间内核自动屏蔽当前信号（无 `SA_NODEFER`）：`tgkill` 只把信号挂成 pending，随后 `_exit()` 把 pending 一起丢掉 → 内核 `do_coredump()` 从未被调用 | 工作树（2026-11-14，崩溃采集） | §2.12 |
 | B13 | 崩溃报告里的帧换算出 `?? ??:0`（地址明明在二进制范围内） | `backtrace_symbols` 的 `模块(符号+0x偏移)` 是**符号内偏移**，直接喂 `addr2line` 等于把「符号内」当「模块内」；只有 `模块(+0x偏移)` 才是模块内偏移 | 工作树（2026-11-14，symbolize 脚本） | §2.13 |
+| B14 | 跳过某个进程后脚本**卡 25 s 再自杀**（`RC=137`），日志停在「收到退出信号」 | 未启动的槽位 pid 仍是 `0`；`kill(2)` 把 `pid==0` 解释成**当前进程组**：`kill -0 0` 永远成功（等满超时）→ `kill -KILL 0` 连脚本自己和外层 `timeout` 一起杀掉 | 工作树（2026-11-15，`scripts/run/run-all.sh`） | §2.14 |
 
 **读法建议**：面试前只看 §1 索引 + 每案末尾的「面试怎么讲」；要复盘细节再读中间的定位过程。
 
@@ -484,6 +485,32 @@ target="$(printf '0x%x' "$(( 16#$sym_vaddr + 16#$off ))")"   # 查不到就退�
 **面试怎么讲**：*"符号化失败的根因是偏移的参照点：`模块(符号+0x24)` 是符号内偏移，直接用会落到文件头变成 `??`；要先 `nm` 查符号地址再加。"* 可延伸：PIE/ASLR 下 `dladdr` 的 `dli_fbase` 与文件 vaddr 的关系、`-rdynamic` 只影响 `.dynsym` 不影响 DWARF、以及"为什么必须保存崩溃当时那份二进制"。
 
 ---
+
+## 2.14 B14 · 跳过某个进程后脚本卡 25 s 再「自杀」：`kill -0 0` / `kill -KILL 0` 是进程组，不是空操作
+
+- **现象**（2026-11-15，`scripts/run/run-all.sh`）：拿只有 `evs_comm` 的构建树跑 `bash scripts/run/run-all.sh /tmp/evs-comm-only`，脚本正确跳过 media / upgrade、comm 正常起来；按 Ctrl+C 后**卡住 25 s**，随后打印 `[run-all] 警告: media 25s 内未退出 → SIGKILL`，整条命令 `RC=137`，输出停在「收到退出信号」之后什么都没有 —— 看起来像 media 卡死，实际那一刻根本没有 media 进程。
+- **位置**：`scripts/run/run-all.sh` 的 `wait_exit()`（收尾时按槽位逐个等待）。槽位用 `PIDS=(0 0 0)` 初始化，没起来的进程 pid 仍是 **0**，`wait_exit 0` 照样执行了 `kill -0 0` → `kill -KILL 0`。
+- **根因原理**：POSIX `kill(2)` 对 `pid` 的取值有特殊语义，`0` 不是「无效 pid」：
+
+  | 写法 | 真实含义 |
+  | --- | --- |
+  | `kill -0 0` | 给**当前进程组**发信号 0（只做存在/权限检查，不真发信号）→ 本组里总有脚本自己、`timeout`、shell → **永远返回成功** |
+  | `kill -KILL 0` | 给**当前进程组**发 SIGKILL → 脚本自己 + 外层 `timeout` 一起死 → 上层看到 **137**（128+9） |
+  | `kill 0` / `kill -9 0` | 同上（广播到进程组） |
+  | `kill -1` | 广播到「所有有权限的进程」（更危险，禁止在脚本里出现） |
+  | `wait 0` | 等价于「等任意一个子进程」，不是「等 pid 0」 |
+
+  所以「用 0 当无效 pid 哨兵」在 `kill` 家族面前是危险的：检查永远通过 → 等待循环跑满超时 → 超时兜底那一刀正好砍在自己身上。
+- **修复**：
+  1. `wait_exit()` 入口判 `pid <= 0` → `RUNNING[i]=0; return 0`（代码里写明「`kill -0 0` 是当前进程组，会误杀自己」）；
+  2. `stop_one()` 本来就靠 `RUNNING[i]` 守卫，未启动的槽位不发信号；
+  3. 同一轮实测暴露的第二个坑：配置路径原本是 `../config/*.json`（相对**构建目录**），换到临时构建树 `/tmp/evs-comm-only` 就指向不存在的位置 → comm 被误判「配置不存在」而跳过。改成 `$ROOT/config/*.json` 绝对路径（cwd 仍是构建目录，媒体素材的相对路径语义不变），并允许第一个参数是绝对构建目录。
+- **验证**：`bash -n` rc=0；`run-all.sh /tmp/evs-comm-only`（`cmake -S . -B /tmp/evs-comm-only -DEVS_PROCESS=comm`，树里只有 `evs_comm`）→ 跳过 media/upgrade、起 comm、SIGINT 后 `comm 已停止（rc=0）` + `全部结束（exit=0）`、`pgrep` 无残留；`run-all.sh out` 三进程仍全起（media `实测=23.94fps` + `FreeMem: 释放 50 块`）、三个 rc=0、无残留；`run-all.sh /tmp/no-such-build` → `构建目录不存在` rc=1。详见 TESTLOG §5.27。
+- **为什么难发现**：
+  1. 只有「某个进程没编」时才走到这段，全编的常规 `make run-all` 永远不进，`PIDS[i]=0` 是隐形的；
+  2. 症状是「慢 + 137」，`timeout` 自己的合法返回码恰好也是 124/137，天然掩盖「脚本把自己杀了」这条线索；
+  3. 要同时怀疑两件事才会定位：`kill(0)` 的进程组语义 + `PIDS` 用 0 初始化。
+- **面试怎么讲**：讲成「哨兵值不能和 API 的特殊值撞车 —— 0 在 `kill(2)` 里是『当前进程组』，不是『空』；清理路径里 `kill 0` / `kill -1` 都是广播，必须先用 `>0` 或 `RUNNING` 标志守卫」，再引申「为什么脚本里的进程管理要用显式状态表，而不是靠 pid 变量默认值」。
 
 ## 3. 沉淀下来的排查方法论（比单个 bug 更值钱）
 

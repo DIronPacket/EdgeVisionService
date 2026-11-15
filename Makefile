@@ -14,10 +14,14 @@
 #   make                 # = cmake -S . -B $(BUILD) && cmake --build $(BUILD) -j$(nproc)
 #   make media           # 只编媒体进程 evs_media
 #   make comm            # 只编通信进程 evs_comm
-#   make proc PROC=media # 改「默认构建哪些进程」（all | media | comm | media,comm）
+#   make upgrade         # 只编升级进程 evs_upgrade
+#   make proc PROC=media # 改「默认构建哪些进程」（all | media | comm | upgrade | 组合）
 #   make run             # 起 EdgeVisionService（历史兼容壳，= 媒体进程逻辑）
 #   make run-media       # 起 evs_media（真实媒体主链路）
 #   make run-comm        # 起 evs_comm（通信进程骨架）
+#   make run-upgrade     # 起 evs_upgrade（ARGS="--status" / "--check" 等一次性动作）
+#   make run-all         # ★ 三个进程一起跑（开发态；日志 out/logs/*.log，Ctrl+C 一次全收）
+#   make logs            # tail -f out/logs/*.log（配合 run-all）
 #   make run-node        # 起 testnode（历史调试入口，需先打开 add_subdirectory(test)）
 #   make test            # 依次跑 scripts/tests/run_t*.sh
 #   make clean           # 清编译产物（保留 run.sh）
@@ -40,8 +44,10 @@ APP         ?= EdgeVisionService
 NODE        ?= testnode
 MEDIA       ?= evs_media
 COMM        ?= evs_comm
+UPGRADE     ?= evs_upgrade
 CFG         ?= ../config/node.json
 COMM_CFG    ?= ../config/comm.json
+UPGRADE_CFG ?= ../config/upgrade.json
 PROC        ?= all
 ARGS        ?=
 FORCE       ?= 0
@@ -59,7 +65,7 @@ RUN_ENV = LD_LIBRARY_PATH="$(abspath $(BUILD)/lib):$(abspath install/$(PLATFORM)
 
 .DEFAULT_GOAL := all
 .PHONY: all build configure reconfigure rebuild clean distclean \
-        media comm proc run run-app run-media run-comm run-node run-sh \
+        media comm upgrade proc run run-app run-media run-comm run-upgrade run-all logs run-node run-sh \
         test test-t5 info help
 
 # ------------------------------------------------------------------ 构建
@@ -91,10 +97,15 @@ comm:
 	@test -f $(BUILD)/Makefile || $(MAKE) --no-print-directory configure
 	$(CMAKE) --build $(BUILD) --target $(COMM) -j$(JOBS)
 
+upgrade:
+	@test -f $(BUILD)/Makefile || $(MAKE) --no-print-directory configure
+	$(CMAKE) --build $(BUILD) --target $(UPGRADE) -j$(JOBS)
+
 # 改变「默认构建哪些进程」——写进 $(BUILD)/CMakeCache.txt，之后 `make` 一直生效：
 #   make proc PROC=media   → 以后 make 只编媒体进程
 #   make proc PROC=comm    → 以后 make 只编通信进程
-#   make proc PROC=all     → 恢复两个都编（默认）
+#   make proc PROC=upgrade → 以后 make 只编升级进程
+#   make proc PROC=all     → 恢复全都编（默认）
 proc:
 	$(CMAKE) -S . -B $(BUILD) -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DEVS_PROCESS=$(PROC) $(CMAKE_FLAGS)
 	$(CMAKE) --build $(BUILD) -j$(JOBS)
@@ -146,6 +157,28 @@ run-media: media
 
 run-comm: comm
 	@cd $(BUILD) && $(RUN_ENV) exec ./bin/$(COMM) $(COMM_CFG)
+
+# 默认 = 常驻模式；一次性动作用 ARGS 传，例如：
+#   make run-upgrade ARGS="--status"
+#   make run-upgrade ARGS="--check --dry-run"
+#   make run-upgrade ARGS="--verify=../config/manifest.json"
+run-upgrade: upgrade
+	@cd $(BUILD) && $(RUN_ENV) exec ./bin/$(UPGRADE) $(UPGRADE_CFG) $(ARGS)
+
+# 三个进程一起跑（开发态：不用 sudo、不装 systemd）—— 脚本在 scripts/run/run-all.sh
+#   顺序与 systemd 一致：media 先起（upgrade 要等链路跑起来才有意义），停时 media 先停
+#   （有序 stop_all → FreeMem，最多等 25 s），comm / upgrade 后停
+#   日志分文件写 $(BUILD)/logs/{media,comm,upgrade}.log；Ctrl+C 一次全收
+#   某个进程崩了 → 打印它的 rc，然后整体收尾（退出码非 0）
+#   单独跑某一个仍然用 make run-media / run-comm / run-upgrade
+run-all: build
+	@bash scripts/run/run-all.sh $(BUILD)
+
+# 实时看三份日志（等价 tail -f $(BUILD)/logs/*.log）
+logs:
+	@ls $(BUILD)/logs/*.log >/dev/null 2>&1 || { \
+		echo "logs: 还没有日志（先 make run-all）"; exit 1; }
+	@tail -f $(BUILD)/logs/*.log
 
 # 老用法兼容：$(BUILD)/run.sh 存在就走它（该脚本重建方法见 HANDOFF §1.5）
 run-sh:
@@ -204,12 +237,16 @@ help:
 	@echo "    make run-node CFG=/abs/path/node.json"
 	@echo "    make run-sh          走老脚本 $(BUILD)/run.sh（存在时）"
 	@echo ""
-	@echo "  进程（源码在 src/main/media/ 与 src/main/comm/）"
+	@echo "  进程（源码在 src/main/media/ · src/main/comm/ · src/main/upgrade/）"
 	@echo "    make media           只编 $(MEDIA)"
 	@echo "    make comm            只编 $(COMM)"
-	@echo "    make proc PROC=media 改默认进程集（all | media | comm | media,comm）"
+	@echo "    make upgrade         只编 $(UPGRADE)"
+	@echo "    make proc PROC=media 改默认进程集（all | media | comm | upgrade | 组合）"
 	@echo "    make run-media       起 $(MEDIA)（CFG=$(CFG)）"
 	@echo "    make run-comm        起 $(COMM)（COMM_CFG=$(COMM_CFG)）"
+	@echo "    make run-upgrade     起 $(UPGRADE)（UPGRADE_CFG=$(UPGRADE_CFG)，ARGS=\"--status\"/\"--check\"）"
+	@echo "    make run-all         ★ 三个进程一起跑（日志 $(BUILD)/logs/*.log，Ctrl+C 一次全收）"
+	@echo "    make logs            tail -f $(BUILD)/logs/*.log"
 	@echo ""
 	@echo "  测试 / 信息"
 	@echo "    make test            依次跑 scripts/tests/run_t*.sh"

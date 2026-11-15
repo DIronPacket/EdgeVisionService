@@ -3,8 +3,9 @@
 > **状态：部分落地（2026-11-14）**。
 > 1. **共享通信库已落地**：`src/comm/` → `libcomm_api.so`（`CommBase` 抽象基类 + `UdpComm`/`MqttComm` + 全局单例 `CommManager`）。位置与本文原计划的 `src/common/comm/` 不同，接口以代码为准（[../../src/comm/README.md](../../src/comm/README.md)）。
 > 2. **媒体 / 通信两个进程入口已拆**：`src/main/media/` → `evs_media`、`src/main/comm/` → `evs_comm`。**不按本文 §2 放在 `src/media/`、`src/comm/`**：`src/comm` 已被通信库占用，且约定进程代码集中在 `src/main/`。两者可分别编译（`-DEVS_PROCESS=media|comm|media,comm`、`make media` / `make comm`，不指定 = 都编）。
-> 3. **尚未做**：`src/upgrade/`（升级进程）、`evs_comm` 拉起并守护 broker、消息编解码 / 命令路由 / 心跳超时判定、媒体进程真正收发 `media/evt/*`、跨进程联调。
-> 最后更新：2026-11-14；适用分支：`rk3588`；代码校准点：`f0b7899`（+ 工作树：通信层 + 进程拆分）。
+> 3. **升级进程骨架已落地（2026-11-15）**：`src/upgrade/` → `libupgrade_api.so` + `src/main/upgrade/` → `evs_upgrade`（`-DEVS_PROCESS=upgrade`、`make upgrade` / `make run-upgrade`）；清单/验签/取数/槽位/状态机已实现，解包、`systemctl`、ffprobe 帧率仍是桩（独立设计见 [DESIGN_UPGRADE.md](DESIGN_UPGRADE.md)，验收见 [TESTLOG §5.25](../history/TESTLOG.md)）。
+> 4. **仍未做**：`evs_comm` 拉起并守护 broker、消息编解码 / 命令路由 / 心跳超时判定、媒体进程真正收发 `media/evt/*`、跨进程联调。
+> 最后更新：2026-11-15；适用分支：`rk3588`；代码校准点：`422b2c4`（+ 工作树：通信层 + 进程拆分 + 升级骨架）。
 > 相关文档：[ARCHITECTURE.md](../ARCHITECTURE.md)（当前单进程架构）· [ROADMAP.md](ROADMAP.md)（功能路线与 OTA）· [STATUS.md](../STATUS.md)（完成度与问题）· [TESTLOG.md](../history/TESTLOG.md)（验证记录）· [HANDOFF.md](../HANDOFF.md)（接手规范）
 
 ## 1. 背景与目标
@@ -66,8 +67,8 @@ src/
 > - 通信库：`src/common/comm/` → 实际 **`src/comm/`**（顶层独立库 `comm_api`）；内部也不是单一 `MqttClient`，而是 `CommBase` 抽象基类 + `UdpComm`/`MqttComm` 两后端 + 全局 `CommManager`。
 > - 媒体进程：`src/media/` → 实际 **`src/main/media/`**（`main_media.cpp` 入口 + `media_service.{h,cpp}` 编排）；兼容壳 `src/main/main.cpp` 在原位复用同一份 `media_service`。
 > - 通信进程：`src/comm/` → 实际 **`src/main/comm/`**（`main_comm.cpp`）—— `src/comm/` 这个名字已被库占用，不能再放进程。
-> - 升级进程：`src/upgrade/` **仍未创建**。
-> - `src/CMakeLists.txt`：**没有**新增 `add_subdirectory(media/comm/upgrade)`；进程子目录挂在 `src/main/CMakeLists.txt` 下，用 `EVS_PROCESS`（`all|media|comm|media,comm`）+ `EXCLUDE_FROM_ALL` 控制默认编译集。
+> - 升级进程：`src/upgrade/` → 实际 **`src/upgrade/`（库 `upgrade_api`）+ `src/main/upgrade/`（进程 `evs_upgrade`）** —— 与 media/comm 同样是「库 + `src/main/` 下进程入口」两段式（2026-11-15）。
+> - `src/CMakeLists.txt`：新增了 `add_subdirectory(upgrade)`（库）；进程子目录挂在 `src/main/CMakeLists.txt` 下，用 `EVS_PROCESS`（`all|media|comm|upgrade`，可逗号组合）+ `EXCLUDE_FROM_ALL` 控制默认编译集。
 
 `src/CMakeLists.txt` 目标形态：
 
@@ -153,7 +154,7 @@ target_link_libraries(media_domain INTERFACE pipeline_api platform_api)
 | --- | --- | --- | --- | --- | --- |
 | 媒体处理 | `src/media/` → **`src/main/media/`** | `evs_media`（+ 兼容壳 `EdgeVisionService`） | `config/node.json` | common + comm + pipeline + platform | 采集/编码/推流；发 `media/evt/*`；收 `media/cmd/*`（**收发尚未接线**） |
 | 通信服务 | `src/comm/` → **`src/main/comm/`**（`src/comm/` 是库 `comm_api`） | `evs_comm` | `config/comm.json` | common + comm | 命令路由、状态汇聚、心跳超时判定；broker 拉起/守护**尚未实现** |
-| 升级服务 | `src/upgrade/`（**未建**） | `evs_upgrade` | `config/upgrade.json` | common + comm | 收 `upgrade/cmd/*`、上报 `upgrade/evt/*`、版本/包校验与切换 |
+| 升级服务 | `src/upgrade/`（库）→ **`src/upgrade/` + `src/main/upgrade/`（骨架已落地 2026-11-15）** | `evs_upgrade` | `config/upgrade.json` | common + comm + upgrade | 收 `upgrade/cmd/*`、上报 `upgrade/evt/*`、版本/包校验与切换（解包/切换/健康检查仍是桩） |
 
 ### 4.1 关于 broker 位置（重要事实）
 
@@ -231,6 +232,7 @@ evs/v1/comm/cmd/{health}
 - 统一 JSON（复用 `src/common/json.hpp`，nlohmann 单头）；**不引入 protobuf/msgpack**（HANDOFF 硬约束：不引入 `install/` 中不存在的新库）。
 - 必带字段：`v`（协议版本）、`ts`（毫秒时间戳）、`src`（进程名）。
 - 单条建议 ≤ 4 KB；大块数据（帧、升级包）走文件路径，只把**句柄或路径**放进消息。
+- **完整 topic 表（含 `sys/` / `sensor/` 域）、payload 字段表、连接参数与三条回调约束已定稿在 [DESIGN_IPC.md](DESIGN_IPC.md) §5**；同机高频（>10 Hz）不走 MQTT，走 §6 的 UDP 或 §7 的共享内存环。
 
 ## 6. 第三方依赖现状（已实测，2026-11-12）
 

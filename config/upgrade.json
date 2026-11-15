@@ -1,0 +1,60 @@
+{
+  "_comment": "evs_upgrade 配置；字段语义见 docs/design/DESIGN_UPGRADE.md §10.2。改本文件不需要重编。",
+  "_comment_target": "target.hw / target.abi 是「本机期望值」，用来拒掉别的板型或换过 rootfs 的包（§5.5）。abi 留空 = 不校验。",
+  "_comment_health": "ffprobe_path 留空 = 走 PATH 查找；板端 ffprobe 在 3rdparty/rk3588/ffmpeg/bin/ 下（不在 PATH），部署时请给绝对路径。",
+  "_comment_comm": "protocol=mqtt 才建通道；none = 只打印不联网（离线调试 / 冒烟）。evt 三个子主题各一条发布通道，见 §9.1。",
+
+  "install_root": "/opt/edgevision",
+  "data_root": "/data/edgevision",
+
+  "release": {
+    "keep_versions": 2,
+    "free_space_min_mb": 256
+  },
+
+  "source": {
+    "type": "http",
+    "base_url": "https://ota.example.com/rk3588/",
+    "manifest_name": "manifest.json",
+    "signature_name": "manifest.sig",
+    "timeout_sec": 30,
+    "retry": 3,
+    "curl_bin": "curl"
+  },
+
+  "verify": {
+    "public_key": "/etc/evs/ota_ed25519.pub",
+    "allow_downgrade": false
+  },
+
+  "target": {
+    "hw": "rk3588",
+    "abi": "glibc-2.35"
+  },
+
+  "health": {
+    "rtsp_url": "rtsp://127.0.0.1:8550/live/ch0",
+    "ffprobe_path": "",
+    "probe_timeout_sec": 10,
+    "min_fps": 15,
+    "stable_sec": 60
+  },
+
+  "rollback": {
+    "boot_count_max": 3
+  },
+
+  "services": {
+    "media": "evs-media.service"
+  },
+
+  "comm": {
+    "protocol": "mqtt",
+    "channel_name": "upgrade",
+    "host": "127.0.0.1",
+    "port": 1883,
+    "client_id": "evs-upgrade",
+    "sub_topic": "evs/v1/upgrade/cmd/#",
+    "pub_topic": "evs/v1/upgrade/evt/"
+  }
+}

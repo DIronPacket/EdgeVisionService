@@ -141,15 +141,27 @@ timeout --preserve-status -s INT 12 scripts/run/out/start.sh; echo "RC=$?"  # �
 ★ **退出码 130 ≠ 崩溃**：`make run-*` 的配方是 `cd out && … exec bin/xxx`，Ctrl+C（以及 `timeout -s INT`）会把 SIGINT 同时送给 **make 自己**，make 被打断 → `timeout --preserve-status` 原样转出 **130**（128+2）。程序自身的返回值仍是 **0**（尾部有 `进程正常退出`）；要看程序的 rc 就用 `scripts/run/out/start.sh` 或 `(cd out && ./bin/evs_media ../config/node.json)`。
 
 
-### 2.2 真实主链路（媒体 / 通信两个进程）
+### 2.2 真实主链路（媒体 / 通信 / 升级三个进程）
 
 ```bash
 make run-media                                    # 媒体进程，4 路（CFG 默认 ../config/node.json）
 make run-media CFG=/abs/path/config/push.json     # 单路（v0 push.json）
 make run-comm                                     # 通信进程（COMM_CFG 默认 ../config/comm.json）
 make run-comm COMM_CFG=/abs/path/config/comm.json # 换通信配置
+make run-upgrade                                  # 升级进程，常驻等 MQTT 命令（UPGRADE_CFG 默认 ../config/upgrade.json）
+make run-upgrade ARGS="--status"                  # 一次性动作（--check / --verify=/path/manifest.json 同理）
 make run                                          # 历史兼容壳 EdgeVisionService（= evs_media 逻辑）
+make run-all                                      # ★ 三个一起跑：日志 out/logs/{media,comm,upgrade}.log，Ctrl+C 一次全收
+make logs                                         # 另开终端 tail -f out/logs/*.log（配合 run-all）
 ```
+
+★ `make run-all` 是**开发态**的一键三进程（不用 sudo、不装 systemd，脚本 `scripts/run/run-all.sh`）：先起 media（等日志出现「条链路已启动」，最多 8 s）→ comm → upgrade；停机先给 media 发 SIGINT（有序 `stop_all` → `FreeMem`，最多等 25 s），再停 comm / upgrade。任一进程自己退出（崩了）→ 打印它的 rc 并整体收尾，退出码非 0；`EVS_PROCESS` 没编的进程自动跳过并告警。生产态仍用 systemd（§12）。
+★ 单独调试某个进程照旧用 `make run-media` / `run-comm` / `run-upgrade`（只起一个，前台、日志在终端）。
+
+★ 三个 `run-*` 都隐式依赖各自的构建 target（`run-media: media` 等），所以「改了代码直接 `make run-xxx`」也会先编再跑，不用先 `make`。
+★ **是增量构建，不会每次重编**：源码/头文件没变时 `cmake --build ... --target evs_upgrade` 只打印 `[100%] Built target evs_upgrade`，实测整条 `make run-upgrade ARGS="--status"` **490 ms**（其中 0 个文件重新编译；直接跑 `out/bin/evs_upgrade` 是 **22 ms**）。改了 `.cpp` 只重编那一个文件（实测 `touch main_upgrade.cpp` → 只 `Building ... main_upgrade.cpp.o` + `Linking`），改公共头文件才按依赖重编受影响的对象。
+★ `ARGS` 只有 `run-upgrade` 与 `run`（兼容壳）会转发；`run-media` / `run-comm` 传参请用 `CFG` / `COMM_CFG`。
+✅ 实测 2026-11-15：`make run-all` → 三进程全起（media 出帧 29.9/23.9 fps、comm 报 broker 未起但继续等信号、upgrade 常驻等 MQTT 命令）→ `pkill -INT -f 'scripts/run/run-all.sh'` → media `FreeMem 完成` rc=0 / comm `通道已清理` rc=0 / upgrade `有序退出完成` rc=0，`pgrep` 无残留，`MAKE_RC=0`。另测「进程崩了」分支：`kill -KILL` 打 media → 脚本捕获 rc=137 → 收尾其余两个并 `exit=1`，无残留。
 
 ⚠️ `testnode` **当前未参与构建**（`src/main/CMakeLists.txt` 的 `# add_subdirectory(test)` 为注释）；`make run-node` 会提示这一点。需要时取消注释 → `make reconfigure && make`。
 
@@ -161,9 +173,11 @@ make run                                          # 历史兼容壳 EdgeVisionSe
 timeout --preserve-status -s INT 12 scripts/run/out/start.sh; echo "EXIT=$?"   # ✅ 实测 EXIT=0
 timeout --preserve-status -s INT 12 make run-media;           echo "EXIT=$?"   # 实测 EXIT=130（make 被打断，见 2.1）
 timeout --preserve-status -s INT 5  make run-comm;            echo "EXIT=$?"   # 同上；无 broker 也照常停
+timeout -s INT 20 bash scripts/run/run-all.sh out; echo "RC=$?"               # 实测 RC=124（timeout 到期）；脚本自身打印 exit=0
 ```
 
 ✅ 实测：走 `start.sh` → `EXIT=0`；走 `make run-*` → `EXIT=130`（SIGINT 打到了 make）。两种方式的日志尾部都是 `[main] FreeMem 完成，进程正常退出` / `[comm] 通道已清理，进程正常退出`，`pgrep evs_media` / `pgrep evs_comm` 无残留 —— 判「程序有没有正常退出」请看日志，不要只看 130。
+⚠️ `run-all.sh` 的 SIGINT 由脚本自己 `trap` 收（三进程顺序停止），所以 `timeout` 返回的是它自己的 **124**（到期），脚本最后一行会打 `[run-all] 全部结束（exit=0）`；判据看这一行 + `pgrep` 无残留。
 ⚠️ 不加 `--preserve-status` 时 `timeout` 自身返回 **124**，别当成崩溃（TESTLOG §5.15 有此备注）。
 
 
@@ -171,8 +185,10 @@ timeout --preserve-status -s INT 5  make run-comm;            echo "EXIT=$?"   #
 
 ```bash
 export LD_LIBRARY_PATH="$PWD/out/lib:$PWD/install/rk3588/lib:$LD_LIBRARY_PATH"
-(cd out && ./bin/evs_media ../config/node.json)     # 媒体进程
-(cd out && ./bin/evs_comm  ../config/comm.json)     # 通信进程
+(cd out && ./bin/evs_media   ../config/node.json)      # 媒体进程
+(cd out && ./bin/evs_comm    ../config/comm.json)      # 通信进程
+(cd out && ./bin/evs_upgrade ../config/upgrade.json --status)   # 升级进程（一次性动作）
+(cd out && ./bin/evs_upgrade ../config/upgrade.json)   # 升级进程（常驻，等 MQTT 命令）
 ```
 
 ### 2.5 两个一键启动脚本（`out/` 与 `build/` 各一个，同名 `start.sh`）
@@ -816,51 +832,111 @@ out/archive/core.EdgeVisionService.75879.1794659287.sig3.std::this_thread::sleep
 > 结论：**只改 systemd unit 一处**。不要用 `rc.local` / `crontab @reboot`：
 > 它们不设 `LimitCORE`（服务模式 hard=0 → core 永远抓不到）、cwd 不可控、没有重启策略、日志也不进 journal。
 
-### 12.1 安装单元（一次性，需要 root）
+### 12.1 安装（三进程，一条命令，需要 root）
 
 ```bash
-sudo cp scripts/deploy/evs-edgevision.service /etc/systemd/system/
-sudo systemctl daemon-reload
-systemctl cat evs-edgevision | head -30      # 复核路径 / User / LimitCORE
+# 在仓库根执行。install.sh 负责：渲染 @@占位符@@ → 拷 5 个 unit → daemon-reload → enable → 启动
+sudo scripts/deploy/install.sh install
+
+# 不碰系统、只看渲染结果与 unit 语法（不需要 root，适合 CI / 改完 unit 先自检）
+scripts/deploy/install.sh install --dry-run
+
+# 只装一部分（例如先只上媒体进程）
+sudo scripts/deploy/install.sh install --only media,comm
+
+# 只 enable 不启动（等维护窗口再起）
+sudo scripts/deploy/install.sh install --no-start
+
+# 换部署根 / 运行用户 / 数据目录
+sudo scripts/deploy/install.sh install --root /opt/evs --user evs --data-dir /data/evs
 ```
 
-单元里必须对的六行（其余见文件内注释）：
+装完是 **5 个单元**（`evs.target` 是聚合入口，开机只 enable 它）：
+
+| 文件 | 作用 | 关键写法 |
+| --- | --- | --- |
+| `evs.target` | 聚合：`Wants=` 三个服务 | `WantedBy=multi-user.target`（开机自启就靠这一行） |
+| `evs-media.service` | `evs_media`，`Restart=on-failure` | `LimitCORE=infinity` · `TimeoutStopSec=20`（有序停止） |
+| `evs-comm.service` | `evs_comm`，`Restart=always` | broker 没起也照常跑（只告警） |
+| `evs-upgrade.service` | `evs_upgrade`，`After=evs-media.service` | `ProtectSystem=full`（首期不用 strict，见文件末尾说明） |
+| `evs-rollback.service` | `Type=oneshot` 兜底回滚 | 无 `[Install]`，只由 `OnFailure=` 或手工 `start` 触发 |
+
+`--dry-run` 会顺带跑 `systemd-analyze verify`（实测本机 systemd 249：**0 条项目相关告警**；非 root 读系统 unit 目录的 1 行噪音会被过滤并计数）。
+
+单元里必须对的几行（其余见文件内注释）：
 
 ```ini
+[Unit]
+StartLimitIntervalSec=300                      # ★ 必须放 [Unit]；放 [Service] 会被 systemd 忽略（249 实测告警 Unknown key）
+StartLimitBurst=3
+
 [Service]
-WorkingDirectory=/mnt/nvme/workspace/EdgeVisionService      # 直接跑二进制时 core 相对名的落点（start.sh 会 cd 到 out/）
-ExecStart=/mnt/nvme/workspace/EdgeVisionService/scripts/run/out/start.sh
+WorkingDirectory=<部署根>/out                   # 与 make run-* 一致：配置里的相对素材路径按 out/ 解析
+ExecStart=<部署根>/out/bin/evs_media <部署根>/config/node.json
+Environment=LD_LIBRARY_PATH=<部署根>/out/lib:<部署根>/install/rk3588/lib
+Environment=EVS_CRASH_DIR=/var/lib/evs/crash
 Restart=on-failure
 RestartSec=3
-LimitCORE=infinity                                         # 不写这行 = 服务模式永远没有 core
-# User=orangepi                                            # 需要时改成实际用户
+LimitCORE=infinity                             # 不写这行 = 服务模式永远没有 core
 ```
 
 - `LimitCORE=infinity` 是**唯一**能让服务模式抓到 core 的方式：`/etc/security/limits.d` 对 systemd 无效，
   PID1 的 hard limit 通常是 0，进程自己无权抬高（`setrlimit` 只能抬到 hard）。
-- 用 `start.sh` 当 `ExecStart`：`ulimit -c` / `LD_LIBRARY_PATH` / `EVS_CRASH_DIR` 都在脚本里，
-  单元不用重复写（`Environment=` 也不做变量展开，写 `$PATH` 之类不会生效）。
+- **不写 `Environment=LD_LIBRARY_PATH=$XXX/lib` 这种带 `$变量` 的写法**：systemd 的 `Environment=` 不做 shell 展开（只有 `${VAR}` 形式且仅限同类指令时有限展开），写错就是「命令行能跑、服务起不来」。`install.sh` 渲染时直接写成绝对路径。
+- `ProtectHome=yes` 在部署根位于 `/home` 或 `/root` 下时会被 `install.sh` 自动注释掉（否则二进制不可读）。
 
-### 12.2 开机自启 / 立即启动 / 状态
+### 12.2 开机自启 / 立即启动 / 状态（三进程）
 
 ```bash
-sudo systemctl enable --now evs-edgevision     # 开机自启 + 现在就起
-systemctl status evs-edgevision --no-pager
-systemctl is-enabled evs-edgevision            # 期望 enabled
-systemctl show -p LimitCORE -p WorkingDirectory evs-edgevision
+systemctl status evs.target --no-pager          # 聚合状态
+systemctl list-units 'evs-*' --no-pager         # 三个进程各自 active/failed
+scripts/deploy/install.sh status                # 一条命令看全：状态 + LimitCORE + WorkingDirectory + pgrep
+
+systemctl is-enabled evs.target                 # 期望 enabled（开机自启）
+systemctl is-enabled evs-media evs-comm evs-upgrade   # 三个都被 install.sh enable 过
+sudo systemctl restart evs.target               # 全重启（target 的 restart = 全停再全起）
+sudo systemctl restart evs-comm                 # 只重启一个（调试常用，不影响另两个）
+sudo systemctl stop evs.target                  # 全停（按 KillSignal=SIGTERM 走有序退出）
+```
+
+**三进程的启停顺序**（不是必须，但排障时要知道）：
+
+```text
+evs.target
+ ├─ evs-media.service     ← 核心，失败 3 次/300 s 会触发 OnFailure（P4 打开）
+ ├─ evs-comm.service      ← 独立，Restart=always
+ └─ evs-upgrade.service   ← After=evs-media.service（媒体先起，升级才有意义）
 ```
 
 ### 12.3 日志与「core 到底能不能落」
 
 ```bash
-journalctl -u evs-edgevision -f                 # 实时日志（crash 报告同时打到 stderr → journal）
-PID=$(systemctl show -p MainPID --value evs-edgevision)
-grep -i 'core file' "/proc/$PID/limits"         # 期望 hard = unlimited
+journalctl -u evs-media -u evs-comm -u evs-upgrade -f     # 三路日志一起跟（推荐）
+journalctl -u evs-media -n 200 --no-pager                 # 只看媒体
+journalctl -u evs-rollback -n 50 --no-pager               # 兜底回滚有没有被触发过
+
+# core 相关（三个进程都要能落）
+for u in evs-media evs-comm evs-upgrade; do
+  PID=$(systemctl show -p MainPID --value $u)
+  echo "$u pid=$PID $(grep -i 'core file' /proc/$PID/limits)"
+done
 cat /proc/sys/kernel/core_pattern               # 期望 /var/lib/evs/coredump/core.%e.%p.%t.sig%s
 ls -lt /var/lib/evs/coredump | head             # core 产物
 ```
 
-### 12.4 替代方案（不推荐，只说明差别）
+### 12.4 单进程兼容壳 `evs-edgevision.service`（只调试用）
+
+`scripts/deploy/evs-edgevision.service` 仍然保留，它跑的是 `EdgeVisionService`（= `evs_media` 那份逻辑，走 `scripts/run/out/start.sh`）。
+
+⚠️ **不要和 `evs.target` 同时 enable**：两个都起媒体链路会抢 RTSP 端口 8550。`install.sh` 检测到它 enabled 时会告警。
+
+```bash
+sudo systemctl disable --now evs-edgevision     # 切到三进程前先关掉
+sudo cp scripts/deploy/evs-edgevision.service /etc/systemd/system/   # 老的单文件安装方式仍可用
+```
+
+
+### 12.5 替代方案（不推荐，只说明差别）
 
 | 方式 | 缺点 |
 | --- | --- |
@@ -868,7 +944,7 @@ ls -lt /var/lib/evs/coredump | head             # core 产物
 | `crontab @reboot` | 同上，且 crontab 环境极简（`PATH`/`HOME` 可能缺），失败无感 |
 | `~/.bashrc` / `profile` | 只对登录 shell 生效，无人登录就不启动 |
 
-临时手工启动用 `scripts/run/out/start.sh`；要服务化就按 §12.1。
+临时手工调试用 `make run-media` / `make run-comm` / `make run-upgrade`（§2.2），要三进程服务化就按 §12.1。
 
 ---
 

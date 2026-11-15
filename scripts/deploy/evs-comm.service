@@ -1,0 +1,39 @@
+# ============================================================================
+# evs-comm.service —— 进程 2（通信进程 evs_comm）
+# ----------------------------------------------------------------------------
+# 不要手工拷贝：用 scripts/deploy/install.sh（会渲染占位符）。
+#
+# 注意：本单元**不负责 broker**。libmosquitto 只有客户端 API，broker 是
+# install/<平台>/sbin/mosquitto 那个独立进程（可选做法见
+# docs/design/DESIGN_PROCESS_SPLIT.md §4.1 / docs/design/DESIGN_IPC.md §4）。
+# 若要让 evs_comm 自己 fork/exec 拉起 broker（方案 A），那是 P3 的代码改动，
+# 不是 systemd 的事。
+# ============================================================================
+[Unit]
+Description=EVS comm router (evs_comm)
+Documentation=file://@@EVS_ROOT@@/docs/ops/COMMANDS.md
+After=network-online.target
+Wants=network-online.target
+# broker 未起时 evs_comm 只告警并继续（实测），所以这里不需要硬依赖 broker
+# StartLimit* 必须放 [Unit]（放 [Service] 会被 systemd 249 忽略并告警 Unknown key）
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=@@EVS_USER@@
+WorkingDirectory=@@EVS_ROOT@@/out
+Environment=EVS_CRASH_DIR=@@EVS_DATA@@/crash
+Environment=LD_LIBRARY_PATH=@@EVS_ROOT@@/out/lib:@@EVS_ROOT@@/install/@@EVS_PLATFORM@@/lib
+LimitCORE=infinity
+ExecStart=@@EVS_ROOT@@/out/bin/evs_comm @@EVS_ROOT@@/config/comm.json
+KillSignal=SIGTERM
+TimeoutStopSec=10
+# 通信进程挂了就重连是本职：一直拉起（配合 StartLimit 防止死循环打爆日志）
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=evs.target
