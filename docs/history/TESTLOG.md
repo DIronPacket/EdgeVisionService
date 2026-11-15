@@ -972,6 +972,7 @@
   3. `EVS_PROCESS` 只编了部分进程时，`run-all` 只起已编的那几个（跳过 + 告警）。
 - 顺带澄清（用户提问「是不是所有进程跑的都是同一个」）：不是。四个二进制 md5 / 大小都不同 —— `evs_media` `b76675a5…` / 798 560 B、`evs_comm` `5f22a9ad…` / 2 434 952 B、`evs_upgrade` `f8d6af20…` / 3 753 824 B、`EdgeVisionService` `7684c174…` / 798 576 B。但 **`make run` 与 `make run-media` 确实是同一个程序**（`src/main/main.cpp` 只有 `return evs::media::Run();`，只差崩溃报告的 `app=` 与 ZLM 日志前缀），且 `make run` 本身**只起一个进程**；此前仓库里没有「一键起三个」的目标（`grep -nE 'run-all' Makefile` 为空）。
 - 结论：✅ 通过（三进程一键起停可用、异常路径有判据；**未改动 `src/` 与 CMake**，代码校准点不变）。
+- 收尾：本笔与升级骨架、部署产物合并提交 `017b19d`（`upgrade: 升级骨架 + 三进程 systemd 部署 + make run-all 一键起停`，49 文件 +6800/−111），并与先前 2 笔 `docs:` + `422b2c4` 一起推送到 `origin/rk3588`（`7d5d222..017b19d`）；推送后 `git log origin/rk3588..HEAD` 为空、`git ls-remote origin refs/heads/rk3588` = 本地 HEAD；提交后复跑 `make` → `MAKE_RC=0`（14 个 target）。
 
 ## 6. 维护约定
 
