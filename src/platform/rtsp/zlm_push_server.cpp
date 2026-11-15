@@ -7,6 +7,38 @@
 #include <unordered_map>
 #include <sstream>
 #include <vector>
+#include <cstdlib>
+#include <iostream>
+
+// ============================================================
+// ZLM 日志级别（0~4）
+//   C API 头文件只注明「支持 0~4」，枚举在 C++ 侧 Util/logger.h：
+//   0=trace 1=debug 2=info 3=warn 4=error
+//   级别只在 mk_env_init2 里生效（C API 没有运行期改级别的接口）。
+// 默认 4 = 只留 error：info 级会把建流 / 心跳这类「每路流都有」的日志刷满控制台
+//   （4 路跑 20s 实测 58 行 info，见 docs/history/TESTLOG.md §5.24）。
+// 排查时不必重编：EVS_ZLM_LOG_LEVEL=2 ./bin/evs_media ../config/node.json
+// ★ 实测限制：`Load codec: ...` 那十几行 info 由 libmk_api.so **静态初始化阶段**
+//   （main 之前）打出，那时日志级别还没设过，所以任何 log_level 都压不掉它们。
+// ============================================================
+static const int kZlmLogLevelDefault = 4;
+
+// 读 EVS_ZLM_LOG_LEVEL（0~4）；未设用默认值，非法值明确提示而不是静默吞掉。
+static int ResolveZlmLogLevel()
+{
+    const char *env = std::getenv("EVS_ZLM_LOG_LEVEL");
+    if (!env || env[0] == '\0')
+        return kZlmLogLevelDefault;
+    char *end = nullptr;
+    const long lv = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || lv < 0 || lv > 4)
+    {
+        std::cerr << "[zlm] 忽略非法 EVS_ZLM_LOG_LEVEL=\"" << env << "\"（应为 0~4），使用默认 "
+                  << kZlmLogLevelDefault << std::endl;
+        return kZlmLogLevelDefault;
+    }
+    return static_cast<int>(lv);
+}
 
 static std::mutex g_mtx;
 static bool g_env_ok = false;
@@ -106,10 +138,12 @@ ZlmServerStreamHandle zlm_rtsp_onekey_start(uint16_t rtsp_port, ZlmFrameCodec ty
         return nullptr;
     }
     std::lock_guard<std::mutex> lk(g_mtx);
-    // env全局一次性初始化，用你现在这个mk_env_init2参数
+    // env 全局只初始化一次：线程数 4；日志级别见文件头 kZlmLogLevelDefault
+    //（默认只留 error，可用 EVS_ZLM_LOG_LEVEL=0~4 临时放开）；LOG_CONSOLE 输出到控制台，
+    // 不落文件日志（log_file_path=NULL、log_file_days=0）。
     if (!g_env_ok)
     {
-        mk_env_init2(4, 2, LOG_CONSOLE, NULL, 0, 0, NULL, 0, NULL, NULL);
+        mk_env_init2(4, ResolveZlmLogLevel(), LOG_CONSOLE, NULL, 0, 0, NULL, 0, NULL, NULL);
         g_env_ok = true;
     }
 

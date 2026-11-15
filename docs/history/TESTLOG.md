@@ -807,6 +807,37 @@
 - 文档同步（2026-11-15）：根 `README.md` §2 快速开始把 `make run-media` 注释改为「程序自身退出码 0」，并新增两条 bullet（`make run` 与 `make run-media` 是同一个程序；退出码 130 ≠ 崩溃 + `exec` 后不再出现 `*** Interrupt`）；页脚代码校准点由 `f0b7899` 更正为 `0117907`、状态改为已推送。`HANDOFF.md` §2 第 8 条「长跑验证」同步纠正（原写 `timeout … make run-media` 得 `EXIT=0`，实测 make 自身 130；要看程序 rc 用 `start.sh` 或直跑二进制）。链接体检 `links=25 missing=0`、代码围栏成对。
 - 结论：✅ 通过。
 
+### 5.24 L2 · ZLM 日志级别：默认只留 error（2026-11-15）
+
+- 问题：`make run-media` 的控制台被 ZLM 的 info 日志占满 —— 4 路跑 20s 共 **58 行** `I`（`EventPoller created`、每路的建流 / 心跳…），自己的 `[main] / [printN]` 反而难找。
+- 现状（改前）：`src/platform/rtsp/zlm_push_server.cpp` 首次起流时 `mk_env_init2(4, 2, LOG_CONSOLE, NULL, 0, 0, NULL, 0, NULL, NULL)` —— 第 2 个参数 `2` = info。级别含义：`0=trace 1=debug 2=info 3=warn 4=error`；**C API 头文件只写「支持 0~4」**，枚举在 ZLM C++ 侧 `Util/logger.h`，`install/rk3588/include` 里没有该头。
+- 修法：抽出 `static const int kZlmLogLevelDefault = 4` + `static int ResolveZlmLogLevel()`，读环境变量 `EVS_ZLM_LOG_LEVEL`（0~4；非法值打一行 `[zlm] 忽略非法 EVS_ZLM_LOG_LEVEL="9"（应为 0~4），使用默认 4` 后按默认走），`mk_env_init2` 第 2 个参数改成它。**只改级别**：线程数仍 4、输出通道仍 `LOG_CONSOLE`、仍不落文件日志。
+- 先做仓外探针（`/tmp/zlm_log_probe.cpp`，链 `install/rk3588/lib/libmk_api.so`；先自己占住 `127.0.0.1:18551`，再让 ZLM 监听同端口以触发 W 级）：
+
+  | `log_level` | 看到 `I` | 看到 `W` |
+  | --- | --- | --- |
+  | 2 | 有（`EventPoller created size: 1` …） | 有（`Bind socket failed: address already in use`） |
+  | 3 | 无 | 有 |
+  | 4 | 无 | 无 |
+
+  ⇒ 过滤是「`level >= 设定值` 才输出」的单调关系，所以 4 只剩 error（探针里没造出 error，靠单调性推得；warn 在 4 级被压下、在 3 级保留即证）。
+- 整机实测（`timeout --preserve-status -s INT 15~20 ./bin/evs_media ../config/node.json`，本机 4 路）：
+
+  | 场景 | `I` 行 | 总行数 | rc | 结束状态 |
+  | --- | --- | --- | --- | --- |
+  | 改前（硬编码 2） | 58 | 239 | 0 | — |
+  | 改后默认（4） | **14**（全部是 pre-main 的 `Load codec: …`） | 178 | 0 | `[print1]/[print2] 实测=23.77fps`、`FreeMem: 释放 50 块`、`[main] FreeMem 完成，进程正常退出` |
+  | 改后 `EVS_ZLM_LOG_LEVEL=2` | 58（与改前一致） | 210 | 0 | 正常退出（环境变量覆盖生效） |
+  | 改后 `EVS_ZLM_LOG_LEVEL=9` | 14 | — | 0 | 先打 `[zlm] 忽略非法 …`，按默认 4 |
+  | `make`（重编本次改动） | — | — | 0 | `evs_media` / `EdgeVisionService` 重新链接，无告警 |
+
+- 已知限制（实测，不是猜）：
+  1. `Factory.cpp:40 registerPlugin | Load codec: VP8/VP9/H264/H265/AV1/JPEG/mpeg4-generic/opus/PCMA/PCMU/L16/MP3/MPV/MPA` 这 **14 行 info** 由 `libmk_api.so` 的**静态初始化阶段**打出（早于 `main`，更早于 `mk_env_init2`），级别那时还没设过 → **任何 `log_level` 都压不掉**（4 级实测仍在）。
+  2. ZLM `ConsoleChannel` 写 **stdout**（探针 `2>/dev/null` 后 stderr 0 行、stdout 18 行）→ 用 `2>` 重定向压不掉，只能用终端侧 `grep -v registerPlugin`。
+  3. C API 无运行期改级别接口 → 改 `EVS_ZLM_LOG_LEVEL` 后必须**重启进程**。
+- 文档：`docs/ops/COMMANDS.md` 新增 **§2.6**（级别表 + 实测表 + 三条限制）、§9 踩坑表加 3 行；`docs/design/DESIGN_MULTI_PIPELINE.md` §2 第 1 行里「硬编码 `mk_env_init2(4, 2, …)`」改为指向新默认。
+- 结论：✅ 通过（默认只留 error；`EVS_ZLM_LOG_LEVEL` 覆盖与非法值回退均实测；4 路功能不受影响）。
+
 ## 6. 维护约定
 
 1. 提交代码时，同一 commit 里**必须**包含对应的 TESTLOG 记录（L1 或 L2）。

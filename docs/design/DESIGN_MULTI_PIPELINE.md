@@ -69,7 +69,7 @@
 
 | # | 资源 / 职责 | 现在归属 | 代码位置 | 问题 |
 | --- | --- | --- | --- | --- |
-| 1 | ZLM 运行环境 `mk_env_init2` | `zlm_push_server.cpp` 内的静态 `g_env_ok`，**第一次 `onekey_start` 时懒初始化** | `zlm_push_server.cpp:73-77` | 进程级初始化藏在"起一路流"的 API 里；日志级别/线程数是硬编码 `mk_env_init2(4, 2, LOG_CONSOLE, ...)`；无显式关闭点 |
+| 1 | ZLM 运行环境 `mk_env_init2` | `zlm_push_server.cpp` 内的静态 `g_env_ok`，**第一次 `onekey_start` 时懒初始化** | `zlm_push_server.cpp:73-77` | 进程级初始化藏在"起一路流"的 API 里；日志级别/线程数由 `mk_env_init2(4, <level>, LOG_CONSOLE, ...)` 的实参决定（**2026-11-15 起 `<level>` 默认 `4` = 只留 error**，可用环境变量 `EVS_ZLM_LOG_LEVEL` 覆盖，见 `docs/ops/COMMANDS.md` §2.6）；无显式关闭点 |
 | 2 | RTSP server（监听端口） | 静态 `g_server_map`，按端口引用计数 | `zlm_push_server.cpp:79-101` | 生命周期由"第一个/最后一个 PushNode"决定；`bind_ip` 从未赋值却参与 key 拼接 |
 | 3 | 流（`mk_media`） | **`PushNode::m_handle`** | `moudle_push.h:53`、`moudle_push.cpp:215-227` | 节点持有进程级资源 → 节点析构顺序决定服务是否泄漏 |
 | 4 | 停一路 / 停全部 | `zlm_rtsp_stop()` → 引用计数归零时 `mk_stop_all_server()` | `zlm_push_server.cpp:161-187`（`:184`） | `mk_stop_all_server()` 是**停全进程所有 RTSP 服务**；多路场景下停一路会打断其他路 |

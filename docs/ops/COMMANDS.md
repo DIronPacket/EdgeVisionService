@@ -199,6 +199,41 @@ timeout --preserve-status -s INT 5 scripts/run/out/start.sh; echo "RC=$?"   # �
 ⚠️ `build/` 是 11-12 的旧产物：能跑（实测 4 路），但**里面没有崩溃采集代码**（日志无 `[crash]` 行）。要抓现场请用 `out` 版。
 
 
+### 2.6 ZLM（ZLMediaKit）日志：默认只留 error，怎么临时放开
+
+```bash
+make run-media                                  # 默认：只有 error（启动时还有 14 行 codec，见下方 ★）
+EVS_ZLM_LOG_LEVEL=2 make run-media              # 临时回到 info（改前的行为），不用重编
+EVS_ZLM_LOG_LEVEL=3 make run-media              # 只留 warn + error
+EVS_ZLM_LOG_LEVEL=0 scripts/run/out/start.sh    # trace，最吵，只在线调试单路时用
+```
+
+| 值 | 级别 | 备注 |
+| --- | --- | --- |
+| 0 | trace | 最详细（单帧级），只在调试时开 |
+| 1 | debug | |
+| 2 | info | **改前的默认值**：建流 / 心跳这类「每路流都有」的日志 |
+| 3 | warn | 端口占用、参数异常等 |
+| 4 | error | **现在的默认值**：只留错误 |
+
+**在哪改**：`src/platform/rtsp/zlm_push_server.cpp` 的 `kZlmLogLevelDefault`（默认 4）；真正生效点是首次起流时的 `mk_env_init2(4, ResolveZlmLogLevel(), LOG_CONSOLE, …)`。
+**为什么只能写进初始化参数**：ZLM 的 C API **没有运行期改日志级别的接口**（`mk_set_log` 只管文件切片大小 / 个数，且我们没开文件日志），级别只在 `mk_env_init2` 里定 → 改 `EVS_ZLM_LOG_LEVEL` 后必须**重启进程**才生效。
+**非法值**：不在 0~4 → 打一行 `[zlm] 忽略非法 EVS_ZLM_LOG_LEVEL="9"（应为 0~4），使用默认 4`，按默认走（不静默吞掉）。
+
+✅ 实测（2026-11-15，本机 4 路，`timeout --preserve-status -s INT 15~20 ./bin/evs_media ../config/node.json`）：
+
+| 场景 | ZLM `I` 行数 | 日志总行数 | 程序 rc | 出帧 / 收尾 |
+| --- | --- | --- | --- | --- |
+| 改前（硬编码 `2`） | 58 | 239 | 0 | `实测≈23.8fps` |
+| 默认（`4`） | **14**（全是启动那 14 行 codec） | 178 | 0 | `实测=23.77fps`、`FreeMem: 释放 50 块` |
+| `EVS_ZLM_LOG_LEVEL=2` | 58（与改前一致） | 210 | 0 | 正常退出 |
+| `EVS_ZLM_LOG_LEVEL=9` | 14 | — | 0 | 先打非法值提示，按默认走 |
+
+★ **压不掉的 14 行**：`… Factory.cpp:40 registerPlugin | Load codec: VP8 / VP9 / H264 / …` 是 `libmk_api.so` **静态初始化阶段**（`main` 之前）打的 info —— 那时 `mk_env_init2` 还没被调用、日志级别还没设过，所以**任何 `log_level` 都压不掉**（4 级实测仍在）。
+- 它们走 **stdout**（实测 `2>/dev/null` 后 stderr 0 行、stdout 仍是全部），所以靠 `2>` 重定向无效；只想清掉这 14 行就在终端侧过滤：`make run-media 2>&1 | grep -v registerPlugin`。
+- `mpp[N]: mpp_platform: client 12 driver is not ready!` 是 **MPP 驱动**打的，不归 ZLM 管。
+
+
 ## 3. 看内存（进程级 / 堆级 / 泄漏）
 
 内存问题分三层看：**进程占多少** → **堆里是谁在占** → **有没有泄漏**。三层命令不通用，混用会得出错误结论。
@@ -624,6 +659,9 @@ grep -rn '114c94d' README.md docs/*.md .clinerules/*.md AGENTS.md | cut -c1-165
 | Ctrl+C 后多出 `make: *** [Makefile:NNN: run-media] Interrupt` | 配方是 `cd out && …`，Ctrl+C 时**外层 shell** 被 SIGINT 打死，make 认为「这条命令被中断了」；程序其实已经打印过「进程正常退出」 | 2026-11-14 起配方末尾加 `exec`（shell 被程序替换）→ 该行消失；`make` 自身退出码仍是 130 |
 | `timeout --preserve-status -s INT … make run-media` 得到 130 | SIGINT 打到了 **make**，不是程序（程序 rc=0，尾部有「进程正常退出」） | 判程序 rc：`scripts/run/out/start.sh`（末尾 `exec`）或直跑 `out/bin/evs_media`，都是 0 |
 | `make run` 与 `make run-media` 输出一模一样 | 同一个 `evs::media::Run()`：兼容壳 `EdgeVisionService` 只是旧可执行名，只差崩溃报告里的 `app_name` 与 ZLM 日志前缀 | 想看通信进程用 `make run-comm`（`[comm]` 前缀）；两者的分工见 HANDOFF §1.4 |
+| 设了 `log_level=4` 还是有 `I` 级日志 | `Load codec: …` 那 14 行是 `libmk_api.so` **静态初始化**（`main` 之前）打的，级别那时还没设 | 忽略这 14 行；真要清掉用终端侧 `grep -v registerPlugin`（见 §2.6） |
+| `2>/dev/null` 没压掉 ZLM 日志 | ZLM `ConsoleChannel` 写 **stdout**，不是 stderr | 已默认只留 error（§2.6）；过滤用 `grep -v`，别用 `2>` |
+| ZLM 日志还是很多 | 级别由 `mk_env_init2` 第 2 个参数决定，改环境变量后没重启进程 | `EVS_ZLM_LOG_LEVEL=4` 或去掉该变量后**重启**；级别值 0~4 = trace/debug/info/warn/error |
 
 ---
 
