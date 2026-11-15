@@ -9,9 +9,10 @@
 | 项 | 值 |
 | --- | --- |
 | **能跑什么** | `config/node.json` 描述的 **4 路链路**（1 个摄像头 + 3 路 mp4）同时出帧并推 RTSP；`Ctrl+C` → 正序停线程 → 释放 ZLM 流 → `FreeMem` 归还 50 块 → 程序退出码 0。实测 `[print3] 实测=23.82fps` |
-| **进程形态** | **两个进程 + 一个兼容壳**（2026-11-14 拆分）：`evs_media`（媒体）/ `evs_comm`（通信）/ `EdgeVisionService`（旧名字，与 `evs_media` 共用同一份 `media_service` 逻辑） |
+| **进程形态** | **三个进程 + 一个兼容壳**（2026-11-14 拆分 + 2026-11-15 加升级）：`evs_media`（媒体）/ `evs_comm`（通信）/ `evs_upgrade`（OTA 升级，**骨架**：检查/验签/取数/槽位切换已实现，解包与 `systemctl` 仍是桩）/ `EdgeVisionService`（旧名字，与 `evs_media` 共用同一份 `media_service` 逻辑） |
 | **通信** | `src/comm/` = `libcomm_api.so`：`CommBase` + `UdpComm` / `MqttComm` + 全局 `CommManager`，`scripts/tests/run_t6_comm.sh` 43 项断言。**媒体进程尚未接总线**（不建通道、不上报 `media/evt/*`） |
-| **主要缺口** | 无日志 / 指标体系、无单测 / CI、扇出拓扑不可达（T9）、池块数与队列深度未接线（T10a）、x86 依赖缺失（P0-1）；**媒体与通信两进程之间还没有消息路由** |
+| **升级（OTA）** | `src/upgrade/` = `libupgrade_api.so`（清单解析 / semver 兼容判定 / SHA-256 + Ed25519 验签 / file·http 取数 / releases·current·previous 槽位原子切换 / RTSP + TCP 探活）+ `evs_upgrade` 进程，`scripts/tests/run_t7_upgrade.sh` 146 单元 + 13 CLI。**仍是桩**（`E_NOTIMPL`，不假装成功）：解包、逐文件校验、`systemctl`、ffprobe 帧率、旧版本清理、掉电轮转恢复 |
+| **主要缺口** | 无日志 / 指标体系、无单测 / CI、扇出拓扑不可达（T9）、池块数与队列深度未接线（T10a）、x86 依赖缺失（P0-1）；**媒体与通信两进程之间还没有消息路由**；升级的解包与 `systemctl` 未实现 |
 | **P0 现状** | 共 14 项：已修 10 项、核实假阳性 1 项（P0-5）、剩 3 项（P0-1 / P0-8 / P0-10 残余）。明细见 [docs/STATUS.md](docs/STATUS.md) |
 
 ## 2. 30 秒跑起来
@@ -20,17 +21,20 @@
 # 0) 依赖不入库：FFmpeg 5.x / Rockchip MPP / ZLMediaKit / mosquitto 2.0.22 需自备到 install/rk3588/{include,lib}
 #    （OpenSSL 3.5.4 与 FreeType 可选；查找策略见 cmake/README.md）
 make                     # 首次自动 configure；产物在 out/bin、out/lib
-make run-media           # 4 路出帧；Ctrl+C → 有序停止 → FreeMem → 程序自身退出码 0
-make run-comm            # 通信进程（无 broker 只报 Connection refused，不退出）
+make run-all             # ★ 三进程一起跑（media → comm → upgrade）；Ctrl+C 一次全停，日志 out/logs/*.log
+make logs                # 另开终端跟三份日志（tail -f out/logs/*.log）
+make run-media           # 只起媒体：4 路出帧；Ctrl+C → 有序停止 → FreeMem → 程序自身退出码 0
+make run-comm            # 只起通信：无 broker 只报 Connection refused，不退出
+make run-upgrade ARGS="--status"   # 升级进程一次性动作（常驻不带 ARGS）
 make info                # 看当前编哪些进程（EVS_PROCESS）与构建参数
 ```
 
-- **只编一个进程**：`make media` / `make comm`；**改默认集**：`make proc PROC=comm`（写进 `out/CMakeCache.txt`，`PROC=all` 恢复）；等价 CMake 写法 `cmake -S . -B out -DEVS_PROCESS=media,comm`。
-- **`make run` 与 `make run-media` 是同一个程序**：两者都调 `evs::media::Run()`，`EdgeVisionService` 只是历史兼容的可执行名，日志只差 ZLM 前缀（`[EdgeVisionService]` / `[evs_media]`）；通信进程请用 `make run-comm`（`[comm]` 前缀）。
+- **只编一个进程**：`make media` / `make comm` / `make upgrade`；**改默认集**：`make proc PROC=comm`（写进 `out/CMakeCache.txt`，`PROC=all` 恢复）；等价 CMake 写法 `cmake -S . -B out -DEVS_PROCESS=media,comm,upgrade`（不指定 = 全编）。
+- **`make run` 与 `make run-media` 是同一个程序**：两者都调 `evs::media::Run()`，`EdgeVisionService` 只是历史兼容的可执行名，日志只差 ZLM 前缀（`[EdgeVisionService]` / `[evs_media]`）；通信进程请用 `make run-comm`（`[comm]` 前缀）。**想三个一起跑用 `make run-all`** —— `make run` 只起 media 一个进程。
 - **退出码 130 ≠ 崩溃**：`make run-*` 里 Ctrl+C 的 SIGINT 会同时打到 make，所以 **make 自身返回 130**，程序仍是 0（尾部有 `进程正常退出`）。要看程序的 rc 用 `bash scripts/run/out/start.sh` 或 `(cd out && ./bin/evs_media ../config/node.json)`。2026-11-14 起运行配方末尾加了 `exec`，**关程序后不会再出现 `make: *** [Makefile:…] Interrupt` 那一行**。
 - **ZLM 日志太吵**：2026-11-15 起默认只留 **error**（启动时仍有 14 行 `Load codec: …`，那是库静态初始化打的，压不掉）；排查时 `EVS_ZLM_LOG_LEVEL=2 make run-media` 临时放开，级别表与实测见 [docs/ops/COMMANDS.md](docs/ops/COMMANDS.md) §2.6。
 - **播放**：`ffplay rtsp://<板端IP>:8550/live/ch0`（每路 `ch0`~`ch3`）。
-- **自检**：`bash scripts/tests/run_t6_comm.sh`（其余见 [scripts/tests/README.md](scripts/tests/README.md)）。
+- **自检**：`bash scripts/tests/run_t6_comm.sh`（43 项）/ `bash scripts/tests/run_t7_upgrade.sh`（146 单元 + 13 CLI；其余见 [scripts/tests/README.md](scripts/tests/README.md)）。
 - 命令细节、实测输出与踩坑：**[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)** §1 构建 / §2 运行 / §3 内存 / §11 崩溃 / §12 自启。
 
 ## 3. README 索引（每个目录一篇，改哪块先看哪篇）
@@ -44,11 +48,11 @@ make info                # 看当前编哪些进程（EVS_PROCESS）与构建参
 | `config/` | [config/README.md](config/README.md) | `node.json`（v1 多链路）/ `push.json`（v0）/ `comm.json` 每个字段 |
 | `cmake/` | [cmake/README.md](cmake/README.md) | `Find*.cmake` 查找策略、`TARGET_PLATFORM` 判定、交叉编译工具链 |
 | `scripts/` | [scripts/README.md](scripts/README.md) | 脚本总览（约定：一律从仓库根执行） |
-| `scripts/tests/` | [README.md](scripts/tests/README.md) | 五套回归脚本清单（T1 / T2 / T3 / T5 / T6，共 282 项断言） |
+| `scripts/tests/` | [README.md](scripts/tests/README.md) | 六套回归脚本清单（T1 / T2 / T3 / T5 / T6 / T7，共 441 项断言：282 + T7 的 146 单元 + 13 CLI） |
 | `scripts/coredump/` | [README.md](scripts/coredump/README.md) | 崩溃现场采集与解析（core 命名、符号化、gcore） |
-| `scripts/run/` | [README.md](scripts/run/README.md) | `out/` 与 `build/` 两个同名 `start.sh` |
-| `scripts/deploy/` | [README.md](scripts/deploy/README.md) | systemd unit（开机自启） |
-| `docs/design/` | [README.md](docs/design/README.md) | 设计与规划（多链路 / 三进程拆分 / ROADMAP） |
+| `scripts/run/` | [README.md](scripts/run/README.md) | `out/` 与 `build/` 两个同名 `start.sh` + `run-all.sh`（三进程一键起停） |
+| `scripts/deploy/` | [README.md](scripts/deploy/README.md) | 三进程开机自启：`evs.target` + media/comm/upgrade/rollback 五个 unit + `install.sh` |
+| `docs/design/` | [README.md](docs/design/README.md) | 设计与规划（多链路 / 三进程拆分 / 升级 OTA / 通信协议 / ROADMAP） |
 | `docs/history/` | [README.md](docs/history/README.md) | `TESTLOG.md`（测试证据）+ `BUG_CASES.md`（bug 原理复盘） |
 | `docs/ops/` | [README.md](docs/ops/README.md) | `COMMANDS.md`（命令手册）+ `CRASH_DUMP.md`（崩溃链路） |
 | `docs/interview/` | [README.md](docs/interview/README.md) | 面试问答（高频 / 核心 / 深入 + 内核边界 + C 落点） |
@@ -74,5 +78,5 @@ make info                # 看当前编哪些进程（EVS_PROCESS）与构建参
 
 ---
 
-最后更新：2026-11-15（补「两个进程 / 运行目标 / 退出码 / ZLM 日志」语义；详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
-适用分支：`rk3588` · 代码校准点：`422b2c4`（ZLM 日志级别默认 error，2026-11-15；前一校准点 `0117907` = 通信层 + 进程拆分）· 工作树只剩 `config/2.mp4` 一台本机素材未跟踪
+最后更新：2026-11-15（补「三进程 / `make run-all` 一键起停 / `evs_upgrade` 升级骨架 / T7 回归」；详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
+适用分支：`rk3588` · 代码校准点：`017b19d`（升级骨架 `src/upgrade/` + `evs_upgrade` + 三进程 systemd 部署 + `make run-all`，2026-11-15；前一校准点 `422b2c4` = ZLM 日志级别默认 error）· 工作树只剩 `config/2.mp4` 一台本机素材未跟踪
