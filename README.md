@@ -28,6 +28,7 @@ make info                # 看当前编哪些进程（EVS_PROCESS）与构建参
 - **只编一个进程**：`make media` / `make comm`；**改默认集**：`make proc PROC=comm`（写进 `out/CMakeCache.txt`，`PROC=all` 恢复）；等价 CMake 写法 `cmake -S . -B out -DEVS_PROCESS=media,comm`。
 - **`make run` 与 `make run-media` 是同一个程序**：两者都调 `evs::media::Run()`，`EdgeVisionService` 只是历史兼容的可执行名，日志只差 ZLM 前缀（`[EdgeVisionService]` / `[evs_media]`）；通信进程请用 `make run-comm`（`[comm]` 前缀）。
 - **退出码 130 ≠ 崩溃**：`make run-*` 里 Ctrl+C 的 SIGINT 会同时打到 make，所以 **make 自身返回 130**，程序仍是 0（尾部有 `进程正常退出`）。要看程序的 rc 用 `bash scripts/run/out/start.sh` 或 `(cd out && ./bin/evs_media ../config/node.json)`。2026-11-14 起运行配方末尾加了 `exec`，**关程序后不会再出现 `make: *** [Makefile:…] Interrupt` 那一行**。
+- **ZLM 日志太吵**：2026-11-15 起默认只留 **error**（启动时仍有 14 行 `Load codec: …`，那是库静态初始化打的，压不掉）；排查时 `EVS_ZLM_LOG_LEVEL=2 make run-media` 临时放开，级别表与实测见 [docs/ops/COMMANDS.md](docs/ops/COMMANDS.md) §2.6。
 - **播放**：`ffplay rtsp://<板端IP>:8550/live/ch0`（每路 `ch0`~`ch3`）。
 - **自检**：`bash scripts/tests/run_t6_comm.sh`（其余见 [scripts/tests/README.md](scripts/tests/README.md)）。
 - 命令细节、实测输出与踩坑：**[docs/ops/COMMANDS.md](docs/ops/COMMANDS.md)** §1 构建 / §2 运行 / §3 内存 / §11 崩溃 / §12 自启。
@@ -73,5 +74,5 @@ make info                # 看当前编哪些进程（EVS_PROCESS）与构建参
 
 ---
 
-最后更新：2026-11-15（补「两个进程 / 运行目标 / 退出码」语义；详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
-适用分支：`rk3588`（已推送 `origin/rk3588`）· 代码校准点：`0117907`（通信层 + 进程拆分，2026-11-14）· 工作树干净（只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪）
+最后更新：2026-11-15（补「两个进程 / 运行目标 / 退出码 / ZLM 日志」语义；详细内容分别落在 `docs/`、`src/`、`scripts/`、`config/`、`cmake/` 各目录 README）
+适用分支：`rk3588` · 代码校准点：`422b2c4`（ZLM 日志级别默认 error，2026-11-15；前一校准点 `0117907` = 通信层 + 进程拆分）· 工作树只剩 `config/2.mp4` 一台本机素材未跟踪

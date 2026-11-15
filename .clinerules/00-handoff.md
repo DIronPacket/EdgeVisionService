@@ -3,14 +3,14 @@
 > 本文件只是**索引 + 事实卡**，完整内容在 **`docs/HANDOFF.md`**（唯一权威接手文档）。
 > **不要用 `search_codebase` 全仓扫描来"重新了解项目"**：文件清单在 HANDOFF §1.4，现状在 §0/§1.2，限制在 §2，任务→文件在 §1.9。
 
-## 现状卡（2026-11-14 基线；若与 git 实际不符，以 git 为准并回写文档）
+## 现状卡（2026-11-15 基线；若与 git 实际不符，以 git 为准并回写文档）
 
 | 项 | 值 |
 | --- | --- |
-| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **已推送，与 `origin/rk3588` 同步**（最近功能提交 `c61dc21`）· **代码校准点 `0117907`**（2026-11-14 `comm:` 通信层 + 进程拆分；其后 `809c5e7` 回写校准点、`c61dc21` 只改 `Makefile` + 文档）· 工作树只剩 `config/2.mp4`、`config/test.nv12` 两台本机素材未跟踪（有意不入库）· 前一校准点 `f0b7899` = 崩溃采集；再前 `45a070c` / `12f5480` / `15cf975` / `114c94d` / `c557d89` / `eac4bb0` / `29ab58b`） |
+| 分支 / 基线 | `rk3588`（跟踪 `origin/rk3588`）· **本地领先 1 笔待推**：`422b2c4`（`zlm:` ZLM 日志级别默认 error + `EVS_ZLM_LOG_LEVEL`）；已推送至 `7d5d222` · **代码校准点 `422b2c4`**（2026-11-15 `zlm:` 日志级别 error-only；前一校准点 `0117907` = 2026-11-14 `comm:` 通信层 + 进程拆分）· 工作树只剩 `config/2.mp4`（33 MB）一台本机素材未跟踪（`config/test.nv12` 本机已删；均有意不入库）· 更早校准点 `f0b7899` = 崩溃采集；再前 `45a070c` / `12f5480` / `15cf975` / `114c94d` / `c557d89` / `eac4bb0` / `29ab58b`） |
 | 环境 | aarch64 板端本机编译 · **C++14** · cmake 3.22 · g++ 11.4 · 8 核 |
 | 构建（已实测） | `make` → `cmake -S . -B out && cmake --build out -j"$(nproc)"`（默认构建目录 `out/`；2026-11-12 起，`build/` 为历史目录）。**进程可选编**（2026-11-14）：`-DEVS_PROCESS=media\|comm\|media,comm`（不指定 = 全编）、`make media` / `make comm`（单 target）、`make proc PROC=comm`（改默认集，持久）、`make info` 查当前值 |
-| 冒烟运行 | 媒体 **`make run-media`**（`./bin/evs_media ../config/node.json`，4 路出帧 + `FreeMem` 后退出）；通信 **`make run-comm`**（`./bin/evs_comm ../config/comm.json`，无 broker 只告警不退出）；兼容壳 `make run`（`EdgeVisionService`，同 `evs_media`）。三者都等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/<目标>` |
+| 冒烟运行 | 媒体 **`make run-media`**（`./bin/evs_media ../config/node.json`，4 路出帧 + `FreeMem` 后退出）；通信 **`make run-comm`**（`./bin/evs_comm ../config/comm.json`，无 broker 只告警不退出）；兼容壳 `make run`（`EdgeVisionService`，同 `evs_media`）。三者都等价 `cd out && LD_LIBRARY_PATH="lib:../install/rk3588/lib" ./bin/<目标>`；**ZLM 日志自 2026-11-15 起默认只留 error**（`EVS_ZLM_LOG_LEVEL=0~4` 临时放开，见 `docs/ops/COMMANDS.md` §2.6） |
 | 真实主链路 | **两个进程 + 一个兼容壳**（2026-11-14 拆分）：`src/main/media/`（`evs_media`：`media_service.{h,cpp}` 编排 = 崩溃 handler → `load_with_fallback` → `MemInit` → `build_all` → `start_all` → 信号 → 有序停止 → `FreeMem`；`main_media.cpp` 只做入口）、`src/main/comm/`（`evs_comm`：`config/comm.json` → `CommManager` 建通道 → 收包/状态打印 → 信号 → `StopAll`+`Clear`）、`src/main/main.cpp`（兼容壳 `EdgeVisionService`，调同一个 `evs::media::Run()`）。**`src/comm/` 是库、`src/main/comm/` 是进程**，别混。`src/main/test/main_node.cpp`（`testnode`）**当前不参与构建** |
 | 技术栈 | V4L2/FFmpeg 采集 → `MemBlock` 内存池（块内内存 rk3588 = MPP DRM 缓冲，`common/frame_mem.*`）→ `PipelineNode` 流水线 → MPP 编码 → ZLMediaKit RTSP；通信进程 `evs_comm` = `comm_api`（UDP/MQTT）旁路，**媒体进程尚未接总线** |
 | 通信层（2026-11-14，已入库） | `src/comm/` → `libcomm_api.so`：`CommBase` 抽象基类（五个钩子 `DoInit/DoStart/DoStop/DoSend/ReceiveLoop` + 内部接收线程 + 状态机 + `last_error()`）、`UdpComm`（POSIX socket/poll，**零第三方依赖**）、`MqttComm`（libmosquitto **C API** + pimpl，`install/rk3588` 2.0.22，重连重订阅）、全局单例 `CommManager`（`Create` 工厂 + 注册表 + 统一回调带通道名）。★ **UDP 无需 zltoolkit**（`install/` 无其 C++ 头，只有 ZLMediaKit 的 C API）；★ MQTT 的 `kServer` = 通配订阅 `evs/v1/#` 的**订阅端角色**，broker 是独立进程。验收 `./scripts/tests/run_t6_comm.sh` → 43 项 PASS。**媒体进程未接总线**（`media_service.cpp` 不创建通道），**通信进程已用它**（`src/main/comm/main_comm.cpp` 读 `config/comm.json`）。说明见 `src/comm/README.md` |
