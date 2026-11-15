@@ -22,6 +22,7 @@
   - [5.5 内核向连环问（10 问 · 每题给"能站住"的答法）](#55-内核向连环问10-问--每题给能站住的答法)
   - [5.6 能主动说的加分点（面试官会眼前一亮）](#56-能主动说的加分点面试官会眼前一亮)
   - [5.7 不能吹的边界（说错就掉分）](#57-不能吹的边界说错就掉分)
+  - [5.8 内核中断：会问到哪一层 + 10 问速答](#58-内核中断会问到哪一层--10-问速答)
 - [6. 项目里能练 C 语言熟练度的 8 个落点](#6-项目里能练-c-语言熟练度的-8-个落点)
 - [7. 准备路线（4 周 · 每周都能产出可讲的东西）](#7-准备路线4-周--每周都能产出可讲的东西)
 - [8. 收尾三件事](#8-收尾三件事)
@@ -381,7 +382,7 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 
 | 子系统 | 谁在用 | 与本项目的关系 | 面试可讲的点 |
 | --- | --- | --- | --- |
-| `/dev/mpp_service`（Rockchip VPU） | `librockchip_mpp` | `MppEncoder` / `MppDecoder` 每帧 `encode_put_frame` / `decode_get_frame` | MPP 是**厂商私有 ioctl**：用户态下发寄存器配置，VPU 中断回填，缓冲来自 DMA 堆 |
+| `/dev/mpp_service`（Rockchip VPU） | `librockchip_mpp` | `MppEncoder` / `MppDecoder` 每帧 `encode_put_frame` / `decode_get_frame` | MPP 是**厂商私有 ioctl**：用户态下发寄存器配置，VPU 中断回填，缓冲来自 DMA 堆（中断路径与实测见 §5.8） |
 | DMA 堆（`/dev/dma_heap/*`，老内核是 ION） | `librockchip_mpp` | `mpp_buffer_get()` 一次 6 MB 的物理连续缓冲 | 为什么必须**物理连续 + 对齐**：VPU/RGA 只认物理地址；这也是"零拷贝要 DMA-BUF"的原因 |
 | socket / epoll | ZLMediaKit 静态库 | RTSP 服务端收发 RTP | ZLM 内部 epoll 事件循环，我们的 `mk_media_input_h264` 是线程安全的入队，不是直接 `send()` |
 | 文件 IO / page cache | FFmpeg（mp4 文件源） | `av_read_frame` 读本地 mp4 | 文件源"想读多快就多快"，所以**必须靠 `ViNode` 的 fps 节流**，否则 3 路文件源会瞬抽干池子（DESIGN §11.3） |
@@ -428,6 +429,103 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 | "我们做了 DMA-BUF 零拷贝" | 编码前是显式 `memcpy`（`rk_mpp_encoder.cpp:203-216`） |
 | "MPP 的 ioctl 细节我很熟" | 仓库只调 C API；`/dev/mpp_service` 的 ioctl 编号、寄存器布局都在库里 |
 | "用了 io_uring / eBPF" | 一处都没有 |
+
+### 5.8 内核中断：会问到哪一层 + 10 问速答
+
+> 先给结论：**仓库里没有一行 ISR、没有驱动、没有 `.dts`；但整条链路是「中断驱动」的**。所以面试官通常不会让你写 `request_irq`，而是顺着「你怎么拿到一帧」往下追 2~3 层。追到哪一层停取决于岗位；**答不上来的地方要主动划边界**（话术在本节末）。
+
+**按岗位判断会被问多深**
+
+| 面试岗位 | 问到概率 | 会追到哪 | 你的落点 |
+| --- | --- | --- | --- |
+| 嵌入式 Linux 应用 / 音视频 | 高（80%+） | 追 2~3 层就停 | 本节前 4 问 + 实测数据 |
+| 嵌入式 BSP / 驱动 | 必问 | 上下半部、`file_operations`、`smp_affinity` | 讲链路 + 划边界；`IRQF_ONESHOT`、GIC 寄存器别背 |
+| 纯 C++ 后端 | 低（~20%） | 只问「信号算不算中断」「handler 里为什么不能 `printf`」 | 第 4、5 问；本项目 `crash_handler` 正好答得上 |
+| 算法 / 平台 | 极低 | 不问 | 一句「编码在 VPU 里做，CPU 只搬指针」带过 |
+
+**板端事实（本机实测，可直接报）**
+
+```
+内核        6.1.99-rockchip-rk3588        8 核：CPU0~3 Cortex-A55 @1.8GHz + CPU4~7 Cortex-A76 @2.35GHz
+中断控制器  GICv3（SPI / PPI / SGI；网卡走 ITS-MSI Edge）
+编码驱动    mpp_service mpp-srv / mpp_rkvenc2 rkvenc-ccu
+解码驱动    mpp_rkvdec2 fdc30000.rkvdec-ccu（本项目没用：解码走 FFmpeg 软解）
+摄像头驱动  rockchip-mipi-csi2-hw ... probe success, v4l2_dev:mipi0-csi2-hw
+实测        4 路 1080p 跑 12s：rkvenc-core 中断 +1224（≈1 次/帧）；vepu / rkvdec / rga 全 0
+```
+
+**一帧数据的「中断路径」（能画出来就赢）**
+
+```
+CSI 摄像头 ──DMA──▶ vb2 缓冲（REQBUFS 之后归驱动所有）
+                        │ 一帧填满
+                        ▼
+              硬件中断（GICv3，rockchip-mipi-csi2-hw）
+                        │ 上半部：ack + 清状态
+                        ▼
+              下半部 / vb2 done 回调：标记 buffer done + wake_up()
+                        ▼
+   用户态线程被唤醒（waitqueue，TASK_INTERRUPTIBLE）→ VIDIOC_DQBUF 返回
+                        ▼
+   sws_scale 转 NV12 → 写池块 → VIDIOC_QBUF 还回驱动（4 缓冲循环）
+```
+
+编码侧同构：**池块（`mpp_buffer_get` 拿到的 DMA 堆缓冲）→ ioctl 下发寄存器 → VENC 硬件编码 → 完成中断（GICv3 133/136，`rkvenc-core`）→ MPP 库内部收到事件 → `encode_get_packet`**。
+这就是「4 路 1080p 的 CPU 占比不高、30fps 还稳」的原因：**CPU 只在中断完成后搬指针**。
+
+**10 问速答（每题 30 秒内）**
+
+| # | 问法 | 能站住的答法 | 项目落点 |
+| --- | --- | --- | --- |
+| 1 | 一帧怎么从摄像头到你的进程？ | DMA 填满缓冲 → 帧完成中断 → vb2 标记 done 并 `wake_up` → `DQBUF` 返回；`QBUF` 还回去形成 4 缓冲流水 | `v4l2_capture.cpp:176`、`:241` |
+| 2 | `DQBUF` 阻塞时线程在干嘛？ | 睡在驱动的**等待队列**（`TASK_INTERRUPTIBLE`），不占 CPU；信号能把它唤醒成 `-EINTR` | 同上；本项目实际是 `O_NONBLOCK` + `usleep(2ms)` 轮询（P1-3 已知缺陷，应改 `poll`） |
+| 3 | 中断为什么分上半部 / 下半部？ | 上半部**关中断**只做 ack / 清标志 / 唤醒，耗时活交给 softirq / workqueue / **threaded IRQ**；V4L2 的 vb2、MPP 都是「中断 + 线程化处理」 | 只讲原理，不吹实现 |
+| 4 | 中断上下文为什么不能 sleep / `malloc`？ | 它没有自己的 `task_struct`、不参与调度，一睡内核直接崩；只能 `GFP_ATOMIC`、自旋锁。**用户态同构**：崩溃 handler 里也不能 `printf` / `malloc`，只能 `write` | `crash_handler.cpp:109-135`（自己写 hex/UTC，避开 `strsignal` / `localtime_r`） |
+| 5 | `SIGSEGV` 算中断吗？ | **不算。** 它由 CPU 执行到那条指令时**同步**产生（异常 / trap），Linux 再转成信号；外部**异步**事件才是中断（IRQ） | `crash_handler.cpp:310-326`（解除屏蔽后重抛拿 core） |
+| 6 | Ctrl+C 是中断吗？ | 物理层是键盘 / 串口中断，但到你程序已经是**软件中断（信号）**：tty 驱动给前台进程组发 `SIGINT` | `media_service.cpp:129-130`，handler 只写 `sig_atomic_t`（`:40-44`） |
+| 7 | 网络包怎么到 ZLM？ | 网卡 **MSI 中断** → NAPI（**中断 + 轮询混合**，防中断风暴）→ socket 唤醒 → epoll 就绪 → ZLM 工作线程 | 库内部，点到为止 |
+| 8 | 你怎么证明中断在工作？ | `/proc/interrupts` 前后取差：4 路跑 12s，两个 `rkvenc-core` 合计 **+1224 ≈ 1 次/帧**；`rkvdec-core` / `vepu` 为 0 也解释得通（软解 / H.264 不用 VEPU） | 本节「板端事实」 |
+| 9 | 中断亲和 / 实时性怎么保证？ | 我们**没做**：30fps 属软实时，CFS 够用；要做就 `irq_set_affinity` / `smp_affinity` + 采集线程 `pthread_setschedparam` + `taskset` 绑核，代价是可能饿死其它线程 | 诚实说没做（§5.7） |
+| 10 | 中断风暴 / 丢帧怎么查？ | 看 `/proc/interrupts` 增速 + `top` 的 `si` / `hi` 列（软 / 硬中断占比）+ `dmesg` 看驱动报错；缓冲不够或漏 `QBUF` 的表现是「采不到帧」，不是「中断太多」 | `docs/ops/COMMANDS.md` §11（体检脚本） |
+
+**最小背诵集（只背这些，别贪）**
+
+```
+GICv3 · SPI / PPI / SGI 的区别 · 上半部 / 下半部（softirq · tasklet · workqueue · threaded irq）
+中断 → waitqueue → 唤醒阻塞线程（"中断与本项目"的桥梁，必须能画出来）
+DMA 完成中断 · MSI / MSI-X · NAPI（中断 + 轮询混合）· /proc/interrupts · top 的 si / hi
+异常（trap）≠ 中断（IRQ）；信号 = 软件中断
+```
+
+**能主动说的 3 个加分点（都来自真实代码 / 实测）**
+
+1. **`/proc/interrupts` 差值 1224 ≈ 1 次/帧** —— 一句话就能把「你是不是只会调库」的质疑顶回去；同时要能解释另外三条为什么是 0（软解 / 不用 VEPU / 本轮没走 RGA）。
+2. **崩溃 handler 执行期间该信号被内核自动屏蔽，必须先 `sigprocmask(SIG_UNBLOCK)` 再 `tgkill` 重抛，否则 core 一个字节都没有**（`crash_handler.cpp:310-326`，注释写着本机实测踩过）。这是「中断 / 信号上下文语义」在用户态的漂亮类比，多数候选人讲不出来；配套还有 `sigaltstack`（栈溢出时不二次崩溃，`:407-415`）与 `SA_RESETHAND | SA_ONSTACK`（`:434-438`）。
+3. **`EINTR` 处理**：`poll` / `recvfrom` / `write` 三处 `EINTR → continue`（`udp_comm.cpp:201-227`、`crash_handler.cpp:113`）；同时**主动承认** `DQBUF` 没区分 `errno` 是缺陷（P1-3，正确解 `poll(fd, POLLIN, timeout)`）。承认未完成项比装懂加分。
+
+**不能吹的边界（中断专属；总表见 §5.7）**
+
+| 别说 | 因为 |
+| --- | --- |
+| "我调过中断 / 配过 `request_irq`" | 仓库里一行都没有 |
+| "我写过软中断 / tasklet 回调" | 只有 V4L2 驱动与 MPP 库内部有 |
+| "我配过中断亲和 / 绑过核" | 没做；`taskset`、`smp_affinity` 只能作为「知道怎么做」讲 |
+| "我们 30fps 是硬实时" | CFS + `sleep_for` 精度是数十 µs~ms，属软实时 |
+
+**边界话术（建议原话背）**
+
+> 「驱动是 Rockchip BSP 内核 6.1.99 自带的（`mpp_rkvenc2`、`rockchip-mipi-csi2-hw`），我没写也没改。我只做到 **ABI 层**：`ioctl` 命令 + `mmap` + `/proc/interrupts` 验证。再往下 `file_operations` 那一层没做过——要往那边聊我只能讲原理。」
+
+**现场验证命令（面试前自己跑一遍，心里有数）**
+
+```bash
+grep -E 'rkvenc-core|vepu|rkvdec-core|mipi' /proc/interrupts   # 跑前跑后各一次，算差值
+head -1 /proc/interrupts                                       # CPU0~7：确认 8 核
+dmesg | grep -iE 'mpp_service|rkvenc|mipi.*csi2' | head        # 驱动 probe 名（可直接报）
+top -H -p "$(pgrep -f evs_media)"                              # 每线程占用；另看 si / hi 两列
+```
+
+**深挖到这几样就主动停手**：`request_irq` 的参数语义、`IRQF_ONESHOT`、GIC distributor / redistributor 寄存器、RT 补丁下的线程化中断、`irqbalance`。这些没做过，**说「只知道概念」比编细节安全**。
 
 ---
 
@@ -577,6 +675,7 @@ if (user_queue.size() <= 0) return nullptr;   // 被 _stopped 唤醒
 | 有序退出 | `main_node.cpp:95-115` | TESTLOG §5.9 |
 | 逐帧耗时 | `node_profiler.h:55-193` | TESTLOG §5.11 |
 | 未修的越界 | `rk_mpp_decoder.cpp:41-121` | 本文 §4.11 |
+| 内核中断 / 信号 / 上下文 | `v4l2_capture.cpp:176`、`crash_handler.cpp:310-326`、`udp_comm.cpp:201-227` | 本文 §5.8 + `docs/ops/COMMANDS.md` §11 |
 
 > 本文只做"怎么讲"。要**证据**去 `docs/history/TESTLOG.md`，要**原理长文**去 `docs/history/BUG_CASES.md`，要**命令**去 `docs/ops/COMMANDS.md`。
 
